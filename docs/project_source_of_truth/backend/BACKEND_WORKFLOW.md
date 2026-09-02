@@ -2,7 +2,7 @@
 
 **Version:** 1.0  
 **Status:** Initial  
-**Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/ARCHITECTURE.md`
+**Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
 ---
 
