@@ -2,204 +2,312 @@
 
 # Butler Engineering Guide
 
-Version: 2.0
+**Version:** 1.0  
+**Status:** Engineering Rules
 
 ---
 
-# Purpose
+# 1. Purpose
 
-This document defines the engineering standards for the Butler backend.
+This document defines the engineering standards and commitments for the entire Butler codebase.
 
-Its purpose is to ensure that all code—whether written by humans or AI coding
-agents—is consistent, maintainable, testable, and easy to understand.
+It applies to:
 
-Architecture decisions are defined in **ARCHITECTURE.md**.
+- Backend
+- Client
+- Shared tooling
+- Automation
+- Code written by humans
+- Code written by AI coding agents
 
-This document explains how those architectural decisions should be implemented.
+`PROJECT.md` defines **what Butler is and how the product should behave**.
+
+`ENGINEERING.md` defines **how software in this repository should be written**.
+
+Implementation-specific architecture, technology choices, project structure, workflows, and data design belong in the relevant technical documents:
+
+```text
+PROJECT.md
+ENGINEERING.md
+│
+├── backend/
+│   ├── ARCHITECTURE.md
+│   └── WORKFLOW.md
+│
+└── client/
+    ├── ARCHITECTURE.md
+    ├── WORKFLOW.md
+    └── ui/
+```
+
+This document should contain rules that apply across the project.
+
+Backend-specific or client-specific implementation details should not be duplicated here.
 
 ---
 
-# Engineering Philosophy
+# 2. Engineering Philosophy
 
-Good software is easier to change than to write.
+Good software should be easy to understand, change, and remove.
 
 The Butler codebase should optimize for:
 
 - readability
 - maintainability
 - simplicity
-- testability
-- scalability
+- predictability
+- correctness
+- safe change
+- fast reasoning over the code path
 
-Prefer explicit, predictable code over clever abstractions.
+Prefer explicit and understandable code over clever abstractions.
 
-Future maintainers should understand a module quickly without needing hidden
-knowledge.
+A future engineer should be able to understand a component without relying on hidden knowledge or undocumented conventions.
+
+The system should remain as simple as the product allows.
 
 ---
 
-# Core Principles
+# 3. Simplicity First
 
-## Simplicity First
-
-Prefer the simplest solution that correctly solves the problem.
-
-Avoid unnecessary abstractions.
+Prefer the simplest solution that correctly satisfies the current requirement.
 
 Follow:
 
 - KISS
 - YAGNI
 
-Do not build extensibility until it is justified.
+Do not build abstractions, extension points, services, modules, or infrastructure for hypothetical future requirements.
+
+Do not introduce complexity merely because it may become useful later.
+
+Complexity must be justified by an actual problem.
 
 ---
 
-## Composition Over Inheritance
+# 4. Preserve Existing Architecture
 
-Prefer composing small components rather than creating deep inheritance
-hierarchies.
+Before modifying existing code:
 
-Behavior should emerge from collaboration between components.
+1. Understand the relevant product requirement.
+2. Read the relevant architecture and workflow documentation.
+3. Inspect the existing implementation.
+4. Preserve established architectural boundaries and conventions unless there is a clear reason to change them.
 
----
+Do not silently introduce a new architectural style into an existing area.
 
-## Dependency Injection
-
-External dependencies should be injected rather than created internally.
-
-Benefits include:
-
-- easier testing
-- loose coupling
-- easier replacement
-- clearer dependencies
+Architectural changes should be intentional and reflected in the relevant architecture document.
 
 ---
 
-## Dependency Inversion
+# 5. Maximum Code Density and Locality of Reasoning
 
-Business logic depends on abstractions.
+Code should maximize the amount of meaningful logic that can be understood in a single view.
 
-Infrastructure depends on business logic.
-
-Never reverse this relationship.
-
----
-
-## Single Responsibility
-
-Every component should have one clear responsibility.
-
-Examples
-
-Good
-
-PlannerRepository
-
-↓
-
-Persist Planner state.
-
-Bad
-
-PlannerRepository
-
-↓
-
-Persist state
-
-Call OpenAI
-
-Publish events
-
-Generate reminders
-
----
-
-## Separation of Concerns
-
-Keep responsibilities separated.
-
-Examples
-
-Router
-
-↓
-
-HTTP
-
-Use Case
-
-↓
-
-Application workflow
-
-Planner
-
-↓
-
-Business reasoning
-
-Repository
-
-↓
-
-Persistence
-
-Provider
-
-↓
-
-External service
-
----
-
-## Strong Contracts
-
-Public interfaces should be explicit.
+The goal is to reduce unnecessary scrolling, jumping between files, and mental context switching while following a code path.
 
 Prefer:
 
-- typed models
-- typed return values
-- well-defined DTOs
-- repository interfaces
+- concise functions
+- short, meaningful names
+- nearby related logic
+- compact control flow
+- direct data transformations
+- minimal ceremony
+- minimal wrapper layers
+- minimal indirection
+- comments placed inline when practical
 
-Avoid returning loosely structured dictionaries.
+A developer should be able to inspect a meaningful portion of a workflow without constantly navigating across many files or scrolling through large amounts of boilerplate.
 
----
+This principle does **not** mean compressing code until it becomes cryptic.
 
-## Configuration Over Hardcoding
+Density is valuable only when readability remains high.
 
-Behavior should be configurable whenever practical.
+Good:
 
-Examples
+```python
+if event.is_cancelled:
+    return
 
-- retry intervals
-- AI providers
-- feature flags
-- timeout values
-
-Never hardcode environment-specific values.
-
----
-
-# Code Organization
-
-Organize code by business capability rather than technical role.
-
-Good
-
-```text
-planner/
-schedule/
-routine/
-memory/
-notification/
+event.status = EventStatus.COMPLETED  # Local user action; sync is queued separately.
+sync_queue.enqueue(event.id)
 ```
 
-Avoid
+Avoid:
+
+```python
+if event.is_cancelled:
+    return
+
+# This changes the status of the event to completed.
+event.status = EventStatus.COMPLETED
+
+# This adds the event to the synchronization queue so that it can later be
+# synchronized with the backend when network connectivity is available.
+sync_queue.enqueue(event.id)
+```
+
+Comments should normally be:
+
+- concise
+- close to the code they explain
+- inline when practical
+- focused on **why**, not obvious **what**
+
+Use multi-line comments only when the reasoning genuinely requires more context.
+
+Prefer code that exposes the whole reasoning path with the least navigation possible.
+
+---
+
+# 6. Separation of Responsibilities
+
+Every component should have one clear reason to change.
+
+Avoid components that combine unrelated responsibilities.
+
+For example, a component responsible for persistence should not also:
+
+- perform AI reasoning
+- manage UI state
+- send notifications
+- contain unrelated business rules
+
+Responsibilities should remain explicit and easy to locate.
+
+Do not split responsibilities so aggressively that understanding one operation requires navigating through unnecessary layers.
+
+Separation of concerns and locality of reasoning must remain balanced.
+
+---
+
+# 7. Composition Over Inheritance
+
+Prefer composition of small focused components over deep inheritance hierarchies.
+
+Inheritance should only be used where the relationship is naturally hierarchical and materially simplifies the design.
+
+Behavior should normally emerge from collaboration between focused components.
+
+---
+
+# 8. Dependency Injection
+
+External dependencies should be provided to components rather than constructed inside business logic.
+
+Examples include:
+
+- repositories
+- databases
+- network clients
+- AI providers
+- clocks
+- schedulers
+- notification services
+- platform services
+
+Dependency injection improves replaceability, clarity, and separation of concerns.
+
+Avoid hidden dependency creation inside domain or application logic.
+
+Do not introduce dependency-injection frameworks or excessive indirection when simple constructor or parameter injection is sufficient.
+
+---
+
+# 9. Dependency Inversion
+
+High-level business logic should not depend directly on low-level infrastructure.
+
+Business behavior depends on abstractions.
+
+Infrastructure implements those abstractions.
+
+Conceptually:
+
+```text
+Business / Application Logic
+            │
+            ▼
+        Abstraction
+            ▲
+            │
+     Infrastructure
+```
+
+Infrastructure details should remain replaceable without forcing business logic to change unnecessarily.
+
+Use abstractions only where the boundary is meaningful.
+
+---
+
+# 10. Strong Contracts
+
+Boundaries between components should be explicit.
+
+Prefer:
+
+- typed parameters
+- typed return values
+- explicit models
+- explicit interfaces
+- well-defined state
+- clear error contracts
+
+Avoid loosely structured data when a meaningful model exists.
+
+Avoid generic maps or dictionaries as substitutes for domain contracts.
+
+Data crossing an architectural boundary should have a clearly understood shape and meaning.
+
+---
+
+# 11. Domain Language
+
+Names should reflect the product and domain.
+
+Prefer names such as:
+
+```text
+DailyEvent
+DailyPlan
+UserContext
+MorningBrief
+GoodNightSummary
+ButlerInteraction
+SyncOperation
+```
+
+Avoid vague names such as:
+
+```text
+Helper
+Thing
+Stuff
+Util
+Processor
+DataManager
+Common
+Misc
+```
+
+Use nouns for concepts.
+
+Use verbs for actions.
+
+Names should communicate intent without requiring comments to explain basic behavior.
+
+Use terminology consistently with `PROJECT.md`.
+
+Do not introduce alternate names for established product concepts without a clear reason.
+
+---
+
+# 12. Organize by Meaning
+
+Code should be organized around meaningful responsibilities and product capabilities rather than becoming a collection of generic technical folders.
+
+Avoid dumping unrelated behavior into directories such as:
 
 ```text
 utils/
@@ -208,266 +316,575 @@ misc/
 common/
 ```
 
-Each module should contain everything required for that capability.
+Small shared utilities are acceptable when they represent genuinely shared, well-defined behavior.
+
+Do not create a shared abstraction merely because two pieces of code look similar.
+
+Project structure for each application is defined by its corresponding `ARCHITECTURE.md`.
+
+Keep related code close enough that a normal workflow can be followed with minimal file navigation.
 
 ---
 
-# Naming
+# 13. Configuration Over Hardcoding
 
-Choose names that describe the business domain.
+Environment-specific or operational values should not be embedded directly in business logic.
 
-Good
+Examples include:
 
-DailyPlan
+- URLs
+- credentials
+- timeouts
+- retry policies
+- provider selection
+- feature flags
+- environment behavior
 
-MorningBrief
+Configuration should have clear defaults where appropriate.
 
-ReminderSchedule
+Secrets must never be committed to source control.
 
-Planner
-
-ScheduleConflict
-
-Avoid
-
-Helper
-
-Thing
-
-Manager
-
-Util
-
-Processor
-
-Prefer nouns for domain concepts.
-
-Prefer verbs for actions.
+Product rules that are genuinely part of the domain should remain explicit code rather than being turned into configuration unnecessarily.
 
 ---
 
-# API Design
+# 14. Error Handling
 
-HTTP endpoints should remain thin.
+Errors should be explicit.
 
-Routers should:
+Validate assumptions at appropriate boundaries.
 
-- validate input
-- authenticate users
-- invoke use cases
-- return responses
+Fail early when the system enters an invalid state.
 
-Routers should never contain business rules.
+Prefer meaningful errors over ambiguous results.
 
----
+Avoid using values such as:
 
-# Error Handling
+```text
+null
+false
+empty object
+empty string
+```
 
-Fail fast.
+to represent unrelated failure conditions unless that value is genuinely part of the contract.
 
-Validate assumptions early.
+Errors should contain enough context to diagnose the failure without exposing sensitive information.
 
-Raise explicit exceptions.
+Expected failures and unexpected failures should be distinguishable.
 
-Avoid returning ambiguous values such as:
-
-- None
-- False
-- empty dictionaries
-
-Unexpected states should fail immediately with meaningful errors.
+Do not silently ignore exceptions.
 
 ---
 
-# Async Programming
+# 15. State and Mutation
 
-Prefer asynchronous APIs whenever external I/O is involved.
+State changes should be intentional and visible.
 
-Examples
+Prefer immutable values where practical.
 
-- database access
-- HTTP requests
-- AI providers
-- storage
-- messaging
+When mutation is required:
 
-Avoid blocking operations inside asynchronous code.
+- make ownership clear
+- keep mutation localized
+- avoid hidden side effects
+- make lifecycle transitions explicit
 
----
+Operations that change important state should have predictable outcomes.
 
-# Data Models
+The same command should not accidentally produce duplicate side effects when retried.
 
-Each layer should own its own models.
-
-Examples
-
-API
-
-↓
-
-Pydantic schemas
-
-Application
-
-↓
-
-DTOs
-
-Domain
-
-↓
-
-Entities
-
-Infrastructure
-
-↓
-
-ORM models
-
-Avoid sharing persistence models across layers.
+Where retryable or synchronized operations exist, design for idempotency where appropriate.
 
 ---
 
-# Immutability
+# 16. Side Effects
 
-Prefer immutable data where practical.
+Business decisions and external side effects should remain distinguishable.
 
-Objects representing completed operations or value objects should not change
-after creation.
+Examples of side effects include:
 
-Mutability should be explicit.
+- database writes
+- network requests
+- AI calls
+- notifications
+- file access
+- device scheduling
+- external service calls
 
----
+Keep side effects at clear boundaries whenever practical.
 
-# Reuse
+Do not scatter the same side effect across unrelated layers.
 
-Avoid duplication.
-
-However, do not introduce abstractions too early.
-
-Rule of thumb:
-
-Duplicate twice.
-
-Abstract the third time.
+A developer following a code path should be able to identify where important external actions occur.
 
 ---
 
-# Design Patterns
+# 17. Reuse and Abstraction
 
-Use patterns only when they simplify the design.
+Avoid unnecessary duplication, but do not abstract prematurely.
 
-Common examples include:
+A useful rule of thumb:
+
+> Duplicate twice. Abstract the third time.
+
+This is guidance, not a mechanical requirement.
+
+Create an abstraction when:
+
+- the shared concept is actually the same
+- the abstraction has a meaningful name
+- it reduces complexity
+- it improves maintainability
+
+Do not create abstractions merely to reduce line count.
+
+A small amount of duplication is often preferable to the wrong abstraction.
+
+Avoid abstraction that forces a reader to jump through multiple layers just to discover simple behavior.
+
+---
+
+# 18. Design Patterns
+
+Use design patterns when they simplify a concrete problem.
+
+Examples may include:
 
 - Strategy
-- Factory
-- Builder
 - Adapter
+- Factory
+- Repository
+- Observer
+- State
 
-Avoid introducing patterns solely because they are well known.
+Patterns are tools, not goals.
 
----
+Do not introduce a pattern solely because it is considered a common best practice.
 
-# AI Integration
+Every additional abstraction has a maintenance and reasoning cost.
 
-AI providers are implementation details.
-
-Application code communicates only through abstractions.
-
-Never call provider SDKs directly from business logic.
-
-Changing providers should require minimal code changes.
+Prefer the pattern that keeps the code path easiest to follow.
 
 ---
 
-# Logging
+# 19. External Services
 
-Log meaningful events.
+External systems are implementation details.
 
-Examples
+Examples include:
 
-- synchronization started
-- Daily Plan generated
-- Planner failed
+- AI providers
+- databases
+- notification platforms
+- cloud services
+- analytics
+- speech services
+- third-party APIs
+
+Core application behavior should not unnecessarily depend on vendor-specific SDKs.
+
+External integrations should be isolated behind clear boundaries when doing so provides meaningful replaceability or clarity.
+
+Changing an external provider should affect as little unrelated code as practical.
+
+---
+
+# 20. AI Engineering
+
+AI models are not the source of truth for product behavior.
+
+AI components must operate within the rules defined by:
+
+```text
+PROJECT.md
++
+ENGINEERING.md
++
+Relevant ARCHITECTURE.md
++
+Relevant WORKFLOW.md
+```
+
+Do not rely on prompts alone to enforce critical deterministic behavior when the behavior can be enforced by normal software.
+
+AI output should be validated before being used for important state changes.
+
+Structured output should be preferred when downstream software depends on the result.
+
+Provider-specific SDK usage should remain isolated from higher-level business logic.
+
+Prompts should be treated as maintained application assets rather than informal strings scattered throughout the codebase.
+
+---
+
+# 21. Data Integrity
+
+Persisted and synchronized data must have explicit ownership and lifecycle rules.
+
+Changes should not silently overwrite valid state.
+
+Important state transitions should be deliberate.
+
+When multiple sources can modify the same data, such as backend and offline client state, synchronization behavior must be explicitly defined rather than left to accidental last-write behavior.
+
+Specific database and synchronization designs belong in the relevant architecture and workflow documents.
+
+---
+
+# 22. Concurrency and Asynchronous Work
+
+Concurrency should only be introduced where it provides meaningful benefit.
+
+Code must remain correct when work is:
+
+- delayed
+- retried
+- interrupted
+- executed more than once
+- completed in a different order than expected
+
+Do not assume network requests, background jobs, synchronization, or AI calls complete exactly once.
+
+Platform-specific concurrency and asynchronous programming conventions belong in the corresponding architecture documents.
+
+---
+
+# 23. Logging
+
+Logs should help explain what the system did and why it failed.
+
+Log meaningful events such as:
+
+- important state transitions
+- synchronization outcomes
+- background job execution
+- external integration failures
 - unexpected exceptions
 
-Avoid excessive logging.
+Avoid logging routine internal noise without operational value.
 
-Never log secrets.
+Never log:
 
----
+- passwords
+- authentication tokens
+- API keys
+- secrets
+- sensitive private data unless explicitly required and safely handled
 
-# Documentation
-
-Every module should include:
-
-- module docstring
-- public API documentation
-- concise comments explaining decisions
-
-Comments should explain **why**, not **what**.
-
-Good names reduce the need for comments.
+Logging should not become part of business behavior.
 
 ---
 
-# Testing
+# 24. Observability
 
-Every feature should be testable in isolation.
+Important workflows should be diagnosable.
+
+Where appropriate, record enough information to answer questions such as:
+
+- What operation failed?
+- Which component failed?
+- Was the operation retried?
+- Was synchronization successful?
+- Which external dependency caused the failure?
+
+Observability should be added in proportion to actual operational needs.
+
+Do not introduce heavyweight monitoring infrastructure before it is justified.
+
+---
+
+# 25. Documentation
+
+Documentation should explain decisions and contracts that cannot be understood reliably from code alone.
+
+Comments should primarily explain **why**, not restate **what** the code does.
 
 Prefer:
 
-- dependency injection
-- mocked infrastructure
-- deterministic tests
+```text
+Clear code
++
+Good naming
++
+Concise documentation
+```
 
-Testing pyramid:
+Comments should be inline and concise when possible so the code path remains visible in one view.
 
-1. Domain
-2. Application
-3. Infrastructure
-4. API
-5. End-to-End
+Public or shared interfaces should be documented when their behavior is not obvious.
 
-Business rules should be testable without:
+Architecture and workflow documentation must be updated when the implemented design materially changes.
 
-- databases
-- HTTP
-- AI providers
+Do not duplicate higher-level documentation into lower-level documents.
+
+Reference the authoritative document instead.
 
 ---
 
-# Code Review Checklist
+# 26. Documentation Authority
+
+Documentation follows this hierarchy:
+
+```text
+PROJECT.md
+ENGINEERING.md
+│
+├── backend/
+│   ├── ARCHITECTURE.md
+│   └── WORKFLOW.md
+│
+└── client/
+    ├── ARCHITECTURE.md
+    ├── WORKFLOW.md
+    └── ui/
+```
+
+`PROJECT.md` is authoritative for:
+
+- product purpose
+- product concepts
+- expected behavior
+- product boundaries
+- user experience
+
+`ENGINEERING.md` is authoritative for:
+
+- engineering principles
+- coding standards
+- maintainability rules
+- cross-project implementation discipline
+
+Application `ARCHITECTURE.md` files are authoritative for:
+
+- technology stack
+- project structure
+- technical boundaries
+- design patterns
+- major components
+
+Application `WORKFLOW.md` files are authoritative for:
+
+- execution flows
+- data flows
+- state transitions
+- persistence relationships
+- synchronization behavior
+
+Client UI documentation is authoritative for:
+
+- screen structure
+- interaction behavior
+- UI-specific presentation rules
+
+Lower-level documents should not redefine higher-level decisions.
+
+If documentation conflicts, the higher-level source takes precedence until the conflict is explicitly resolved.
+
+---
+
+# 27. Security
+
+Treat external input as untrusted.
+
+Validate data at system boundaries.
+
+Never commit or expose:
+
+- passwords
+- API keys
+- access tokens
+- signing secrets
+- private credentials
+
+Use the minimum required privileges for external services and infrastructure.
+
+Security-sensitive behavior should be explicit and reviewable.
+
+Do not invent custom cryptography or authentication mechanisms when established solutions exist.
+
+---
+
+# 28. Privacy
+
+Butler handles personal information.
+
+Collect and persist only information required for the product.
+
+Do not log personal information unnecessarily.
+
+Do not send user information to external services unless required by the feature and architecture.
+
+Data handling decisions should remain explicit and auditable.
+
+---
+
+# 29. Performance
+
+Correctness and clarity come before premature optimization.
+
+Do not optimize based on assumption.
+
+Measure before introducing complexity for performance.
+
+However, avoid obviously wasteful designs in frequently executed paths.
+
+Performance-sensitive behavior should remain understandable.
+
+---
+
+# 30. Dependencies
+
+Every dependency adds maintenance and security cost.
+
+Before adding a dependency, ask:
+
+1. Does it solve a real requirement?
+2. Is the functionality substantial enough to justify a dependency?
+3. Is the project actively maintained?
+4. Can the requirement be solved clearly with existing tools?
+5. Does the dependency introduce unnecessary coupling?
+
+Prefer established, focused dependencies over large frameworks added for one small feature.
+
+Remove dependencies that are no longer used.
+
+---
+
+# 31. Backward Compatibility
+
+Do not maintain backward compatibility automatically when there is no real consumer requiring it.
+
+When a contract is already depended upon by clients, stored data, or external systems, changes should be deliberate.
+
+Breaking changes should be identified explicitly.
+
+Compatibility layers should have a clear reason and, where appropriate, a plan for eventual removal.
+
+---
+
+# 32. Cleanup
+
+When replacing an implementation, remove obsolete code once it is no longer needed.
+
+Do not leave:
+
+- abandoned implementations
+- commented-out code
+- unused abstractions
+- obsolete compatibility paths
+- dead configuration
+
+Source control already preserves history.
+
+The active codebase should represent the current design.
+
+---
+
+# 33. Scope Discipline
+
+When implementing a task, change only what is necessary to complete the task correctly.
+
+Do not perform unrelated refactoring unless it is required to safely implement the requested behavior.
+
+If unrelated problems are discovered, identify them separately.
+
+Small, coherent changes are easier to understand and review.
+
+---
+
+# 34. Development-Stage Testing Policy
+
+At the current early stage of development, automated tests are **not required by default**.
+
+The project is still establishing product behavior, architecture, data models, and workflows.
+
+Adding broad automated test coverage too early can increase the cost of changing unfinished designs and slow iteration.
+
+For now:
+
+- prioritize correct implementation and fast iteration
+- verify important behavior manually during development
+- keep code structured so tests can be added later without architectural rewrites
+- do not add tests merely to satisfy a coverage target
+- do not create testing infrastructure unless a concrete need justifies it
+
+Tests may be introduced selectively when a behavior becomes stable, critical, or difficult to verify manually.
+
+The project can adopt a stronger automated testing policy later when the core architecture and product workflows stabilize.
+
+---
+
+# 35. Engineering Decision Rule
+
+When multiple implementations are valid, prefer the one that:
+
+1. satisfies the product requirement
+2. preserves established architecture
+3. has fewer moving parts
+4. has clearer ownership
+5. keeps related reasoning close together
+6. requires less scrolling and navigation to understand
+7. is easier to change
+8. introduces less accidental complexity
+
+Do not optimize for cleverness or theoretical flexibility.
+
+---
+
+# 36. Definition of Done
+
+A change is complete when:
+
+- the requested behavior works
+- the implementation follows `PROJECT.md`
+- the implementation follows `ENGINEERING.md`
+- relevant architecture boundaries are preserved
+- errors are handled explicitly
+- important behavior has been manually verified when practical
+- obsolete code introduced by the change is removed
+- documentation is updated when contracts or architecture changed
+- secrets or sensitive data are not exposed
+- the code path remains understandable without hidden context
+- the implementation avoids unnecessary scrolling, indirection, and boilerplate
+
+Automated tests are not currently required unless explicitly requested or already needed for the specific feature.
+
+---
+
+# 37. Code Review Checklist
 
 Before considering work complete, verify:
 
-□ Code is simple.
-
-□ Responsibilities are clear.
-
-□ Business rules remain in the Domain.
-
-□ Dependencies point inward.
-
-□ Public APIs are typed.
-
-□ Error handling is explicit.
-
-□ Configuration is externalized.
-
-□ Tests cover the new behavior.
-
-□ Naming reflects the business domain.
-
-□ Documentation remains accurate.
+- [ ] The implementation solves the actual requirement.
+- [ ] The solution is as simple as reasonably possible.
+- [ ] Responsibilities are clear.
+- [ ] Related logic is kept close enough for efficient reasoning.
+- [ ] The code path can be followed with minimal unnecessary scrolling or file navigation.
+- [ ] Comments are concise and inline when practical.
+- [ ] Dependencies follow established boundaries.
+- [ ] Public contracts are explicit and typed.
+- [ ] State changes and side effects are understandable.
+- [ ] Errors are handled explicitly.
+- [ ] Environment-specific values are configurable.
+- [ ] External integrations remain isolated where appropriate.
+- [ ] AI output is validated where required.
+- [ ] Offline/retry behavior is considered when relevant.
+- [ ] Important behavior was manually verified when practical.
+- [ ] Naming matches established domain terminology.
+- [ ] No unrelated complexity was introduced.
+- [ ] Obsolete code was removed.
+- [ ] Relevant documentation remains accurate.
+- [ ] No secrets or sensitive information are exposed.
 
 ---
 
-# Guiding Principle
+# 38. Guiding Principle
 
-When writing code, optimize for the next engineer—not the current one.
+Optimize for the next engineer and for the next change.
 
-The best code is not the most clever.
+The best implementation is not the most sophisticated one.
 
-The best code is the easiest to understand, test, and safely change.
+It is the implementation that correctly solves the problem while remaining easy to understand, reason about, and safely change.
+
+> **Build only the complexity the product has earned. Keep the important code path visible.**

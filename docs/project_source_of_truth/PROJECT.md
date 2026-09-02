@@ -1,678 +1,1145 @@
 # Personal Butler
 
-**Document:** Project Overview  
-**Version:** 3.0  
-**Status:** Draft — Source of Truth
+**Document:** Project Overview\
+**Version:** 1.0
+**Status:** Initial - Source of Truth
 
----
+------------------------------------------------------------------------
 
-## 1. Vision
+## Vision
 
-Personal Butler is a proactive AI companion that helps users organize, plan, and execute their daily life.
+Personal Butler is a proactive AI companion that helps users organize,
+prepare, execute, and adapt their daily life.
 
-Butler should feel like **one person the user can talk to**, not a collection of productivity features.
+Butler should feel like **one person accompanying the user throughout
+the day**, not a collection of productivity features.
 
-The user should not need to think about whether they are creating a schedule, routine, reminder, task, or plan. They simply tell Butler what is happening, what they want, what has changed, or what they have done.
+The user should not need to think about whether they are creating a
+reminder, editing a routine, modifying a schedule, recording progress,
+or asking a question.
 
-Butler understands the user's life, prepares the day, adapts to changes, and helps the user move through it.
+They simply interact with Butler.
 
-The goal is to **reduce cognitive load**, not replace the user's decisions.
+Butler understands the user's life, prepares the day in advance,
+introduces the day in the morning, reminds the user when necessary,
+responds when spoken to, adapts when plans change, closes the day
+naturally, and prepares tomorrow.
 
----
+The goal is to:
 
-## 2. Core Product Model
+> **Reduce the mental effort required to remember, organize, and execute
+> daily life while leaving decisions and control with the user.**
 
-The product is built around a simple loop:
+------------------------------------------------------------------------
 
-> **The user talks to Butler.  
-> Butler understands the user's life.  
-> Butler prepares the day.  
-> Butler helps execute the day.  
-> Butler learns from what happened and prepares tomorrow.**
+## Core Product Model
 
-The user interacts with **one Butler** through one primary conversational API.
+The product follows a continuous daily loop:
 
-Internally, Butler may use multiple components, workflows, tools, and reasoning steps. These are implementation details and should not become part of the user's mental model.
-
----
-
-## 3. Butler Interaction
-
-The user talks to Butler naturally using voice or text.
-
-Examples:
-
-- "I wake up at 6 every day."
-- "I usually exercise at 6:30."
-- "Tomorrow I have a meeting with John at 3."
-- "For the next two weeks, I need to work two hours overtime every weekday."
-- "I arrived at the office."
-- "I finished my workout."
-- "I can't do the park today."
-- "Move everything after 6 PM."
-- "Remind me to buy groceries on my way home."
-
-All of these are interactions with the same Butler.
-
-The user should not need to choose a feature-specific operation.
-
-Conceptually:
-
-```text
-User
-  ↓
-Butler
-  ↓
-Understand
-  ↓
-Extract / Update User Context
-  ↓
-Plan / Modify Daily Events
-  ↓
-Respond
+``` text
+User Context
+      │
+      ▼
+Nightly Planning
+      │
+      ▼
+Tomorrow's Daily Events
+      │
+      ▼
+Morning Introduction
+      │
+      ▼
+Daily Execution
+      │
+      ├── Reminders
+      ├── User actions
+      ├── Butler conversations
+      └── Plan changes
+      │
+      ▼
+Reality Tracking
+      │
+      ▼
+Good Night Summary
+      │
+      ▼
+Prepare Tomorrow
 ```
 
-Butler may ask clarification when the user's intention or required information is unclear.
+From the user's perspective:
 
----
+> **Butler knows my plans.\
+> Butler tells me what matters.\
+> Butler reminds me when necessary.\
+> I can talk to Butler whenever something changes.\
+> Butler keeps my day synchronized with reality.**
 
-## 4. User Context
+The internal implementation may contain planners, workflows, tools,
+repositories, AI models, synchronization systems, and other components.
 
-**User Context** is information about the user's life that Butler stores and uses to support the user's life and plan future days.
+Those concepts must remain implementation details.
 
-User Context is extracted and maintained by Butler from natural conversation.
+------------------------------------------------------------------------
 
-It is not the Daily Plan and it is not a concrete event.
+## The Daily Butler Experience
 
-### 4.1 Reference
+Butler is designed around the natural rhythm of a day.
 
-Persistent information about the user that may be updated over time.
+### Morning
+
+Butler wakes the user and introduces the upcoming morning.
+
+Example:
+
+> "Good morning. I hope you had a nice sleep. Your Morning Brief will
+> start in five minutes."
+
+The initial wake-up message should be short and calm.
+
+After the configured preparation period, Butler speaks the Morning
+Brief.
+
+Example:
+
+> "Let's start with some stretching, make the bed, and drink a glass of
+> water. You have a 15-minute workout around 6:30. Keeping your daily
+> workout going will help you maintain the habit, so try not to skip it
+> today.
+>
+> After that, get ready for work. You plan to leave at 8:15 and work
+> starts at 8:45.
+>
+> You also have a meeting this afternoon..."
+
+The Morning Brief gives the user a useful chronological understanding of
+the day.
+
+Timed events are normally introduced in chronological order.
+
+Relevant events without a specific time are introduced after the
+scheduled events unless Butler determines that mentioning them earlier
+is more useful.
+
+The Morning Brief may contain:
+
+-   Morning routine
+-   Exercise
+-   Preparation
+-   Commute
+-   Work
+-   Meetings
+-   Important reminders
+-   One-time plans
+-   Temporary context
+-   Useful encouragement
+-   Other relevant Daily Events
+
+Butler should sound supportive, not mechanical or intrusive.
+
+------------------------------------------------------------------------
+
+## User Context
+
+**User Context** represents information Butler knows about the user's
+life and uses when preparing and adapting their days.
+
+User Context is not itself a Daily Event.
+
+### Reference Context
+
+Persistent information about the user.
 
 Examples:
 
-- The user works as a software developer.
-- The user enjoys personal projects.
-- The user prefers morning exercise.
-- The user needs preparation time before leaving home.
+-   The user works as a software developer.
+-   The user usually leaves home before 8:15.
+-   The user prefers exercising in the morning.
+-   The user benefits from being encouraged not to skip workouts.
 
-### 4.2 Recurring Routines
+### Recurring Context
 
-Recurring patterns describing how the user normally lives.
+Patterns that normally repeat.
 
 Examples:
 
-- Wake up at 6 AM every day.
-- Exercise in the morning.
-- Work from 8:45 AM to 5 PM on workdays.
-- Work on personal projects on days off when there is no other plan.
+-   Wake up at 6 AM every day.
+-   Exercise around 6:30 AM.
+-   Work from 8:45 AM to 5 PM on weekdays.
+-   Prepare for bed around 10:30 PM.
 
-Routines may apply to:
-
-- Every day
-- Specific weekdays
-- Workdays
-- Days off
-- Other recurring conditions
-
-They are persistent and can be updated whenever the user's life changes.
-
-### 4.3 Temporary / Period Context
+### Temporary Context
 
 Information that applies for a limited period.
 
 Examples:
 
-> "For the next two weeks, I need to work two hours overtime every weekday."
+> "I'm working overtime this week."
 
-> "For the next three days, I have English class at 7 PM."
+> "For the next two weeks I need to stay at work two hours later."
 
-Temporary context expires when its applicable period ends.
+Temporary context may also appear in the client as useful upcoming
+information, for example:
 
-### 4.4 One-Time Context
+> "Working overtime this week."
 
-Information that happens once or applies to a specific date.
+### One-Time Context
 
-Examples:
-
-> "I have a meeting with John tomorrow at 3 PM."
-
-> "Next Tuesday I want to go to the beach."
-
-After the relevant date passes, it no longer needs to remain active planning context.
-
----
-
-## 5. Daily Events
-
-**Daily Events are the concrete things Butler expects to happen during a specific day.**
-
-Everything that needs to appear in the user's day can be represented as a Daily Event.
+Information that applies once.
 
 Examples:
 
-- Wake up
-- Morning Brief
-- Stretching
-- Drinking water
-- Morning exercise
-- Shower
-- Breakfast
-- Going to work
-- Meeting
-- Personal project
-- Important task
-- Shopping
-- Going to the park
-- Other reminders
-- Good Night Summary
+> "Tomorrow I have a meeting with John at 3 PM."
+
+> "I need to buy groceries on the way home."
+
+------------------------------------------------------------------------
+
+## Daily Events
+
+**Daily Events are concrete occurrences associated with a particular
+day.**
+
+Examples:
+
+-   Wake-up message
+-   Morning Brief
+-   Stretching
+-   Drink water
+-   Workout
+-   Breakfast
+-   Leave for work
+-   Work period
+-   Meeting
+-   Reminder
+-   Shopping
+-   Personal project
+-   Good Night Summary
 
 A Daily Event may:
 
-- happen once
-- have a specific time
-- occupy a period
-- have a duration
-- be completed
-- be skipped
-- be delayed
-- be modified
-- be cancelled
+-   have an exact time
+-   have an approximate time
+-   have no specific time
+-   have a duration
+-   have a start and end time
+-   be completed
+-   be skipped
+-   be delayed
+-   be edited
+-   be moved
+-   be cancelled
+-   be created manually
+-   be created by Butler
 
-The distinction is:
+The fundamental planning relationship remains:
 
-> **User Context describes the user's life.  
-> Daily Events describe what Butler plans for a particular day.**
-
-There is no fundamental `Routine → Event` domain relationship.
-
-The fundamental planning relationship is:
-
-```text
+``` text
 User Context
-     +
-Known plans
-     +
-Date / calendar
-     +
-Current circumstances
-     ↓
-   Butler
-     ↓
+      +
+Known Plans
+      +
+Current Daily State
+      +
+Date / Time
+      +
+Recent User Feedback
+      ↓
+    Butler
+      ↓
 Daily Events
 ```
 
----
+------------------------------------------------------------------------
 
-## 6. Daily Planning
+## Event Ordering
 
-Butler prepares the next day's Daily Events during the nightly planning process.
+Daily Events should represent the expected progression of the day.
 
-The planning process considers:
+Events with meaningful scheduled times are primarily ordered
+chronologically.
 
-- User Context
-- Recurring routines
-- Temporary context
-- One-time context
-- Existing plans
-- User preferences
-- Time constraints
-- Previous-day information
-- Current changes
-- The next day's date and circumstances
+Events without a specific time should normally appear after scheduled
+events when Butler presents the whole day verbally.
 
-The result is a concrete plan for tomorrow.
+However, presentation order may differ from storage order when doing so
+makes the Morning Brief or another interaction more natural.
 
-```text
-User Context
-     +
-Tomorrow's known plans
-     +
-Relevant previous-day information
-     ↓
-   Butler
-     ↓
-Tomorrow's Daily Events
+The purpose is not merely sorting events.
+
+The purpose is helping the user understand:
+
+> **What happens next, what matters later, and what must not be
+> forgotten.**
+
+------------------------------------------------------------------------
+
+## Three Primary Butler Interactions
+
+The client provides three persistent ways to interact with the same Butler:
+
+``` text
+Order Butler
+Talk to Butler
+Text Butler
 ```
 
-Daily Events are prepared as a coherent day rather than being independently generated by feature-specific systems.
+These modes describe **how the user wants to interact**, not an absolute interpretation of what the request means. A user may press the "wrong" button; Butler should understand the actual request rather than mechanically treating the selected mode as semantic truth.
 
----
-
-## 7. Daily Planning Cycle
-
-Butler continuously maintains the user's day.
-
-### Night — Prepare Tomorrow
-
-Before the user goes to sleep, Butler:
-
-1. Understands what happened today.
-2. Summarizes the day.
-3. Uses relevant information from today.
-4. Considers the user's current User Context.
-5. Considers tomorrow's known plans.
-6. Applies relevant recurring patterns.
-7. Generates tomorrow's Daily Events.
-8. Prepares tomorrow's Morning Brief.
-
-### Morning — Introduce the Day
-
-At the user's configured wake-up time, Butler speaks the Morning Brief.
-
-The user learns what is important and what the day looks like.
-
-### During the Day — Execute and Adapt
-
-The client executes the prepared Daily Events.
-
-The user can tell Butler what has happened or what has changed.
-
-Butler updates the current state and adjusts the remaining Daily Events when necessary.
-
-### Evening — Summarize and Prepare
-
-Before bedtime, Butler summarizes the day and uses the available information to prepare tomorrow.
-
-```text
-                 NIGHT
-                   │
-                   ▼
-          Prepare tomorrow
-                   │
-                   ▼
-                MORNING
-                   │
-                   ▼
-            Morning Brief
-                   │
-                   ▼
-                  DAY
-                   │
-        ┌──────────┴──────────┐
-        │                     │
-   Daily Events          User updates
-        │                     │
-        └──────────┬──────────┘
-                   ▼
-          Adjust remaining day
-                   │
-                   ▼
-                EVENING
-                   │
-                   ▼
-          Good Night Summary
-                   │
-                   ▼
-          Prepare tomorrow
+``` text
+Order → Handle this for me; I may leave immediately.
+Talk  → I am here and want an immediate response.
+Text  → I want to review exactly what Butler receives before sending.
 ```
 
----
+A request from any mode may change state, ask for information, or require clarification.
 
-## 8. Morning Brief
+------------------------------------------------------------------------
 
-The Morning Brief is a Daily Event that occurs at the beginning of the day.
+## Order Butler
 
-Butler speaks aloud to wake the user and introduce the day.
+**Order Butler** is optimized for requests the user wants Butler to handle without requiring them to remain in an active conversation.
 
-It may include:
-
-- Greeting
-- Useful morning guidance
-- Important events
-- Morning activities
-- Meetings
-- Reminders
-- Preparation information
-- Other relevant information from today's Daily Events
-
-Example:
-
-> "Good morning. It's time to get up. You have your morning workout at 6:30, breakfast at 7:45, and work starts at 8:45. You also have a meeting with John at 3 PM. Don't forget to stop by the supermarket on your way home."
-
-The Morning Brief is generated from the prepared Daily Events and relevant User Context.
-
-The client performs speech playback locally.
-
----
-
-## 9. During the Day
-
-Butler helps the user through the day using the prepared Daily Events.
+The user may issue the request, leave the phone, and inspect the result later.
 
 Examples:
 
-> "Your workout is coming up in 30 minutes."
+> "My meeting moved from 3 PM to 4 PM."
 
-> "Nice work finishing your morning workout. It's time to get ready for your shower."
+> "Move my workout to this evening."
 
-> "Don't forget to stop by the supermarket for groceries."
+> "Remind me to buy milk after work."
 
-Butler should provide useful guidance without becoming intrusive.
+Although Order strongly suggests action-oriented interaction, Butler interprets the actual request. An Order may therefore result in a state change, an informational response, or clarification.
 
-The user can also proactively talk to Butler at any time.
+``` text
+User request
+     ↓
+Butler understands actual meaning
+     ↓
+Execute / answer / clarify
+     ↓
+Persist changes when required
+     ↓
+Produce result
+     ↓
+Compact or later-visible presentation
+```
 
----
+A completed command may produce a temporary overlay:
 
-## 10. User Feedback and Reality Tracking
+``` text
+Done.
+Your meeting has been moved to 4:00 PM.
 
-The original plan may differ from reality.
+[Listen]
+```
 
-The user should be encouraged to tell Butler what has actually happened.
+The user does not need to remain waiting when Butler can complete the interaction without them. Client configuration may control overlay duration, automatic speech, optional playback, and notification behavior.
+
+------------------------------------------------------------------------
+
+## Talk to Butler
+
+**Talk to Butler** is optimized for situations where the user is actively present and expects an immediate response.
+
+> **Speak → wait → receive an immediate answer or confirmation.**
 
 Examples:
 
-- "I got it."
-- "I arrived at the office."
-- "I finished my workout."
-- "I skipped breakfast."
-- "I'm still working."
-- "I'm going home now."
-- "I can't do this today."
-- "Move this to tomorrow."
+> "What is my meeting today about?"
 
-Butler uses these updates to maintain an accurate understanding of the current day.
+> "What do I have after work?"
 
-When reality changes, Butler may adjust the remaining Daily Events.
+> "Move my workout to seven tonight."
 
-```text
-Prepared Daily Events
-        ↓
-What actually happened
-        ↓
-User feedback
-        ↓
-Butler updates current state
-        ↓
-Adjust remaining Daily Events
-        ↓
-Continue the day
+> "Do I have enough time for lunch before the meeting?"
+
+Talk is not restricted to informational questions. It may also change Daily Events, User Context, or other Butler-managed state when that is what the user actually requests.
+
+When clarification is required, Butler continues the interaction naturally. The client should prioritize low-latency response delivery and may speak the response immediately according to client speech behavior.
+
+------------------------------------------------------------------------
+
+## Text Butler
+
+**Text Butler** is optimized for requests where the user wants precise control over what Butler receives.
+
+``` text
+User speaks
+    ↓
+Local speech recognition
+    ↓
+Recognized text appears
+    ↓
+User reviews / edits
+    ↓
+Explicit send
+    ↓
+Butler interprets actual request
 ```
 
-Information learned from the day may also influence future User Context and future planning when appropriate.
+Text Butler is useful when accuracy matters, speech recognition may be uncertain, the environment is noisy, the request is long or detailed, or a small wording mistake could change the intended action.
 
----
+After sending, a Text request may result in a state change, an informational response, or clarification. Response presentation follows configured client behavior rather than being determined solely by the Text button.
 
-## 11. Good Night Summary
+------------------------------------------------------------------------
 
-Before the user's expected bedtime, Butler generates a Good Night Summary.
+## One Butler, Different Interaction Expectations
 
-It may summarize:
+Order, Talk, and Text are not separate assistants and are not absolute backend intent routes.
 
-- Completed events
-- Missed events
-- Changed events
-- Important accomplishments
-- Relevant observations
-- Remaining items
-- Useful information for tomorrow
+``` text
+                    USER
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+       ORDER        TALK         TEXT
+          │           │           │
+          └───────────┼───────────┘
+                      ▼
+                    BUTLER
+                      │
+              Understand request
+                      │
+          ┌───────────┼───────────┐
+          ▼           ▼           ▼
+        Change       Answer      Clarify
+          │           │           │
+          └───────────┼───────────┘
+                      ▼
+             Persist when needed
+                      +
+               Produce response
+```
 
-Butler speaks the summary aloud and closes the day naturally.
+The selected mode expresses the interaction experience the user expects. The meaning of the request determines what Butler actually does.
+
+Persistence and response are independent outcomes: an interaction may persist state, produce a response, or do both.
+
+------------------------------------------------------------------------
+
+## Daytime Reminders
+
+Butler helps execute the prepared day through local notifications and
+reminders.
+
+Examples:
+
+> "Your meeting starts in 15 minutes."
+
+> "Time to leave for work."
+
+> "Don't forget to buy groceries on the way home."
+
+Important reminders should behave similarly to calendar notifications.
+
+By default, daytime reminders **do not speak aloud**.
+
+This is intentional because the user may be:
+
+-   working
+-   in a meeting
+-   commuting
+-   in a public place
+-   somewhere speech would be disruptive
+
+The user may configure client-side speech behavior.
+
+A reminder may provide actions such as:
+
+``` text
+Dismiss
+Done
+Delay
+Listen
+```
+
+The exact client actions may evolve.
+
+------------------------------------------------------------------------
+
+## Proactive Speech
+
+Speech should be used intentionally.
+
+Butler may proactively speak when speech is appropriate, such as:
+
+-   Morning wake-up
+-   Morning Brief
+-   User-requested playback
+-   Configured personal reminders
+-   Good Night Summary
+
+Speech should not automatically accompany every notification.
+
+The user controls client-side speech preferences.
+
+The default behavior should minimize interruption.
+
+------------------------------------------------------------------------
+
+## Reality Tracking
+
+The prepared Daily Plan represents Butler's expectation for the day.
+
+As the day progresses, its Daily Events are updated to reflect what actually happened. The Daily Plan therefore becomes the living record of the actual day.
+
+Reality may differ from the original plan.
+
+The user can tell Butler what actually happened:
+
+> "I finished my workout."
+
+> "I'm still at work."
+
+> "The meeting shifted."
+
+> "I'm going home now."
+
+> "I skipped lunch."
+
+> "I can't do this today."
+
+Butler updates the current state and may adjust remaining Daily Events.
+
+``` text
+Prepared Day
+     ↓
+Reality changes
+     ↓
+User informs Butler
+     ↓
+Current state updated
+     ↓
+Remaining events adjusted
+     ↓
+Client synchronized
+```
+
+Butler should preserve useful historical information without treating
+every temporary change as permanent User Context.
+
+------------------------------------------------------------------------
+
+## Direct Event Management
+
+The user does not have to communicate with Butler to modify every Daily
+Event.
+
+The client allows direct event management.
+
+The user can:
+
+-   create an event
+-   edit an event
+-   change its time
+-   change its duration
+-   mark it complete
+-   delay it
+-   disable it
+-   cancel it
+-   delete it
+
+These operations should feel immediate.
+
+The client applies the local change first whenever safe.
+
+``` text
+User changes event
+      ↓
+Local state updated
+      ↓
+UI updates immediately
+      ↓
+Synchronization queued
+      ↓
+Server synchronized
+```
+
+When connectivity is available, synchronization should happen
+immediately.
+
+After synchronization or successful local acceptance, the client may
+show a temporary confirmation overlay.
 
 Example:
 
-> "You've had a productive day. You finished your workout, made it through your workday, and picked up the groceries. Tomorrow is another workday, so I'll prepare your usual morning routine. Good night."
+``` text
+Done.
+Workout moved to 7:00 PM.
+```
 
-The summary is also an input to the next planning cycle.
+This preserves an important product principle:
 
----
+> **Butler assists the user, but the user remains fully capable of
+> controlling their own day.**
 
-## 12. Clarification and Confirmation
+------------------------------------------------------------------------
 
-Butler should be helpful without silently making consequential decisions on behalf of the user.
+## Offline-First Execution
 
-When important information is missing or the user's intention is ambiguous, Butler asks for clarification.
+Butler is designed around offline-first daily execution.
 
-Example:
+Internet connectivity is required for server-side AI reasoning.
 
-> "I want to exercise tomorrow."
+It should **not** be required for executing an already prepared day.
 
-Butler:
+Once Daily Events have synchronized to the client, the client should be
+able to continue:
 
-> "Sure. What time would you like to exercise?"
+-   showing the Daily Event list
+-   triggering alarms
+-   triggering notifications
+-   playing prepared speech
+-   performing text-to-speech
+-   recording completed events
+-   recording skipped events
+-   editing events
+-   creating local events
+-   deleting events
+-   queuing Butler requests
+-   queuing synchronization operations
 
-When a change is significant, Butler should make the intended interpretation clear before applying it.
+When Internet access returns:
 
-The exact confirmation policy may evolve as Butler becomes more capable.
-
-The core principle remains:
-
-> **Do not silently invent important information or make consequential decisions for the user.**
-
----
-
-## 13. Backend and Client Boundary
-
-### Backend
-
-The backend owns intelligence and planning.
-
-It is responsible for:
-
-- Butler reasoning
-- User Context extraction and management
-- Daily Event generation
-- Daily planning
-- Conflict detection
-- Clarification
-- Planning responses
-- Morning Brief generation
-- Good Night Summary generation
-- Synchronization
-
-### Client
-
-The client owns local execution.
-
-It is responsible for:
-
-- User interface
-- Voice input
-- Speech-to-text
-- Local storage
-- Notifications
-- Alarms
-- Text-to-speech
-- Speech playback
-- Offline execution
-- Local event execution
-- Synchronization
-
-The client does not perform core planning or reasoning.
-
----
-
-## 14. Offline Principle
-
-Once the client has received the information required to execute the current Daily Plan, passive daily interactions should continue working without Internet connectivity.
-
-The client should be able to:
-
-- Trigger scheduled notifications
-- Play prepared speech
-- Execute local event interactions
-- Record user actions
-- Queue user requests
-
-When connectivity returns, queued information can be sent to Butler for processing.
-
-Internet connectivity is required for Butler's AI reasoning, but should not be required for basic execution of an already prepared day.
-
----
-
-## 15. Simplicity Principles
-
-The user should not need to understand the internal system.
-
-The user should not need to think about:
-
-- APIs
-- Schedule objects
-- Reminder objects
-- Planner nodes
-- Workflow graphs
-- Database entities
-- AI tools
-
-The user talks to Butler.
-
-Butler handles the complexity internally.
-
-The architecture should follow the same principle:
-
-> **Simple external model, well-structured internal implementation.**
-
----
-
-## 16. Product Scope
-
-The initial product focuses on:
-
-- One Butler interaction
-- User Context
-- Recurring routines as User Context
-- Daily Events
-- Nightly Daily Planning
-- Morning Brief
-- Daytime guidance and reminders
-- User progress / reality updates
-- Evening Good Night Summary
-- Tomorrow planning
-- Voice and text interaction
-- Offline execution
-- Synchronization
-
----
-
-## 17. Non-Goals
-
-The initial product is not intended to become:
-
-- A general-purpose chatbot
-- A search engine
-- A social platform
-- An entertainment assistant
-- A smart-home controller
-- A replacement for user decision-making
-
-Features should support the core purpose of helping users manage and execute daily life.
-
----
-
-## 18. Product Principles
-
-Future decisions should reinforce these principles:
-
-- Butler is one person from the user's perspective.
-- Natural language is the primary interaction model.
-- One primary conversational API is the user's entry point.
-- User Context describes the user's life and supports future planning.
-- Routines are a type of User Context.
-- Daily Events describe concrete occurrences on a specific day.
-- Daily Events are generated from User Context and current circumstances.
-- The next day is prepared during the nightly planning cycle.
-- The Morning Brief introduces the prepared day.
-- Butler adapts the remaining day when reality changes.
-- Users are encouraged to tell Butler what has happened.
-- The Good Night Summary closes the day and supports tomorrow's planning.
-- The backend owns reasoning and planning.
-- The client owns local execution.
-- Passive execution should work offline.
-- Butler should reduce cognitive load.
-- Simplicity is preferred over unnecessary feature richness.
-- Butler assists the user without taking control.
-
----
-
-## 19. Source of Truth
-
-`PROJECT_OVERVIEW.md` is the **source of truth for product behavior and intended system behavior**.
-
-It defines:
-
-- Product purpose
-- Product behavior
-- Core concepts
-- User experience
-- Workflows
-- Product boundaries
-- Core rules
-- Product direction
-
-Technical documents such as Architecture, Backend, Database, and Engineering are derived from this document.
-
-They explain **how the system implements the product**, not what the product fundamentally is.
-
-When the product changes:
-
-```text
-Product idea / user feedback
+``` text
+Queued local changes
+        +
+Queued user interactions
         ↓
-PROJECT_OVERVIEW.md
-        ↓
-Review impact
-        ↓
-Architecture
+Synchronization
         ↓
 Backend
         ↓
-Database
+Conflict resolution / Butler processing
         ↓
-Implementation
+Updated state
+        ↓
+Client
 ```
 
-The coding agent should use the approved technical documents together with this source of truth.
+Offline operation is not an exceptional mode.
 
-If the existing code conflicts with the project specification, the conflict must be identified and reviewed rather than silently accepting the existing implementation as correct.
+It is part of the normal architecture.
 
----
+------------------------------------------------------------------------
 
-## 20. Current Product Model
+## Synchronization Principle
 
-The simplest mental model of Butler is:
+Changes should synchronize as soon as practical.
 
-```text
+When online:
+
+> **Local action → immediate synchronization.**
+
+When offline:
+
+> **Local action → queue → synchronize when connectivity returns.**
+
+The user should not need to manually trigger synchronization.
+
+Synchronization must account for changes originating from both:
+
+-   Butler/backend
+-   user/client
+
+The system must maintain explicit ownership and conflict rules while
+preserving a simple user experience.
+
+------------------------------------------------------------------------
+
+## Main Client Experience
+
+The mobile application intentionally uses a simple primary interface.
+
+The main screen contains one unified view of the user's current day.
+
+Conceptually:
+
+``` text
+┌──────────────────────────────────────┐
+│ Today                                │
+│                                      │
+│ 06:00  Wake up              Done     │
+│ 06:05  Morning Brief                 │
+│ 06:30  Workout                       │
+│ 08:15  Leave for work                │
+│ 15:00  Meeting                       │
+│ ...                                  │
+│                                      │
+│ Upcoming                             │
+│ • Working overtime this week         │
+│ • Dentist tomorrow at 10 AM          │
+│                                      │
+│                                      │
+│ [ Order ]   [ Talk ]   [ Text ]      │
+└──────────────────────────────────────┘
+```
+
+The exact visual design may evolve.
+
+The conceptual requirements remain:
+
+-   one primary screen
+-   today's Daily Events are the main content
+-   past/completed events become visually secondary
+-   upcoming events remain prominent
+-   relevant future context may be previewed
+-   events can be expanded and edited
+-   the three Butler actions remain easily accessible
+-   Butler responses may appear as temporary overlays
+-   normal interaction should require minimal navigation
+
+------------------------------------------------------------------------
+
+## Upcoming Information
+
+The main screen may show information beyond today's concrete Daily
+Events when it helps the user understand upcoming circumstances.
+
+Examples:
+
+-   "Working overtime this week"
+-   "Flight next Monday"
+-   "Dentist tomorrow at 10 AM"
+-   "English class for the next three evenings"
+
+This information may originate from User Context or future plans.
+
+It should not be confused with today's Daily Event list.
+
+Its purpose is awareness, not duplication.
+
+------------------------------------------------------------------------
+
+## Good Night Summary
+
+Before the user's expected bedtime, Butler closes the day.
+
+Butler prepares and speaks a Good Night Summary.
+
+It may include:
+
+-   completed activities
+-   missed activities
+-   changed plans
+-   important accomplishments
+-   remaining concerns
+-   useful observations
+-   tomorrow's important plans
+
+Example:
+
+> "You're almost done for today. You finished your workout and completed
+> the workday, although the afternoon meeting moved later than planned.
+>
+> Tomorrow is another workday and you're still working overtime this
+> week. I'll prepare that into tomorrow's plan.
+>
+> Try to get to sleep on time tonight so tomorrow morning is easier.
+> Good night."
+
+The summary should be supportive without pretending to be a medical or
+behavioral authority.
+
+------------------------------------------------------------------------
+
+## Nightly Planning
+
+The nightly planning process prepares tomorrow.
+
+Inputs may include:
+
+-   User Context
+-   recurring patterns
+-   temporary context
+-   one-time context
+-   tomorrow's known plans
+-   today's final Daily Plan
+-   actual Daily Event states
+-   changes made during the day
+-   relevant conversation and user feedback
+-   current circumstances
+
+The output is tomorrow's prepared Daily Events.
+
+``` text
+Today's Reality
+      +
+User Context
+      +
+Tomorrow's Known Plans
+      ↓
+Nightly Butler Planning
+      ↓
+Tomorrow's Daily Events
+      +
+Tomorrow's Morning Brief
+```
+
+Tomorrow should therefore begin from an already prepared plan rather
+than requiring real-time AI generation at wake-up.
+
+This supports reliability and offline execution.
+
+------------------------------------------------------------------------
+
+## Morning Planning and Offline Reliability
+
+The Morning Brief should normally be prepared during the previous
+planning cycle.
+
+This allows the client to already possess the information required for:
+
+-   wake-up speech
+-   Morning Brief
+-   early reminders
+-   morning event execution
+
+before the morning begins.
+
+Therefore, loss of Internet connectivity overnight or during the morning
+should not prevent Butler from introducing and executing the prepared
+day.
+
+------------------------------------------------------------------------
+
+## Backend and Client Boundary
+
+### Backend Owns
+
+The backend owns intelligence and authoritative planning state.
+
+Responsibilities include:
+
+-   Butler reasoning
+-   User Context management
+-   interpretation of natural-language requests
+-   Daily Event generation
+-   nightly planning
+-   replanning
+-   clarification
+-   conflict detection
+-   Morning Brief preparation
+-   Good Night Summary preparation
+-   conversational answers
+-   synchronization coordination
+-   server-side history
+
+### Client Owns
+
+The mobile client owns interaction and local execution.
+
+Responsibilities include:
+
+-   main user interface
+-   Daily Event display
+-   direct event editing
+-   speech recognition
+-   text editing before send
+-   text-to-speech
+-   local speech playback
+-   alarms
+-   notifications
+-   response overlays
+-   local database
+-   offline event execution
+-   queued changes
+-   synchronization
+-   client-side speech preferences
+
+The client should not perform core AI planning.
+
+The backend should not be required for basic execution of already
+synchronized Daily Events.
+
+------------------------------------------------------------------------
+
+## Response Presentation
+
+Response presentation follows the interaction experience rather than assuming that a button determines the semantic meaning of the request.
+
+An interaction can independently produce:
+
+``` text
+Domain persistence
+Conversation persistence
+Response
+```
+
+A command may update a Daily Event and return a confirmation. A question may leave domain state unchanged while still returning an answer and recording conversation history.
+
+### Order Butler
+
+Typical presentation:
+
+- compact confirmation or result
+- temporary overlay
+- later-visible result when the user has left
+- optional Listen action
+- clarification when required
+
+### Talk to Butler
+
+Typical presentation:
+
+- immediate conversational response
+- low-latency delivery
+- spoken response according to client behavior
+- immediate confirmation even when the request changed state
+
+### Text Butler
+
+Text primarily controls input accuracy. After explicit send, Butler processes the actual request; it may change state, answer a question, or require clarification. Response presentation follows configured client behavior.
+
+### Reminder
+
+Typical presentation:
+
+- local notification
+- silent by default
+- optional Listen action
+
+### Morning / Night
+
+Typical presentation:
+
+- proactive local speech
+- corresponding Daily Event visible in the Daily Event list
+
+The backend determines what happened and what Butler should communicate.
+
+The client determines how that result is rendered, spoken, overlaid, or notified.
+
+------------------------------------------------------------------------
+
+## Clarification and Safety of Decisions
+
+Butler should not silently invent important information.
+
+When required information is missing, Butler asks.
+
+Example:
+
+> User: "Move my meeting later."
+
+Butler may respond:
+
+> "Sure. What time should I move it to?"
+
+If Butler can safely infer a minor detail, it may do so according to
+established product rules.
+
+Consequential or ambiguous changes should remain explicit.
+
+The core rule is:
+
+> **Assist aggressively with execution, but do not take ownership of
+> important user decisions.**
+
+------------------------------------------------------------------------
+
+## Simplicity Principle
+
+The product should remain simple from the user's perspective.
+
+The user sees:
+
+``` text
+One Butler
+One main screen
+One day
+Three ways to interact
+```
+
+They should not have to understand:
+
+-   planner workflows
+-   memory systems
+-   API endpoints
+-   synchronization engines
+-   context categories
+-   AI providers
+-   database schemas
+-   event-generation pipelines
+
+Internal complexity exists to make the external experience simpler.
+
+------------------------------------------------------------------------
+
+## Initial Product Scope
+
+The initial product includes:
+
+-   One Butler
+-   One primary mobile screen
+-   User Context
+-   Recurring context
+-   Temporary context
+-   One-time context
+-   Daily Events
+-   Direct Daily Event management
+-   Nightly planning
+-   Prepared Morning Brief
+-   Morning wake-up speech
+-   Daytime reminders
+-   Order Butler
+-   Talk to Butler
+-   Text Butler
+-   Reality tracking
+-   Dynamic replanning
+-   Good Night Summary
+-   Sleep-time encouragement
+-   Offline-first event execution
+-   Local STT
+-   Local TTS
+-   Local notifications and alarms
+-   Automatic synchronization
+-   Temporary Butler response overlays
+
+------------------------------------------------------------------------
+
+## Non-Goals
+
+The initial Butler is not intended to become:
+
+-   a general-purpose chatbot
+-   a general search engine
+-   a social network
+-   an entertainment assistant
+-   a smart-home platform
+-   a replacement for calendar software in every use case
+-   a replacement for the user's judgment
+-   a system that requires permanent Internet connectivity
+
+New features should strengthen daily-life planning and execution rather
+than expand the product without a clear reason.
+
+------------------------------------------------------------------------
+
+## Product Principles
+
+Future product decisions should preserve these principles:
+
+-   Butler feels like one person.
+-   Natural interaction remains primary.
+-   The user's day is represented by Daily Events.
+-   User Context describes the user's life, not today's concrete
+    schedule.
+-   Butler prepares tomorrow before tomorrow begins.
+-   Morning speech introduces the prepared day.
+-   Timed events are presented chronologically when appropriate.
+-   Unscheduled information remains visible without distorting the
+    timeline.
+-   Daytime reminders are silent by default.
+-   Speech is intentional rather than constant.
+-   Order Butler prioritizes unattended handling and compact or later-visible results.
+-   Talk to Butler prioritizes immediate conversational response.
+-   Text Butler prioritizes request accuracy and review before send.
+-   Interaction mode expresses user expectation, not absolute semantic intent.
+-   Butler interprets the actual request even when the selected interaction mode is imperfect.
+-   Persistence and response are independent outcomes of an interaction.
+-   Direct manual event editing remains available.
+-   User actions should feel immediate.
+-   Synchronization should happen automatically.
+-   Offline execution is a normal requirement.
+-   Butler adapts when reality differs from the plan.
+-   Good Night Summary closes the daily cycle.
+-   The backend owns intelligence.
+-   The client owns execution.
+-   The user remains in control.
+-   The product minimizes cognitive load.
+-   Simplicity is preferred over unnecessary feature richness.
+
+------------------------------------------------------------------------
+
+## Source of Truth
+
+`PROJECT.md` is the source of truth for Personal Butler's:
+
+-   purpose
+-   behavior
+-   user experience
+-   core concepts
+-   workflows
+-   product boundaries
+-   interaction model
+-   product principles
+
+Technical documents derive from this document.
+
+``` text
+PROJECT.md                 ENGINEERING.md
+Product behavior           Engineering practice
+      │                           │
+      └──────────────┬────────────┘
+                     ↓
+          backend/ARCHITECTURE.md
+          backend/WORKFLOW.md
+          client/ARCHITECTURE.md
+          client/WORKFLOW.md
+          client/ui/...
+                     ↓
+               Implementation
+```
+
+If implementation conflicts with this document, the conflict should be
+identified explicitly rather than treating the existing implementation
+as correct.
+
+------------------------------------------------------------------------
+
+## Current Product Mental Model
+
+``` text
                          USER
                            │
-                           │ natural conversation
+           ┌───────────────┼───────────────┐
+           │               │               │
+         ORDER            TALK            TEXT
+           │               │               │
+           └───────────────┼───────────────┘
                            ▼
-                        BUTLER
+                         BUTLER
+                           │
+                 Understand user's life
                            │
                            ▼
-                    USER CONTEXT
+                     USER CONTEXT
                            │
-              ┌────────────┼────────────┐
-              │            │            │
-          References    Routines    Temporary /
-                                   One-time Context
-              │            │            │
-              └────────────┼────────────┘
                            ▼
                     DAILY PLANNING
                            │
                            ▼
                      DAILY EVENTS
                            │
-              ┌────────────┼────────────┐
-              ▼            ▼            ▼
-          MORNING        DAYTIME      EVENING
-           BRIEF        GUIDANCE       SUMMARY
-              │            │            │
-              └────────────┼────────────┘
+             ┌─────────────┼─────────────┐
+             │             │             │
+           MORNING         DAY          NIGHT
+             │             │             │
+        Wake + Brief   Remind / Adapt   Summary
+             │             │             │
+             └─────────────┼─────────────┘
                            ▼
-                         CLIENT
+                         MOBILE
                            │
-                    Local execution
+                  Offline-first execution
+                           │
+          ┌────────────────┼────────────────┐
+          │                │                │
+      Notifications     Speech        Event editing
+          │                │                │
+          └────────────────┼────────────────┘
+                           ▼
+                      USER REALITY
                            │
                            ▼
-                     User feedback
+                   Synchronize changes
                            │
-                           └──────► Butler
+                           └──────────────► Butler
 ```
 
-> **The user talks to Butler.  
-> Butler understands the user's life.  
-> User Context captures what matters.  
-> Butler prepares the day's Daily Events.  
-> The client helps execute them.  
-> The user tells Butler what actually happened.  
-> Butler adapts the remaining day, summarizes the day, and prepares tomorrow.**
+> **Butler prepares the day before it begins, introduces it in the
+> morning, quietly helps the user execute it, responds instantly when
+> needed, adapts when reality changes, closes the day at night, and
+> prepares tomorrow.**
