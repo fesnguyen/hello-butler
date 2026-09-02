@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -37,7 +37,8 @@ The backend owns:
 - synchronization with clients
 
 The client remains responsible for local execution, local notifications, speech,
-offline state, and queued synchronization.
+offline state, queued synchronization, and deciding how text responses are
+presented or spoken.
 
 ---
 
@@ -46,26 +47,26 @@ offline state, and queued synchronization.
 ```text
 Runtime / Tooling
 ├── Python 3.12+
-├── uv                    Dependency and environment management
-├── Ruff                  Linting and formatting
-└── Pyright               Static type checking
+├── uv
+├── Ruff
+└── Pyright
 
 Backend
-├── FastAPI               HTTP API
-├── Pydantic v2           Validation and API contracts
-├── SQLAlchemy 2.x Async  ORM and persistence
-└── Alembic               Database migrations
+├── FastAPI
+├── Pydantic v2
+├── SQLAlchemy 2.x Async
+└── Alembic
 
 Database
-└── PostgreSQL 16+        Primary database
+└── PostgreSQL 16+
 
 AI
-├── LangGraph             Multi-step Butler workflows where justified
-└── OpenAI Responses API  Primary AI provider
+├── LangGraph
+└── OpenAI Responses API
 
 Infrastructure
-├── Docker                Reproducible runtime and deployment
-└── Docker Compose        Local infrastructure
+├── Docker
+└── Docker Compose
 ```
 
 Do not add infrastructure until an actual requirement justifies it.
@@ -150,14 +151,7 @@ hello-butler/
 └── compose.yaml
 ```
 
-`pyproject.toml` defines the Python project and dependencies.
-
-`uv.lock` locks exact dependency versions and is committed to source control.
-
-`compose.yaml` lives at repository root because it manages project-level
-infrastructure rather than backend source code.
-
-The structure may evolve as actual implementation pressure appears.
+The structure may evolve as implementation pressure appears.
 
 Do not create additional layers or modules without a concrete reason.
 
@@ -175,13 +169,9 @@ Host
     └── PostgreSQL
 ```
 
-During normal backend development, run FastAPI directly through `uv` for fast
-iteration.
+During normal backend development, run FastAPI directly through `uv`.
 
 Docker Compose runs infrastructure dependencies such as PostgreSQL.
-
-The backend Docker image provides a reproducible runtime for deployment and
-containerized execution.
 
 Database migrations are executed explicitly with Alembic and are not coupled to
 application startup.
@@ -190,34 +180,46 @@ Typical development flow:
 
 ```text
 docker compose up -d
-        ↓
 uv sync
-        ↓
 uv run alembic upgrade head
-        ↓
 uv run fastapi dev app/main.py
 ```
-
-Docker is a deployment and infrastructure boundary, not an application
-architecture layer.
 
 ---
 
 # Primary API Boundaries
 
-The backend exposes separate technical boundaries while preserving one Butler
-from the user's perspective.
-
 ```text
-/api/auth/...        Authentication operations
-/api/butler/talk     Main Butler interaction
-/api/sync/...        Client/server synchronization
+/api/auth/...
+/api/butler/talk
+/api/sync/...
 ```
 
-`/api/butler/talk` handles Order Butler, Talk to Butler, and Text Butler.
+`/api/butler/talk` is the single Butler conversational endpoint.
 
-The interaction mode is part of the request contract rather than a separate
-service.
+The backend recognizes only two interaction expectations:
+
+```text
+order
+talk
+```
+
+`Text` is not a backend interaction mode.
+
+On the client, Text is an input-preparation path:
+
+```text
+speech
+  ↓
+STT
+  ↓
+editable text
+  ↓
+send as order | talk
+```
+
+By the time a request reaches the backend, it has a final message and one of the
+two interaction modes.
 
 Example:
 
@@ -227,6 +229,54 @@ Example:
   "message": "Move my meeting to 4 PM."
 }
 ```
+
+---
+
+# Response Contract
+
+The backend returns Butler responses as **textual semantic content**.
+
+The backend decides:
+
+```text
+What happened?
+What should Butler say?
+```
+
+The client decides:
+
+```text
+How should the user receive it?
+```
+
+The backend should not decide whether a normal Butler response is:
+
+- spoken aloud
+- played in call-style presentation
+- shown only as text
+- acknowledged silently
+
+Those are client presentation decisions based on user preference and current UI
+state.
+
+Conceptually:
+
+```text
+Backend
+→ response text + semantic metadata
+
+Client
+→ text overlay
+→ optional Speak
+→ optional Call-style receive
+→ dismiss / acknowledge
+```
+
+For ordinary Butler responses, text is the canonical delivery payload.
+
+Morning Brief and Good Night Summary are still generated as content by the
+backend, while automatic speech behavior remains a client-side presentation
+choice/configuration.
 
 ---
 
@@ -241,35 +291,20 @@ Every authenticated request operates within the authenticated user's own data.
 
 Never trust a client-provided `user_id` as proof of identity.
 
-The authenticated identity is used when reading or modifying User Context,
-conversation history, Daily Plans, Daily Events, device state, and sync state.
-
-```text
-Credentials / provider identity
-            ↓
-       Authentication
-            ↓
-     Authenticated User
-            ↓
-       User-owned data
-```
-
 ---
 
 # Daily Plan and Daily Event Model
 
 `DailyPlan` represents one day.
 
-It contains the collection of `DailyEvent` entities expected or recorded for that
-day.
-
 ```text
 DailyPlan
 └── DailyEvent[]
 ```
 
-`DailyEvent` remains a separate domain entity because events can serve different
-purposes and require different configuration.
+`DailyEvent` remains flexible enough to support different purposes.
+
+Examples:
 
 ```text
 Morning Brief
@@ -281,10 +316,6 @@ Meeting Reminder
 ├── notification behavior
 └── speak_aloud = false
 
-Grocery Reminder
-├── optional time
-└── configurable reminder behavior
-
 Good Night Summary
 ├── long content
 └── speak_aloud = true
@@ -293,7 +324,7 @@ Good Night Summary
 A single flexible `DailyEvent` model should support these purposes.
 
 Do not create separate domain modules or database tables for each event type
-unless a concrete requirement later justifies it.
+without a concrete requirement.
 
 Event categories remain string values.
 
@@ -315,7 +346,7 @@ The AI layer may support intent interpretation, planning, contextual answering,
 Morning Brief generation, Good Night Summary generation, and structured decision
 support.
 
-Deterministic operations should remain normal code, including authentication,
+Deterministic operations remain normal code, including authentication,
 persistence, version checking, direct event CRUD, and sync conflict detection.
 
 AI output must be validated before important state changes are applied.
@@ -326,11 +357,11 @@ AI output must be validated before important state changes are applied.
 
 PostgreSQL is the authoritative backend database.
 
-SQLAlchemy async is used for runtime database access.
+SQLAlchemy async is used for runtime access.
 
 Alembic manages schema migration independently from application startup.
 
-Persistence is accessed through repositories or focused persistence abstractions.
+Persistence is accessed through repositories or focused abstractions.
 
 The database stores users, authentication data, User Context, conversation
 history, Daily Plans, Daily Events, devices, and synchronization metadata.
@@ -338,29 +369,21 @@ history, Daily Plans, Daily Events, devices, and synchronization metadata.
 Types such as event type, context type, interaction mode, status, role, and
 platform are stored as strings.
 
-Do not create lookup tables solely to represent fixed string categories unless a
-real relational requirement appears later.
-
-`DailyPlan` and `DailyEvent` remain separate relational entities:
+`interaction_mode` initially allows only:
 
 ```text
-daily_plans
-    1
-    │
-    └──── *
-       daily_events
+order
+talk
 ```
 
-This allows individual events to be edited, completed, delayed, synchronized,
-versioned, or deleted without replacing the entire day.
+Do not create lookup tables solely to represent fixed string categories unless a
+real relational requirement appears later.
 
 ---
 
 # Synchronization Architecture
 
 The client is local-first.
-
-A client change should not wait for the backend before updating the UI.
 
 ```text
 Client action
@@ -380,9 +403,7 @@ PostgreSQL
 Return server state
 ```
 
-Syncable entities require enough metadata to detect stale updates.
-
-For Daily Events, the initial mechanism is:
+For Daily Events, the initial optimistic concurrency mechanism is:
 
 ```text
 version INTEGER
@@ -390,35 +411,33 @@ updated_at
 deleted_at nullable
 ```
 
-A simple integer version is sufficient for initial optimistic concurrency.
-
 No event-sourcing system is required.
 
 ---
 
 # Data Ownership
 
-Backend is authoritative for authenticated user identity, User Context, server
+Backend is authoritative for authenticated identity, User Context, server
 conversation history, Daily Plans, Daily Events after synchronization, generated
 Butler content, and server-side versions.
 
-Client owns local execution state before synchronization, device-specific state,
-local notification scheduling, local queues, and temporary UI state.
-
-When the same entity exists on both sides, synchronization rules determine how
-the states converge.
+Client owns immediate local state before synchronization, device-specific
+execution state, notification/alarm scheduling, local queues, temporary UI state,
+and response presentation behavior.
 
 ---
 
 # Background Work
 
-Backend background work may be used for nightly planning, preparing tomorrow's
-Daily Plan, preparing Morning Brief content, preparing Good Night Summary
-content, and delayed maintenance tasks.
+Backend background work may be used for:
+
+- nightly planning
+- preparing tomorrow's Daily Plan
+- preparing Morning Brief content
+- preparing Good Night Summary content
+- delayed maintenance tasks
 
 Do not introduce a separate worker platform until the workload requires it.
-
-The first implementation should prefer the simplest reliable scheduling approach.
 
 ---
 

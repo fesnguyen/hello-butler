@@ -1,6 +1,6 @@
 # Backend Workflow
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
@@ -12,14 +12,13 @@ This document defines how backend workflows behave.
 
 It describes:
 
-- the purpose of each workflow
-- request and state fields
+- Butler request handling
 - LangGraph routing
-- database interaction
-- response generation
-- synchronization behavior
+- state fields
+- persistence
+- synchronization
 - Daily Plan lifecycle
-- Morning Brief and Good Night Summary flow
+- Morning Brief and Good Night Summary generation
 
 The most important workflow is `/api/butler/talk`.
 
@@ -29,7 +28,15 @@ The most important workflow is `/api/butler/talk`.
 
 `/api/butler/talk` is the single conversational entry point into Butler.
 
-The client interaction mode does not directly determine what the request means.
+The backend receives:
+
+```text
+message
+interaction_mode = order | talk
+```
+
+The client may have captured that message by direct speech or by the Text
+editing flow, but that input method is no longer a backend concern.
 
 ```text
 POST /api/butler/talk
@@ -47,11 +54,11 @@ POST /api/butler/talk
    Route by semantics
 ```
 
-Three different questions must remain separate:
+Keep these concerns separate:
 
 ```text
 How is the user interacting?
-→ order | talk | text
+→ order | talk
 
 What does the request mean?
 → command | query | clarification
@@ -59,11 +66,11 @@ What does the request mean?
 What changes?
 → domain persistence | conversation persistence | no domain mutation
 
-How is the result delivered?
-→ compact | immediate | deferred | spoken | text
+What does Butler return?
+→ text response + semantic result metadata
 ```
 
-The UI button is a strong interaction hint, not an absolute intent.
+The client decides how that text is presented.
 
 ---
 
@@ -78,7 +85,7 @@ Purpose:
 Typical behavior:
 
 ```text
-speech / text
+final message
     ↓
 request
     ↓
@@ -86,19 +93,10 @@ Butler processes
     ↓
 domain change when needed
     ↓
-compact result
-    ↓
-overlay or later-visible result
+text result
 ```
 
-Order is suitable when the user wants a quick update and may leave the phone immediately.
-
-Examples:
-
-- move tomorrow's workout to the evening
-- add groceries after work
-- skip today's exercise
-- adjust tomorrow around an appointment
+The client may show the result immediately or later as a response overlay.
 
 Order requests may still require clarification.
 
@@ -113,15 +111,13 @@ Purpose:
 Typical behavior:
 
 ```text
-speech
-  ↓
+final message
+    ↓
 request
-  ↓
+    ↓
 Butler processing
-  ↓
-response stream
-  ↓
-client speaks response
+    ↓
+text response
 ```
 
 Talk may still execute commands.
@@ -134,12 +130,10 @@ Request: "Move my workout to seven tonight."
 
 Semantic intent: command
 Domain persistence: yes
-Response: immediate spoken confirmation
+Response text: "Done. I moved your workout to 7 PM."
 ```
 
 Talk may also be a pure query.
-
-Example:
 
 ```text
 Mode: Talk
@@ -147,18 +141,16 @@ Request: "What do I have tonight?"
 
 Semantic intent: query
 Domain persistence: no
-Response: immediate spoken answer
+Response text: "You have exercise at 7 PM and groceries afterward."
 ```
 
 ---
 
-## Text
+# Text Input Is Client-Side
 
-Purpose:
+Text is not a backend interaction mode.
 
-> The user wants maximum control over the exact request before sending it.
-
-Typical behavior:
+Client flow:
 
 ```text
 speech
@@ -169,26 +161,24 @@ editable transcript
   ↓
 user correction
   ↓
-explicit send
+send as order | talk
 ```
 
-After the request reaches the backend, Text does not imply a specific semantic intent.
-
-It may become:
+By the time the backend receives the request:
 
 ```text
-text + command
-text + query
-text + clarification response
+interaction_mode = order | talk
+message = finalized text
 ```
 
-Response presentation follows the configured client behavior.
+The backend does not need to know whether the message originated from direct
+speech or from the editable Text flow.
 
 ---
 
 # Semantic Routes
 
-LangGraph routes by the meaning of the request rather than the button that produced it.
+LangGraph routes by meaning rather than by UI button.
 
 ```text
                          START
@@ -236,7 +226,7 @@ Examples:
 - skip an event
 - update User Context
 - change tomorrow's plan
-- record a meaningful user preference
+- record a meaningful preference
 
 Flow:
 
@@ -277,14 +267,12 @@ Enough information?
       Persist
         │
         ▼
-   Build confirmation
+   Build response text
 ```
 
 AI determines what should happen.
 
-Normal application code performs the mutation.
-
-AI should not directly execute SQL or mutate persistence models without validation.
+Application code performs validated mutations.
 
 ---
 
@@ -293,13 +281,6 @@ AI should not directly execute SQL or mutate persistence models without validati
 Purpose:
 
 > Return information, reasoning, explanation, or advice without changing domain state.
-
-Examples:
-
-- what do I have after work?
-- when is my next meeting?
-- do I have enough time to buy groceries first?
-- summarize my afternoon
 
 Flow:
 
@@ -324,15 +305,13 @@ Retrieve relevant information
 Reason / generate answer
    │
    ▼
-Build response
+Build response text
    │
    ▼
 Save conversation history
 ```
 
 The Query route is read-only with respect to domain state.
-
-Conversation history may still be persisted.
 
 ---
 
@@ -347,10 +326,6 @@ Example:
 ```text
 User:
 "Move my meeting later."
-
-Known:
-meeting = 15:00
-requested action = move
 
 Missing:
 target time
@@ -368,50 +343,22 @@ Required information missing
      CLARIFY
        │
        ▼
-Generate concise question
+Generate concise question text
        │
        ▼
 Persist conversation context
        │
        ▼
-Return clarification
+Return clarification text
 ```
 
-Example response:
+The next request is interpreted with previous conversation history.
 
-```text
-"What time would you like me to move it to?"
-```
-
-The next request is interpreted with previous conversation context.
-
-Example:
-
-```text
-Previous:
-"Move my meeting later."
-
-Butler:
-"What time would you like me to move it to?"
-
-Current:
-"4 PM."
-
-Resolved meaning:
-Move meeting → 16:00
-```
-
-A separate PlannerSession-style table is not required.
-
-Conversation history provides continuity.
+No PlannerSession-style table is required.
 
 ---
 
 # ButlerState Mental Model
-
-`ButlerState` is the working contract shared across LangGraph nodes.
-
-Conceptually:
 
 ```text
 ButlerState
@@ -440,62 +387,47 @@ ButlerState
 │
 └── Result
     ├── response
-    ├── response_mode
     ├── changed_entities
     └── requires_follow_up
 ```
 
-This is a mental grouping, not a requirement that the Python model use nested objects.
+This is a conceptual grouping, not a requirement for nested Python models.
 
 ---
 
-# ButlerState Field Purposes
+# Request Fields
 
-## Request
+## `user_id`
 
-### `user_id`
+Derived from authenticated identity.
 
-Purpose:
+Never trust arbitrary request payload `user_id`.
 
-Identifies the authenticated user whose data is being processed.
+## `message`
 
-Rules:
+The finalized text Butler should interpret.
 
-- derived from authentication
-- never trusted from arbitrary request payload data
-- used to scope User Context, plans, events, history, and devices
+Its client origin may have been:
 
-### `message`
+```text
+direct speech
+reviewed/edited Text input
+```
 
-Purpose:
+That distinction is not needed for backend reasoning.
 
-The normalized user text sent to Butler.
-
-Sources may include:
-
-- direct text
-- speech converted to text
-- edited STT transcript
-
-This is the semantic input used by the graph.
-
-### `interaction_mode`
-
-Purpose:
-
-Describes how the user wants to interact with Butler.
+## `interaction_mode`
 
 Allowed initial values:
 
 ```text
 order
 talk
-text
 ```
 
-It affects delivery expectations and UX behavior.
+It describes the user's interaction expectation.
 
-It must not be treated as absolute semantic intent.
+It must not be treated as semantic intent.
 
 ---
 
@@ -503,62 +435,26 @@ It must not be treated as absolute semantic intent.
 
 ## `conversation_history`
 
-Purpose:
+Provides continuity for:
 
-Provides conversational continuity.
+- clarification responses
+- references
+- follow-up requests
+- recent conversational context
 
-Used for:
-
-- resolving follow-up answers
-- understanding clarification responses
-- preserving recent conversational context
-- avoiding interpretation of each message in isolation
-
-Keep loaded history relevant and bounded rather than blindly loading all history.
+Load bounded relevant history rather than everything.
 
 ## `user_context`
 
-Purpose:
-
-Provides durable or temporary information Butler should consider when reasoning.
-
-Examples:
-
-- preferences
-- routines
-- temporary circumstances
-- recurring information
-- one-time context
-
-Only relevant context should be supplied to reasoning when practical.
+Durable or temporary information relevant to reasoning.
 
 ## `daily_plan`
 
-Purpose:
-
-Represents the current relevant day plan.
-
-Depending on the request, this may be:
-
-- today's plan
-- tomorrow's plan
-- another explicitly requested day
-
-The plan provides day-level context and contains Daily Events.
+The relevant day's plan.
 
 ## `relevant_events`
 
-Purpose:
-
-Provides the subset of Daily Events directly relevant to the current request.
-
-Examples:
-
-- the meeting being moved
-- today's remaining events
-- tomorrow's exercise event
-
-This avoids forcing every graph node to reason across an entire plan when only a few events matter.
+Only the subset of events directly relevant to the request when practical.
 
 ---
 
@@ -566,11 +462,7 @@ This avoids forcing every graph node to reason across an entire plan when only a
 
 ## `intent`
 
-Purpose:
-
-Represents the normalized semantic route.
-
-Initial values:
+Initial semantic values:
 
 ```text
 command
@@ -578,15 +470,7 @@ query
 clarify
 ```
 
-It describes what Butler must do.
-
-It does not describe which UI button the user pressed.
-
 ## `requested_action`
-
-Purpose:
-
-Represents the normalized operation Butler believes the user wants.
 
 Examples:
 
@@ -598,38 +482,14 @@ delay_event
 update_user_context
 ```
 
-Queries may leave this empty.
-
 ## `required_information`
 
-Purpose:
-
-Lists information required to safely complete the current semantic task.
-
-Example:
-
-```text
-Action:
-move meeting
-
-Required:
-event identity
-target time
-```
+Information required to safely complete the current task.
 
 ## `missing_information`
 
-Purpose:
-
-Contains required information that could not be resolved from:
-
-- the current message
-- conversation history
-- User Context
-- Daily Plan
-- relevant Daily Events
-
-If meaningful required information remains missing, routing should move to clarification.
+Required information that could not be resolved from the current message,
+conversation history, User Context, Daily Plan, or relevant events.
 
 ---
 
@@ -637,9 +497,7 @@ If meaningful required information remains missing, routing should move to clari
 
 ## `proposed_changes`
 
-Purpose:
-
-Represents structured domain changes suggested by reasoning before they are applied.
+Structured domain changes suggested by reasoning before application.
 
 Example:
 
@@ -654,30 +512,15 @@ Example:
 }
 ```
 
-Proposed changes are not yet trusted persistence operations.
-
-They must be validated first.
+These must be validated before persistence.
 
 ## `applied_changes`
 
-Purpose:
-
-Records changes successfully applied by deterministic application logic.
-
-Used for:
-
-- persistence
-- response generation
-- sync response
-- audit/debug information when needed
+Changes successfully applied by deterministic application logic.
 
 ## `execution_status`
 
-Purpose:
-
-Represents execution progress or outcome.
-
-Possible initial values may include:
+Possible initial strings:
 
 ```text
 pending
@@ -686,17 +529,13 @@ clarifying
 failed
 ```
 
-Keep these as strings.
-
 ---
 
 # Result Fields
 
 ## `response`
 
-Purpose:
-
-Contains the semantic Butler response.
+The canonical textual Butler response.
 
 Examples:
 
@@ -708,65 +547,63 @@ Examples:
 "What time would you like me to move it to?"
 ```
 
-The response describes what Butler should communicate.
+The backend returns text.
 
-It does not decide Android UI behavior.
+The client decides whether to:
 
-## `response_mode`
-
-Purpose:
-
-Describes the expected delivery style after considering interaction mode and user preferences.
-
-Possible conceptual values:
-
-```text
-compact
-immediate
-deferred
-```
-
-Speech versus visual rendering remains primarily a client responsibility.
-
-Typical defaults:
-
-```text
-order → compact / deferred
-talk  → immediate
-text  → configured response behavior
-```
+- show it in an overlay
+- read it aloud
+- present it in call-style mode
+- let the user simply read and dismiss it
 
 ## `changed_entities`
 
-Purpose:
-
 Identifies domain entities changed during execution.
 
-Useful for:
-
-- sync
-- client refresh
-- compact confirmations
-- tracing
+Useful for sync, refresh, confirmation, and tracing.
 
 ## `requires_follow_up`
 
-Purpose:
-
-Indicates whether Butler expects additional user input before the original request can be completed.
-
-Typical use:
-
 ```text
-true  → clarification pending
+true  → clarification/user input still required
 false → interaction complete
 ```
 
 ---
 
-# Persistence and Response Are Independent
+# Response Delivery Boundary
 
-A Butler action may result in persistence, a response, or both.
+The backend no longer owns a speech/text delivery mode for ordinary Butler
+responses.
+
+The separation is:
+
+```text
+LangGraph
+→ semantic result
+
+Application
+→ response text + semantic metadata
+
+Client
+→ visual overlay / Speak / Call-style / dismiss
+```
+
+Therefore, do not return backend concepts such as:
+
+```text
+spoken
+text
+call
+```
+
+as authoritative delivery modes for ordinary Butler responses.
+
+The response payload should remain presentation-neutral.
+
+---
+
+# Persistence and Response Are Independent
 
 Examples:
 
@@ -775,7 +612,7 @@ Examples:
 
 Domain persistence: yes
 Conversation persistence: yes
-Response: yes
+Response text: yes
 ```
 
 ```text
@@ -783,7 +620,7 @@ Response: yes
 
 Domain persistence: no
 Conversation persistence: yes
-Response: yes
+Response text: yes
 ```
 
 ```text
@@ -791,10 +628,10 @@ Response: yes
 
 Domain persistence: yes
 Conversation persistence: yes
-Response: yes
+Response text: yes
 ```
 
-Do not equate "response" with "no write" or "command" with "write only".
+Do not equate response generation with read-only behavior.
 
 ---
 
@@ -809,85 +646,25 @@ Examples:
 - User Context
 - device or sync state
 
-Domain mutation is performed by deterministic application code after validation.
+Mutations are performed by deterministic application code after validation.
 
 ---
 
 # Conversation Persistence
 
-Conversation persistence stores interaction history.
-
-It may occur for both Query and Command routes.
-
-Conceptually:
+Conversation history may be written for both Query and Command routes.
 
 ```text
 user message
     ↓
 conversation_history
     ↓
-Butler result
+Butler response text
     ↓
 conversation_history
 ```
 
 Conversation persistence is separate from domain mutation.
-
----
-
-# Response Delivery
-
-LangGraph decides:
-
-```text
-What happened?
-What should Butler communicate?
-```
-
-Application logic decides:
-
-```text
-What interaction behavior applies?
-```
-
-The client decides:
-
-```text
-How should this be rendered or spoken?
-```
-
-Separation:
-
-```text
-LangGraph
-→ semantic result
-
-Application
-→ delivery metadata and interaction behavior
-
-Client
-→ overlay, screen, text, TTS, notification
-```
-
-Examples:
-
-```text
-Order + completed command
-→ compact confirmation
-→ overlay or later-visible result
-```
-
-```text
-Talk + query
-→ immediate response
-→ streamed/spoken by client
-```
-
-```text
-Text + command
-→ precise request
-→ response presentation follows configured client preference
-```
 
 ---
 
@@ -901,6 +678,9 @@ Authenticate request
         │
         ▼
 Normalize message
+        │
+        ▼
+Validate interaction_mode = order | talk
         │
         ▼
 Build initial ButlerState
@@ -929,10 +709,10 @@ Route
    ▼    ▼    ▼
 COMMAND QUERY CLARIFY
    │    │    │
-   │    │    └── build clarification
+   │    │    └── build clarification text
    │    │
    │    └── reason over loaded context
-   │         └── build answer
+   │         └── build answer text
    │
    └── produce structured mutation proposal
         ├── validate
@@ -946,262 +726,178 @@ COMMAND QUERY CLARIFY
      persist conversation
              │
              ▼
- determine delivery metadata
-             │
-             ▼
-        return response
+       return text result
+```
+
+---
+
+# Example Request and Result
+
+Request:
+
+```json
+{
+  "interaction_mode": "order",
+  "message": "Move my project review to 4 PM."
+}
+```
+
+Result:
+
+```json
+{
+  "response": "Done. I moved your project review to 4 PM.",
+  "changed_entities": [
+    {
+      "type": "daily_event",
+      "id": "..."
+    }
+  ],
+  "requires_follow_up": false
+}
+```
+
+The backend does not specify whether that response should be spoken.
+
+---
+
+# Direct Event Updates
+
+Direct client CRUD should bypass AI.
+
+```text
+Client edit
+   ↓
+Sync API
+   ↓
+Authenticate
+   ↓
+Validate version
+   ↓
+Apply deterministic update
+   ↓
+Persist
+   ↓
+Return authoritative entity
 ```
 
 ---
 
 # Daily Plan Lifecycle
 
-A Daily Plan represents one day and evolves as reality changes.
-
 ```text
-Night before
-    ↓
-Generate tomorrow's Daily Plan
-    ↓
-Generate Daily Events
-    ↓
-Prepare Morning Brief
-    ↓
-Persist
-    ↓
-Sync to client
-    ↓
-Day begins
-    ↓
-Events are executed / edited / delayed / skipped / completed
-    ↓
-Plan increasingly reflects the actual day
-    ↓
 Night
-    ↓
-Read actual final day state
-    ↓
-Generate Good Night Summary
-    ↓
-Use relevant context + actual day
-    ↓
-Prepare tomorrow's Daily Plan
-```
-
-The updated Daily Plan is the primary representation of what actually happened during the day.
-
-A separate "actual day" entity is not required.
-
----
-
-# Daily Planning Flow
-
-Purpose:
-
-Prepare a practical Daily Plan before the day begins.
-
-Inputs may include:
-
-- User Context
-- target date
-- known commitments
-- existing future events
-- recent relevant conversation
-- recent actual day information
-
-Flow:
-
-```text
-Target date
-    +
-User Context
-    +
-Known commitments
-    +
-Relevant recent state
-        │
-        ▼
-     Planner
-        │
-        ▼
-   Daily Plan
-        │
-        ▼
-  Daily Events
-        │
-        ▼
- Morning Brief
-        │
-        ▼
-     Persist
-        │
-        ▼
-      Sync
-```
-
-Daily Events remain flexible and may represent:
-
-- Morning Brief
-- meeting
-- reminder
-- exercise
-- work
-- grocery task
-- custom activity
-- Good Night Summary
-
----
-
-# Morning Brief Flow
-
-Purpose:
-
-Give the user a useful spoken introduction to the day.
-
-The Morning Brief is represented as a Daily Event.
-
-```text
-Tomorrow plan prepared
-        │
-        ▼
+  ↓
+Prepare tomorrow plan
+  ↓
+Create Daily Events
+  ↓
 Generate Morning Brief content
-        │
-        ▼
-DailyEvent
-type = "morning_brief"
-speak_aloud = true
-        │
-        ▼
+  ↓
 Persist
-        │
-        ▼
-Sync to client
-        │
-        ▼
-Client schedules local execution
-        │
-        ▼
-Morning
-        │
-        ▼
-Client speaks prepared content
+
+Day
+  ↓
+Events change as reality changes
+  ↓
+Client syncs updates
+
+Night
+  ↓
+Read final day state
+  ↓
+Generate Good Night Summary content
+  ↓
+Persist
 ```
 
-The backend does not need to be online at the exact playback time if the event was already synchronized.
+The backend generates content.
+
+The client controls how that content is presented or spoken.
 
 ---
 
-# Good Night Summary Flow
+# Morning Brief
 
-Purpose:
-
-Review the actual day, help the user close it, and provide context for tomorrow.
+Morning Brief generation:
 
 ```text
-Today's final Daily Plan
-        +
-Actual Daily Event states
-        +
-Relevant conversation
-        +
-Relevant User Context
-        │
-        ▼
-Generate Good Night Summary
-        │
-        ▼
-DailyEvent
-type = "good_night_summary"
-speak_aloud = true
-        │
-        ▼
-Persist
-        │
-        ▼
-Sync
-        │
-        ▼
-Client speaks summary
-```
-
-The night flow may then continue into tomorrow's planning.
-
-```text
-Actual day
-   ↓
-Good Night Summary
-   ↓
-Relevant learning/context
-   ↓
 Tomorrow Daily Plan
-   ↓
-Tomorrow Daily Events
-   ↓
-Tomorrow Morning Brief
+      ↓
+Relevant User Context
+      ↓
+Generate brief text/content
+      ↓
+Persist as Daily Event content
+      ↓
+Client sync
 ```
+
+The backend does not need to execute speech.
 
 ---
 
-# Direct Event Update Flow
+# Good Night Summary
 
-Direct client edits do not need AI unless interpretation is required.
-
-Example:
+Good Night Summary generation:
 
 ```text
-User edits event time directly in UI
-        │
-        ▼
-Update local DB immediately
-        │
-        ▼
-Queue sync operation
-        │
-        ▼
-Backend sync API
-        │
-        ▼
+Final Daily Plan state
+      ↓
+Actual event outcomes
+      ↓
+Relevant context
+      ↓
+Generate summary text/content
+      ↓
+Persist as Daily Event content
+      ↓
+Client sync
+```
+
+Again, playback is a client concern.
+
+---
+
+# Synchronization
+
+```text
+Client change
+   ↓
+Sync request
+   ↓
 Authenticate
-        │
-        ▼
-Check version
-        │
-        ├── current → apply
-        └── stale   → conflict handling
-        │
-        ▼
-Persist server state
-        │
-        ▼
-Return reconciled state
+   ↓
+Validate entity/version
+   ↓
+Reconcile
+   ↓
+Persist
+   ↓
+Return authoritative state
 ```
 
-This keeps direct CRUD deterministic and fast.
+Use simple optimistic concurrency.
+
+No event-sourcing architecture is required.
 
 ---
 
-# Guiding Rule
+# Guiding Workflow
 
-The `/api/butler/talk` workflow should preserve four independent concepts:
+The backend should answer four questions cleanly:
 
 ```text
-Interaction mode
-→ How the user wants to interact
-
-Semantic intent
-→ What the user actually means
-
-Persistence
-→ What state changes
-
-Response delivery
-→ How the result reaches the user
+Who is the user?
+What does the request mean?
+What state should change?
+What text should Butler return?
 ```
 
-Do not collapse these concepts into one routing field.
+The client answers the presentation question:
 
-The graph should reason about meaning and outcome.
+```text
+How should the user receive that text?
+```
 
-Application code should perform validated state changes and determine interaction behavior.
-
-The client should control presentation, speech, overlays, and notifications.
+That keeps Butler semantics and Android presentation cleanly separated.
