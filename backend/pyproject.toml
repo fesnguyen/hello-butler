@@ -1,0 +1,32 @@
+[project]
+name = "hello-butler-backend"
+version = "0.1.0"
+description = "Backend foundation for Personal Butler."
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.13.3",
+    "asyncpg>=0.29.0",
+    "fastapi[standard]>=0.115.0",
+    "pydantic-settings>=2.5.2",
+    "sqlalchemy[asyncio]>=2.0.35",
+]
+
+[dependency-groups]
+dev = [
+    "pyright>=1.1.380",
+    "ruff>=0.6.8",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["app"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pyright]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
+include = ["app", "alembic"]
+exclude = [".venv"]
