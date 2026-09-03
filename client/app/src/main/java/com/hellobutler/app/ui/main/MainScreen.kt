@@ -84,7 +84,13 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 actions = { TextButton(onClick = onLogout) { Text("Logout") } },
             )
         },
-        bottomBar = { ButlerControlBar(enabled = !state.processing, ::startCapture, ::stopCapture) },
+        bottomBar = {
+            ButlerControlBar(
+                enabled = !state.processing,
+                onHoldStart = ::startCapture,
+                onHoldEnd = ::stopCapture,
+            )
+        },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             if (events.isEmpty()) {
