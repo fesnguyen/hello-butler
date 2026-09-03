@@ -1,6 +1,6 @@
 # Client Architecture
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -518,19 +518,55 @@ Speech should remain intentional rather than accompany every notification.
 
 # Authentication
 
-Authentication establishes backend identity and maintains the session used for authenticated network calls.
+The client supports two account entry paths:
 
 ```text
-Authentication
-      ↓
-Session / credentials
-      ├── Butler API
-      └── Sync API
+Email + password
+├── Register
+└── Login
+
+Google
+└── Sign in with Google
 ```
 
-Normal local execution should not require an online authentication round-trip. If today's plan is synchronized and connectivity disappears, local execution continues.
+For Google sign-in, Android obtains the Google credential using the supported
+Google identity flow and sends the resulting ID token to the Butler backend. The
+backend, not the client, establishes the Butler user identity.
 
-The client does not implement roles or a general authorization system.
+Successful authentication returns a short-lived access token and rotating
+refresh token.
+
+```text
+Login / Google sign-in
+        ↓
+access token + refresh token
+        ↓
+secure local session storage
+        ↓
+Authorization: Bearer <access token>
+        ↓
+Butler API / Sync API
+```
+
+Authentication secrets must not be stored in Room or ordinary DataStore. Store
+refresh tokens and other long-lived session secrets using Android-protected
+credential storage backed by the platform keystore where practical. Access
+tokens may be kept in memory and replaced through refresh.
+
+When an authenticated API request encounters an expired access token, the
+network/session layer performs one coordinated refresh and retries the request.
+Concurrent requests must not independently rotate the same refresh token.
+
+Logout asks the backend to revoke the current refresh session, then removes local
+session credentials.
+
+Normal local execution should not require an online authentication round-trip. If
+today's plan is synchronized and connectivity disappears, local execution
+continues. Network work that requires authentication waits until connectivity and
+a valid session are available.
+
+The client does not implement roles or a general authorization system and does
+not treat a locally stored `user_id` as authority over backend data.
 
 ---
 

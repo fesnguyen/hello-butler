@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -12,6 +12,7 @@ This document defines the Android client's user-facing workflows and UI behavior
 
 It focuses on:
 
+- Authentication entry
 - Main Screen behavior
 - Daily Event interaction
 - Event configuration
@@ -22,6 +23,39 @@ It focuses on:
 - speech and response choices
 
 Technical implementation details that do not directly affect UI behavior belong in `CLIENT_ARCHITECTURE.md` or implementation code.
+
+---
+
+# Authentication Entry
+
+When no Butler session exists, the user enters through a small authentication
+surface before the Main Screen.
+
+```text
+Welcome
+├── Sign in with Google
+├── Login with email + password
+└── Register with email + password
+```
+
+Registration collects the minimum account information required by the backend.
+Login and registration errors should be concise and should not expose sensitive
+account-existence details returned by the backend.
+
+After successful authentication:
+
+```text
+Authenticated session
+        ↓
+initial synchronization
+        ↓
+Main Screen
+```
+
+Logout returns the application to the authentication surface after local session
+credentials are cleared. Previously synchronized local execution data may be
+removed or isolated according to the client data-lifecycle implementation; it
+must never become accessible to a different authenticated account.
 
 ---
 

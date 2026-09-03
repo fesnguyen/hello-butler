@@ -1,6 +1,6 @@
 # Backend Workflow
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
@@ -12,6 +12,7 @@ This document defines how backend workflows behave.
 
 It describes:
 
+- authentication
 - Butler request handling
 - LangGraph routing
 - state fields
@@ -20,11 +21,169 @@ It describes:
 - Daily Plan lifecycle
 - Morning Brief and Good Night Summary generation
 
-The most important workflow is `/api/butler/talk`.
+The most important Butler workflow is `/api/butler/talk`.
 
 ---
 
-# Core Mental Model
+# Authentication Workflows
+
+Authentication is deterministic backend behavior and does not involve Butler or
+AI reasoning.
+
+Supported entry points are conceptually:
+
+```text
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/google
+POST /api/auth/refresh
+POST /api/auth/logout
+```
+
+Exact route naming may evolve without changing the workflow contract.
+
+## Email Registration
+
+```text
+email + password
+      ↓
+normalize and validate email
+      ↓
+validate password requirements
+      ↓
+email already registered for password login?
+      ├── yes → reject
+      └── no
+           ↓
+      hash password with Argon2id
+           ↓
+      create User
+           +
+      create password AuthIdentity
+           ↓
+      create refresh session
+           ↓
+      issue access + refresh tokens
+```
+
+Registration must not persist a plaintext or reversibly encrypted password.
+
+## Email Login
+
+```text
+email + password
+      ↓
+normalize email
+      ↓
+resolve password AuthIdentity
+      ↓
+verify Argon2id password hash
+      ├── invalid → generic authentication failure
+      └── valid
+           ↓
+      create refresh session
+           ↓
+      issue access + refresh tokens
+```
+
+Authentication failures should not reveal whether a particular account exists.
+
+## Google Login
+
+```text
+Google ID token from client
+      ↓
+verify token with Google
+      ├── signature
+      ├── issuer
+      ├── audience
+      └── expiry
+      ↓
+read stable Google subject (`sub`)
+      ↓
+find google AuthIdentity(provider_subject = sub)
+      │
+      ├── found → resolve User
+      │
+      └── not found
+            ↓
+         create User
+            +
+         create google AuthIdentity
+      ↓
+create refresh session
+      ↓
+issue access + refresh tokens
+```
+
+Google identity is keyed by the verified provider subject, not by email alone.
+
+If the verified Google email matches an existing password account but no Google
+identity is already linked, do not silently merge the accounts. Explicit account
+linking can be added later as an authenticated workflow.
+
+## Access Token Authentication
+
+Protected requests use:
+
+```text
+Authorization: Bearer <access token>
+              ↓
+verify signature
+              ↓
+verify expiry / required claims
+              ↓
+resolve internal user identity
+              ↓
+execute endpoint as that user
+```
+
+The authenticated user is injected/resolved at the API boundary. Request bodies
+do not establish ownership by supplying `user_id`.
+
+## Token Refresh
+
+```text
+refresh token
+      ↓
+hash presented secret
+      ↓
+find active refresh session
+      ↓
+validate expiry + revocation + rotation state
+      ├── invalid/reused → revoke session → reject
+      └── valid
+           ↓
+      consume current refresh token
+           ↓
+      generate replacement refresh token
+           ↓
+      store replacement hash / rotation metadata
+           ↓
+      issue new access + refresh tokens
+```
+
+Refresh rotation is atomic so a refresh token cannot be successfully consumed
+more than once.
+
+## Logout
+
+```text
+current refresh token/session
+      ↓
+resolve session
+      ↓
+revoke session
+      ↓
+client deletes local tokens
+```
+
+Access tokens remain intentionally short-lived; logout does not require a global
+access-token denylist.
+
+---
+
+# Core Butler Mental Model
 
 `/api/butler/talk` is the single conversational entry point into Butler.
 

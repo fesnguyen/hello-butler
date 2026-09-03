@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.1  
+**Version:** 1.2  
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -282,14 +282,107 @@ choice/configuration.
 
 # Authentication
 
-Authentication establishes the identity of the current user.
+Authentication is a small production system, not a temporary development stub.
 
-The backend does not currently use roles, sub-owners, or a general permission
-system.
+The supported user-facing methods are:
+
+```text
+Email + password
+├── Register
+└── Login
+
+Google
+└── Sign in with Google
+```
+
+The backend owns credential verification, token issuance and refresh, session
+revocation, and mapping external/login identities to the internal `User`.
+
+Authentication identity is separate from the Butler `User` entity:
+
+```text
+User
+  │
+  └── AuthIdentity[]
+      ├── password
+      └── google
+```
+
+This keeps Butler-owned user data independent from the mechanism used to sign in.
+An authentication identity stores only provider-specific information required to
+verify or resolve that identity.
+
+## Password Authentication
+
+Passwords are never stored directly.
+
+Use Argon2id for password hashing with a maintained library and safe library
+defaults. Password hashes belong to the password authentication identity, not to
+Butler domain data.
+
+Registration requires a normalized email and password. Login compares the
+submitted password against the stored hash.
+
+## Google Authentication
+
+The client obtains a Google credential through the platform-supported Google
+sign-in flow and sends the resulting Google ID token to the backend.
+
+The backend verifies the token with Google, including issuer, audience,
+signature, expiry, and provider subject. The stable Google `sub` is the external
+identity key; email alone is not an identity key.
+
+Do not automatically link an existing password identity to a Google identity
+solely because the email strings match. Account linking, if introduced, must be
+an explicit authenticated action.
+
+## Access and Refresh Tokens
+
+Successful authentication establishes a Butler session:
+
+```text
+Authentication
+      ↓
+short-lived access token
+      +
+rotating refresh token
+```
+
+Access tokens are signed JWTs containing only the claims required to authenticate
+a request. They are intentionally short-lived.
+
+Refresh tokens are high-entropy opaque secrets. Store only a cryptographic hash
+of each refresh token in PostgreSQL together with its owning user/session,
+expiry, revocation state, and rotation metadata.
+
+A successful refresh rotates the refresh token: the presented token is consumed
+and replaced. Logout revokes the current refresh session. Reuse of an already
+rotated/revoked refresh token invalidates that refresh session.
+
+Exact lifetimes are configuration, with an initial target of roughly 15 minutes
+for access tokens and 30 days for refresh sessions.
+
+## Authenticated Request Boundary
+
+Protected endpoints resolve the internal user from the verified access token.
+
+```text
+Authorization: Bearer <access token>
+              ↓
+verify signature + expiry
+              ↓
+resolve authenticated user
+              ↓
+execute request within that user's data
+```
 
 Every authenticated request operates within the authenticated user's own data.
-
 Never trust a client-provided `user_id` as proof of identity.
+
+No roles, organizations, RBAC, or general permission framework are required.
+
+Authentication secrets and provider configuration come from environment-backed
+settings and are never committed to source control.
 
 ---
 
@@ -363,11 +456,12 @@ Alembic manages schema migration independently from application startup.
 
 Persistence is accessed through repositories or focused abstractions.
 
-The database stores users, authentication data, User Context, conversation
-history, Daily Plans, Daily Events, devices, and synchronization metadata.
+The database stores users, authentication identities and refresh sessions, User
+Context, conversation history, Daily Plans, Daily Events, devices, and
+synchronization metadata.
 
-Types such as event type, context type, interaction mode, status, role, and
-platform are stored as strings.
+Types such as event type, context type, interaction mode, status, role, provider,
+and platform are stored as strings.
 
 `interaction_mode` initially allows only:
 
