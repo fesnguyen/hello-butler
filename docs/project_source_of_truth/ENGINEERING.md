@@ -2,7 +2,7 @@
 
 # Butler Engineering Guide
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Status:** Engineering Rules
 
 ---
@@ -120,6 +120,24 @@ Prefer:
 
 A developer should be able to inspect a meaningful portion of a workflow without constantly navigating across many files or scrolling through large amounts of boilerplate.
 
+Locality does **not** mean placing an entire feature or workflow in one file.
+
+Keep the high-level execution path visible in one place while extracting substantial implementation details into focused modules when they represent distinct responsibilities.
+
+Prefer:
+
+- one compact module that exposes workflow or orchestration
+- focused modules for substantial persistence, actions, contracts, provider logic, or domain behavior
+- grouping closely related operations together
+
+Avoid:
+
+- files that become catch-all containers for an entire feature
+- mixing contracts, orchestration, persistence queries, mutations, formatting, and provider logic in one module
+- preserving locality by allowing a file to grow until the primary workflow becomes difficult to identify
+
+The goal is **locality by responsibility**, not locality by forcing everything into one file.
+
 This principle does **not** mean compressing code until it becomes cryptic.
 
 Density is valuable only when readability remains high.
@@ -148,12 +166,7 @@ event.status = EventStatus.COMPLETED
 sync_queue.enqueue(event.id)
 ```
 
-Comments should normally be:
-
-- concise
-- close to the code they explain
-- inline when practical
-- focused on **why**, not obvious **what**
+Comments should normally be concise, close to the code they explain, inline when practical, and focused on **why**, not obvious **what**.
 
 Use multi-line comments only when the reasoning genuinely requires more context.
 
@@ -175,6 +188,18 @@ For example, a component responsible for persistence should not also:
 - contain unrelated business rules
 
 Responsibilities should remain explicit and easy to locate.
+
+A component should be extracted when it has a distinct reason to change and its implementation obscures the primary responsibility of the containing module.
+
+For example, a workflow module may show:
+
+```text
+load → understand → route → execute → persist
+```
+
+while detailed context loading, state mutation, and persistence logic live in focused modules.
+
+Do not use line count as a mechanical rule, but treat sustained file growth as a signal to review whether multiple responsibilities have accumulated.
 
 Do not split responsibilities so aggressively that understanding one operation requires navigating through unnecessary layers.
 
@@ -321,6 +346,8 @@ Small shared utilities are acceptable when they represent genuinely shared, well
 Do not create a shared abstraction merely because two pieces of code look similar.
 
 Project structure for each application is defined by its corresponding `ARCHITECTURE.md`.
+
+When a product capability becomes substantial, prefer a capability package containing focused modules over a single catch-all module named after the capability.
 
 Keep related code close enough that a normal workflow can be followed with minimal file navigation.
 
@@ -594,9 +621,22 @@ Do not introduce heavyweight monitoring infrastructure before it is justified.
 
 ---
 
-# 25. Documentation
+# 25. Documentation and Code Comments
 
 Documentation should explain decisions and contracts that cannot be understood reliably from code alone.
+
+Comments are expected when code contains important reasoning that is not obvious from naming and structure alone.
+
+Use comments to explain things such as:
+
+- why a non-obvious branch or workaround exists
+- important invariants or assumptions
+- transaction, concurrency, retry, or ordering constraints
+- security-sensitive reasoning
+- provider or platform behavior that materially shapes the implementation
+- surprising product rules or edge cases
+
+Do not avoid a useful comment merely to make the file look cleaner.
 
 Comments should primarily explain **why**, not restate **what** the code does.
 
@@ -607,10 +647,14 @@ Clear code
 +
 Good naming
 +
+Concise, useful comments where reasoning is non-obvious
++
 Concise documentation
 ```
 
-Comments should be inline and concise when possible so the code path remains visible in one view.
+Comments should be inline and concise when possible so the code path remains visible in one view. Multi-line comments are appropriate when the reasoning cannot be explained clearly inline.
+
+Do not add comments mechanically to obvious code, and do not retrofit comments into stable code solely to satisfy a comment count.
 
 Public or shared interfaces should be documented when their behavior is not obvious.
 
@@ -859,9 +903,11 @@ Before considering work complete, verify:
 - [ ] The implementation solves the actual requirement.
 - [ ] The solution is as simple as reasonably possible.
 - [ ] Responsibilities are clear.
+- [ ] Large capability files were reviewed for distinct responsibilities that should be extracted.
 - [ ] Related logic is kept close enough for efficient reasoning.
 - [ ] The code path can be followed with minimal unnecessary scrolling or file navigation.
-- [ ] Comments are concise and inline when practical.
+- [ ] Non-obvious reasoning has a concise comment where it materially helps future readers.
+- [ ] Comments explain why rather than obvious what.
 - [ ] Dependencies follow established boundaries.
 - [ ] Public contracts are explicit and typed.
 - [ ] State changes and side effects are understandable.
