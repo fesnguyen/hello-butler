@@ -5,9 +5,13 @@ description = "Backend foundation for Personal Butler."
 requires-python = ">=3.12"
 dependencies = [
     "alembic>=1.13.3",
+    "argon2-cffi>=25.1.0",
     "asyncpg>=0.29.0",
     "fastapi[standard]>=0.115.0",
+    "google-auth>=2.57.0",
     "pydantic-settings>=2.5.2",
+    "pyjwt>=2.13.0",
+    "requests>=2.34.2",
     "sqlalchemy[asyncio]>=2.0.35",
 ]
 
