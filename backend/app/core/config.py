@@ -1,4 +1,5 @@
 from functools import lru_cache
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,6 +19,12 @@ class Settings(BaseSettings):
     refresh_session_days: int = 30
     google_oauth_client_id: str = ""
     password_min_length: int = 8
+    openai_api_key: str = ""
+    openai_model: str = "gpt-5.4-nano"
+    butler_default_timezone: str = "UTC"
+    butler_history_limit: int = 12
+    butler_user_context_limit: int = 20
+    butler_event_limit: int = 30
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -28,6 +35,15 @@ class Settings(BaseSettings):
             raise ValueError("jwt_secret is required")
         if len(value.encode("utf-8")) < 32:
             raise ValueError("jwt_secret must be at least 32 bytes")
+        return value
+
+    @field_validator("butler_default_timezone")
+    @classmethod
+    def require_valid_timezone(cls, value: str) -> str:
+        try:
+            ZoneInfo(value)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError("butler_default_timezone must be an IANA timezone") from exc
         return value
 
 

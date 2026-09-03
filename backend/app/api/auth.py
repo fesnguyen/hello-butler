@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from google.auth.transport import requests
 from google.oauth2 import id_token
 from pydantic import BaseModel, EmailStr, Field
@@ -29,6 +30,8 @@ from app.infrastructure.db.models import AuthIdentityModel, RefreshSessionModel,
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 class AuthTokens(BaseModel):
@@ -69,24 +72,25 @@ class AuthenticatedUser(BaseModel):
 async def get_authenticated_user(
     session: SessionDep,
     settings: SettingsDep,
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> AuthenticatedUser:
-    if not authorization or not authorization.lower().startswith("bearer "):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
-
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token.strip():
+    if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
 
     try:
-        user_id = decode_access_token(settings, token.strip())
+        user_id = decode_access_token(settings, credentials.credentials)
     except ValueError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated") from exc
 
     user = await session.get(UserModel, user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Not authenticated")
-    return AuthenticatedUser(id=user.id, email=user.email, display_name=user.display_name)
+
+    authenticated_user = AuthenticatedUser(
+        id=user.id, email=user.email, display_name=user.display_name
+    )
+    await session.rollback()  # Release transaction before downstream OpenAI work.
+    return authenticated_user
 
 
 @router.post("/register")
