@@ -5,7 +5,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Button
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -23,18 +23,24 @@ fun ButlerControlBar(
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         CaptureMode.entries.forEach { mode ->
-            Button(
-                onClick = {},
-                enabled = enabled,
+            Surface(
                 modifier = Modifier.weight(1f).pointerInput(mode, enabled) {
                     if (!enabled) return@pointerInput
                     detectTapGestures(onPress = {
                         onHoldStart(mode)
-                        tryAwaitRelease()
-                        onHoldEnd()
+                        try {
+                            tryAwaitRelease()
+                        } finally {
+                            onHoldEnd()
+                        }
                     })
                 },
-            ) { Text(mode.name.lowercase().replaceFirstChar(Char::uppercase)) }
+            ) {
+                Text(
+                    text = mode.name.lowercase().replaceFirstChar(Char::uppercase),
+                    modifier = Modifier.padding(vertical = 12.dp, horizontal = 16.dp),
+                )
+            }
         }
     }
 }
