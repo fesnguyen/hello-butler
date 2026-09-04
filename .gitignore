@@ -216,3 +216,31 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# =========================
+# Android / Android Studio
+# =========================
+
+# Android Studio / IntelliJ local configuration
+.idea/
+*.iml
+
+# Local machine SDK path
+local.properties
+
+# Gradle local/cache files
+.gradle/
+
+# Build outputs
+build/
+**/build/
+
+# Android generated files
+captures/
+.externalNativeBuild/
+.cxx/
+
+# OS files
+.DS_Store
+Thumbs.db
