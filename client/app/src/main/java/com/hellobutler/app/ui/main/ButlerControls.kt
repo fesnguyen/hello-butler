@@ -28,9 +28,7 @@ fun ButlerControlBar(
                     if (!enabled) return@pointerInput
                     detectTapGestures(onPress = {
                         onHoldStart(mode)
-                        try {
-                            tryAwaitRelease()
-                        } finally {
+                        if (tryAwaitRelease()) {
                             onHoldEnd()
                         }
                     })
