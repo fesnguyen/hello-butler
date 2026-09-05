@@ -62,19 +62,25 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     DisposableEffect(Unit) { onDispose { speech.destroy() } }
 
     fun startCapture(mode: CaptureMode) {
+        if (capturing || state.processing) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
+
         capturing = true
         viewModel.beginCapture(mode)
-        speech.start(viewModel::updateTranscript, viewModel::finishCapture, viewModel::captureError)
-    }
-
-    fun stopCapture() {
-        if (!capturing) return
-        capturing = false
-        speech.stop()
+        speech.start(
+            onPartial = viewModel::updateTranscript,
+            onFinal = { text ->
+                capturing = false
+                viewModel.finishCapture(text)
+            },
+            onError = { error ->
+                capturing = false
+                viewModel.captureError(error)
+            },
+        )
     }
 
     Scaffold(
@@ -86,9 +92,8 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         },
         bottomBar = {
             ButlerControlBar(
-                enabled = !state.processing,
-                onHoldStart = ::startCapture,
-                onHoldEnd = ::stopCapture,
+                enabled = !state.processing && !capturing,
+                onTap = ::startCapture,
             )
         },
     ) { padding ->
@@ -100,7 +105,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 ) {
                     Text("Your day is clear", style = MaterialTheme.typography.titleLarge)
                     Spacer(Modifier.height(8.dp))
-                    Text("Hold Order or Talk and ask Butler to add something.")
+                    Text("Tap Order or Talk and speak to Butler.")
                 }
             } else {
                 LazyColumn(
