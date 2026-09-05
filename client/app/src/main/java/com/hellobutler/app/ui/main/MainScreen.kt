@@ -4,40 +4,14 @@ import android.Manifest
 import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.material.icons.outlined.AccountCircle
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -45,6 +19,8 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.speech.SpeechInputController
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -67,162 +43,76 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-
         capturing = true
         viewModel.beginCapture(mode)
         speech.start(
             onPartial = viewModel::updateTranscript,
-            onFinal = { text ->
-                capturing = false
-                viewModel.finishCapture(text)
-            },
-            onError = { error ->
-                capturing = false
-                viewModel.captureError(error)
-            },
+            onFinal = { text -> capturing = false; viewModel.finishCapture(text) },
+            onError = { error -> capturing = false; viewModel.captureError(error) },
         )
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Column { Text("Today"); Text(java.time.LocalDate.now().toString(), style = MaterialTheme.typography.labelMedium) } },
-                actions = { TextButton(onClick = onLogout) { Text("Logout") } },
-            )
-        },
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = { TodayHeader(onLogout) },
         bottomBar = {
-            ButlerControlBar(
-                enabled = !state.processing && !capturing,
-                onTap = ::startCapture,
-            )
+            ButlerControlBar(!state.processing && !capturing, state.captureMode, capturing, ::startCapture)
         },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding)) {
             if (events.isEmpty()) {
-                Column(
-                    modifier = Modifier.align(Alignment.Center).padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text("Your day is clear", style = MaterialTheme.typography.titleLarge)
-                    Spacer(Modifier.height(8.dp))
-                    Text("Tap Order or Talk and speak to Butler.")
-                }
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyDay { startCapture(CaptureMode.ORDER) } }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
-                    items(events, key = { it.id }) { event -> EventRow(event) { selectedEvent = event } }
+                    item {
+                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Your day", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                            val done = events.count { it.status.equals("completed", true) }
+                            Text(done.toString() + " of " + events.size + " complete", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    items(events, key = { it.id }) { event -> DailyEventCard(event) { selectedEvent = event } }
                 }
             }
-
             if (state.overlayVisible) {
-                ConversationOverlay(
-                    state = state,
-                    onDraftChanged = viewModel::editDraft,
-                    onSendOrder = { viewModel.sendDraft(CaptureMode.ORDER) },
-                    onSendTalk = { viewModel.sendDraft(CaptureMode.TALK) },
-                    onClose = viewModel::dismissOverlay,
-                    modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 16.dp, vertical = 8.dp),
+                ButlerConversationOverlay(
+                    state, capturing, viewModel::editDraft,
+                    { viewModel.sendDraft(CaptureMode.ORDER) }, { viewModel.sendDraft(CaptureMode.TALK) },
+                    viewModel::dismissOverlay,
+                    Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
                 )
             }
         }
     }
-
     selectedEvent?.let { event ->
-        EventDetailDialog(event, onDismiss = { selectedEvent = null }) {
+        EventDetailDialog(event, { selectedEvent = null }) {
             viewModel.updateEvent(it)
             selectedEvent = null
         }
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun EventRow(event: DailyEventEntity, onConfigure: () -> Unit) {
-    Card(Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(event.startTime ?: "--:--", style = MaterialTheme.typography.labelLarge)
-            Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
-                Text(event.title, style = MaterialTheme.typography.titleMedium)
-                Text(event.status, style = MaterialTheme.typography.bodySmall)
-            }
-            IconButton(onClick = onConfigure) { Icon(Icons.Default.MoreVert, contentDescription = "Configure event") }
-        }
-    }
-}
-
-@Composable
-private fun ConversationOverlay(
-    state: MainUiState,
-    onDraftChanged: (String) -> Unit,
-    onSendOrder: () -> Unit,
-    onSendTalk: () -> Unit,
-    onClose: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Card(modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("Butler", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                TextButton(onClick = onClose) { Text("Close") }
-            }
-            state.messages.takeLast(6).forEach { message ->
-                Text(
-                    (if (message.role == "user") "You: " else "Butler: ") + message.text,
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            }
-            if (state.transcript.isNotBlank()) Text("You: ${state.transcript}")
-            state.textDraft?.let { draft ->
-                OutlinedTextField(
-                    value = draft,
-                    onValueChange = onDraftChanged,
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("Edit transcript") },
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onSendOrder, enabled = !state.processing) { Text("Send as Order") }
-                    OutlinedButton(onClick = onSendTalk, enabled = !state.processing) { Text("Send as Talk") }
-                }
-            }
-            if (state.processing) CircularProgressIndicator()
-            state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        }
-    }
-}
-
-@Composable
-private fun EventDetailDialog(
-    event: DailyEventEntity,
-    onDismiss: () -> Unit,
-    onSave: (DailyEventEntity) -> Unit,
-) {
-    var title by remember(event.id) { mutableStateOf(event.title) }
-    var startTime by remember(event.id) { mutableStateOf(event.startTime.orEmpty()) }
-    var status by remember(event.id) { mutableStateOf(event.status) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Event") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(title, { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(startTime, { startTime = it }, label = { Text("Time (HH:mm)") }, modifier = Modifier.fillMaxWidth())
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("planned", "completed", "skipped").forEach { value ->
-                        OutlinedButton(onClick = { status = value }, enabled = status != value) { Text(value) }
-                    }
-                }
+private fun TodayHeader(onLogout: () -> Unit) {
+    val today = remember { LocalDate.now() }
+    TopAppBar(
+        title = {
+            Column {
+                Text(today.format(DateTimeFormatter.ofPattern("EEEE")), style = MaterialTheme.typography.headlineMedium)
+                Text(today.format(DateTimeFormatter.ofPattern("MMMM d")), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         },
-        confirmButton = {
-            Button(onClick = { onSave(event.copy(title = title.trim(), startTime = startTime.trim().ifEmpty { null }, status = status, version = event.version + 1)) }) {
-                Text("Save")
+        navigationIcon = {
+            Surface(Modifier.padding(start = 14.dp, end = 6.dp), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
+                Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.primary)
             }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        actions = { IconButton(onClick = onLogout) { Icon(Icons.Outlined.AccountCircle, "Account and logout") } },
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
 }
