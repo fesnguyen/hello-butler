@@ -586,6 +586,28 @@ The content can also remain available visually in its Daily Event / associated p
 
 This behavior is configurable by the user.
 
+Implemented delivery and playback flow:
+
+```text
+open authenticated Main Screen / tap Refresh
+        ↓
+fetch today + tomorrow snapshots
+        ↓
+persist plan and events in Room
+        ↓
+schedule eligible spoken event from its own date/time
+        ↓
+alarm (or WorkManager fallback) becomes due
+        ↓
+worker claims event once and loads content from Room
+        ↓
+Android local TTS speaks without backend access
+```
+
+Normal app closure does not remove the schedule. Reboot and application update
+restore pending schedules. Android force-stop is an OS-level exception: work and
+alarms remain suppressed until the user launches the application again.
+
 ---
 
 # Good Night Summary

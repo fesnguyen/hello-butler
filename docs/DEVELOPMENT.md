@@ -77,7 +77,8 @@ GOOGLE_OAUTH_CLIENT_ID=replace-with-google-oauth-client-id
 # OpenAI / Butler
 OPENAI_API_KEY=replace-with-openai-api-key
 OPENAI_MODEL=replace-with-configured-model
-BUTLER_TIMEZONE=Asia/Ho_Chi_Minh
+BUTLER_DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh
+MORNING_BRIEF_DEFAULT_TIME=06:05
 ```
 
 Generate a suitable local JWT secret with:
@@ -318,6 +319,63 @@ curl -X POST 'http://127.0.0.1:8000/api/butler/talk' \
     "message": "What do I have today?"
   }'
 ```
+
+---
+
+# Morning Brief End-to-End Test
+
+Start PostgreSQL and the backend, apply the current migration, then register or
+log in. Put the returned access token in a shell variable without committing it:
+
+```bash
+export BUTLER_ACCESS_TOKEN='paste-development-access-token'
+```
+
+Prepare today so its events are visible immediately. Set the Morning Brief time
+two or three minutes ahead using local `HH:MM:SS` time. The override is accepted
+only when `APP_ENV` is not `production`; production accepts the normal tomorrow
+target only:
+
+```bash
+export TARGET_DATE="$(date +%F)"
+export MORNING_BRIEF_TIME="$(date -d '+3 minutes' +%T)"
+
+curl -X POST 'http://127.0.0.1:8000/api/planning/prepare' \
+  -H "Authorization: Bearer $BUTLER_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"target_date\":\"$TARGET_DATE\",\"morning_brief_time\":\"$MORNING_BRIEF_TIME\"}"
+```
+
+Omit `target_date` and `morning_brief_time` to exercise normal tomorrow planning
+and context-derived/default Morning Brief timing. Run the request twice, then
+inspect the authoritative snapshot; the plan, planner keys, and protected
+commitments should not duplicate:
+
+```bash
+curl "http://127.0.0.1:8000/api/sync/daily-plan/$TARGET_DATE" \
+  -H "Authorization: Bearer $BUTLER_ACCESS_TOKEN"
+```
+
+For a physical phone, set `BACKEND_BASE_URL` to the backend machine's LAN URL,
+install the app, sign in, and tap the toolbar Refresh button. Grant Android's
+**Alarms & reminders** special access when exact timing is required; without it,
+WorkManager provides a potentially delayed fallback. Confirm the generated
+events appear on the Main Screen, put the app in the background or swipe it away,
+and wait for local TTS. Stop the backend after tapping Refresh to verify playback
+uses Room only. Do not force-stop the app in system settings because Android then
+suppresses its alarms and work until the next manual launch.
+
+Useful device checks:
+
+```bash
+adb shell dumpsys alarm | grep hellobutler
+adb shell dumpsys jobscheduler | grep hellobutler
+adb logcat | grep -i hellobutler
+```
+
+This milestone intentionally leaves automatic nightly invocation, complete
+bidirectional conflict resolution, per-user timezones, and general reminder
+execution for later work.
 
 ---
 

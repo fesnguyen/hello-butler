@@ -469,6 +469,29 @@ speak_aloud = false
 
 Prefer one flexible execution model. Do not create a separate manager for every event category without a concrete need.
 
+## Initial Prepared-Day Bootstrap
+
+After authentication the Main ViewModel fetches authenticated snapshots for
+today and tomorrow. A successful snapshot is applied transactionally to Room;
+server-synchronized rows for that date are replaced while local-only rows and
+device execution state are preserved. A missing plan or network failure leaves
+the previous local day untouched. The Main Screen continues to observe Room and
+never renders network DTOs directly. The toolbar refresh action repeats this
+bootstrap for immediate development and recovery use.
+
+After Room is updated, `DailyEventScheduler` reconciles local execution. Events
+with scheduled time, non-empty content, and `speak_aloud=true` use an exact alarm
+when Android grants exact-alarm access. WorkManager is the documented degraded
+fallback when that access is unavailable. Boot and package replacement enqueue a
+Room-backed reschedule pass.
+
+The alarm enqueues one uniquely named execution worker. The worker atomically
+claims the local event before initializing Android TTS, preventing duplicate
+alarms, WorkManager retries, or process restarts from speaking it twice. TTS
+initialization, language support, audio focus, utterance completion, and shutdown
+are owned by the local execution layer. TTS failure is terminal for that event
+occurrence and does not crash or loop.
+
 ---
 
 # WorkManager and AlarmManager

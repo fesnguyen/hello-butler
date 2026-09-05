@@ -71,6 +71,8 @@ class ButlerDecision(BaseModel):
     reminder_minutes_before: Annotated[int | None, Field(ge=0, le=10080)] = None
     context_type: str | None = None
     context_content: str | None = None
+    context_starts_on: date | None = None
+    context_ends_on: date | None = None
     missing_information: list[str] = Field(default_factory=list)
     clarification_question: str | None = None
     answer: str | None = None

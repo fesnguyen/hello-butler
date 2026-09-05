@@ -42,6 +42,10 @@ class MainViewModel(
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
 
+    init {
+        refreshPreparedDays()
+    }
+
     fun beginCapture(mode: CaptureMode) {
         _state.update { it.copy(overlayVisible = true, captureMode = mode, transcript = "", textDraft = null, error = null) }
     }
@@ -75,6 +79,27 @@ class MainViewModel(
         viewModelScope.launch { eventsRepository.update(event) }
     }
 
+    fun refreshPreparedDays() {
+        viewModelScope.launch {
+            val dates = listOf(LocalDate.now(), LocalDate.now().plusDays(1))
+            dates.forEach { date ->
+                runCatching { eventsRepository.refresh(date.toString()) }
+                    .onFailure { error ->
+                        _state.update { current ->
+                            current.copy(error = error.message ?: "Plan sync failed")
+                        }
+                    }
+            }
+        }
+    }
+
+    fun logout(onCleared: () -> Unit) {
+        viewModelScope.launch {
+            runCatching { eventsRepository.clear() }
+            onCleared()
+        }
+    }
+
     private fun send(message: String, mode: CaptureMode) {
         if (_state.value.processing) return
         val backendMode = if (mode == CaptureMode.ORDER) "order" else "talk"
@@ -102,6 +127,7 @@ class MainViewModel(
                         delay(5_000)
                         _state.update { it.copy(overlayVisible = false, captureMode = null) }
                     }
+                    if (response.changedEntities.isNotEmpty()) refreshPreparedDays()
                 },
                 onFailure = { error -> _state.update { it.copy(processing = false, error = error.message ?: "Butler request failed") } },
             )

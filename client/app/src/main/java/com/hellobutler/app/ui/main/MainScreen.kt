@@ -54,7 +54,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { TodayHeader(onLogout) },
+        topBar = { TodayHeader(onLogout, viewModel::refreshPreparedDays) },
         bottomBar = {
             ButlerControlBar(!state.processing && !capturing, state.captureMode, capturing, ::startCapture)
         },
@@ -98,7 +98,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TodayHeader(onLogout: () -> Unit) {
+private fun TodayHeader(onLogout: () -> Unit, onRefresh: () -> Unit) {
     val today = remember { LocalDate.now() }
     TopAppBar(
         title = {
@@ -112,7 +112,10 @@ private fun TodayHeader(onLogout: () -> Unit) {
                 Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.primary)
             }
         },
-        actions = { IconButton(onClick = onLogout) { Icon(Icons.Outlined.AccountCircle, "Account and logout") } },
+        actions = {
+            IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Sync, "Refresh prepared days") }
+            IconButton(onClick = onLogout) { Icon(Icons.Outlined.AccountCircle, "Account and logout") }
+        },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
 }

@@ -1,3 +1,4 @@
+from datetime import time
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -25,6 +26,7 @@ class Settings(BaseSettings):
     butler_history_limit: int = 12
     butler_user_context_limit: int = 20
     butler_event_limit: int = 30
+    morning_brief_default_time: time = time(6, 5)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -45,6 +47,10 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as exc:
             raise ValueError("butler_default_timezone must be an IANA timezone") from exc
         return value
+
+    @property
+    def timezone(self) -> ZoneInfo:
+        return ZoneInfo(self.butler_default_timezone)
 
 
 @lru_cache
