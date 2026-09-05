@@ -34,7 +34,6 @@ class NightlyPlanSyncWorker(
     }
 
     companion object {
-        private const val WORK_NAME = "nightly-plan-sync"
         private const val SYNC_HOUR = 23
         private const val SYNC_MINUTE = 10
 
@@ -46,7 +45,10 @@ class NightlyPlanSyncWorker(
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .setInitialDelay(Duration.between(now, next).toMillis(), TimeUnit.MILLISECONDS)
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(WORK_NAME, ExistingWorkPolicy.REPLACE, request)
+            // Date-scoped work lets a successful worker enqueue tomorrow without replacing itself.
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "nightly-plan-sync-${next.toLocalDate()}", ExistingWorkPolicy.KEEP, request
+            )
         }
     }
 }
