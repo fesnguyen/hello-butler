@@ -21,6 +21,7 @@ import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.speech.SpeechInputController
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import androidx.compose.material.icons.filled.Refresh
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,7 +114,7 @@ private fun TodayHeader(onLogout: () -> Unit, onRefresh: () -> Unit) {
             }
         },
         actions = {
-            IconButton(onClick = onRefresh) { Icon(Icons.Outlined.Sync, "Refresh prepared days") }
+            IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh prepared days") }
             IconButton(onClick = onLogout) { Icon(Icons.Outlined.AccountCircle, "Account and logout") }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
