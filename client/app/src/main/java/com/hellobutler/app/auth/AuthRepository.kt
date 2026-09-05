@@ -16,6 +16,8 @@ class AuthRepository(
 ) {
     private val refreshMutex = Mutex()
 
+    fun hasSession(): Boolean = session.refreshToken() != null
+
     suspend fun restoreSession(): Boolean {
         if (session.refreshToken() == null) return false
         return runCatching { refreshMutex.withLock { refreshNow() } }.fold(
