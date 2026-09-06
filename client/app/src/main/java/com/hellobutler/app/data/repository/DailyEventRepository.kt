@@ -8,6 +8,8 @@ import com.hellobutler.app.data.local.DailyEventDao
 import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.data.local.DailyPlanEntity
 import com.hellobutler.app.data.remote.DailyPlanSnapshotDto
+import com.hellobutler.app.data.remote.PlanningApi
+import com.hellobutler.app.data.remote.PrepareDayRequestDto
 import com.hellobutler.app.data.remote.SyncApi
 import com.hellobutler.app.data.remote.SyncEventDto
 import com.hellobutler.app.execution.DailyEventScheduler
@@ -17,6 +19,7 @@ import retrofit2.Response
 class DailyEventRepository(
     private val database: ButlerDatabase,
     private val api: SyncApi,
+    private val planningApi: PlanningApi,
     private val auth: AuthRepository,
     private val scheduler: DailyEventScheduler,
 ) {
@@ -27,6 +30,17 @@ class DailyEventRepository(
     suspend fun update(event: DailyEventEntity) {
         dao.upsert(event) // Server sync attaches here once the sync contract exists.
         scheduler.schedule(event)
+    }
+
+    suspend fun recreatePlan(date: String) {
+        var token = auth.accessToken()
+        var response = planningApi.prepare("Bearer $token", PrepareDayRequestDto(date))
+        if (response.code() == 401) {
+            token = auth.refreshAfterUnauthorized(token)
+            response = planningApi.prepare("Bearer $token", PrepareDayRequestDto(date))
+        }
+        if (!response.isSuccessful) throw ApiException("Plan preparation failed (${response.code()})")
+        if (!refresh(date)) throw ApiException("Prepared plan was not available for sync")
     }
 
     suspend fun refresh(date: String): Boolean {
