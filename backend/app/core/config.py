@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     butler_history_limit: int = 12
     butler_user_context_limit: int = 20
     butler_event_limit: int = 30
+    nightly_planning_time: time = time(23, 0)
     morning_brief_default_time: time = time(6, 5)
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
