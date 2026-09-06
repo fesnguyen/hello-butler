@@ -27,6 +27,7 @@ data class MainUiState(
     val transcript: String = "",
     val textDraft: String? = null,
     val processing: Boolean = false,
+    val recreatingToday: Boolean = false,
     val messages: List<ConversationMessage> = emptyList(),
     val error: String? = null,
 )
@@ -77,6 +78,21 @@ class MainViewModel(
 
     fun updateEvent(event: DailyEventEntity) {
         viewModelScope.launch { eventsRepository.update(event) }
+    }
+
+    fun recreateTodayPlan() {
+        if (_state.value.recreatingToday) return
+        _state.update { it.copy(recreatingToday = true, error = null) }
+        viewModelScope.launch {
+            runCatching { eventsRepository.recreatePlan(today) }.fold(
+                onSuccess = { _state.update { it.copy(recreatingToday = false) } },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(recreatingToday = false, error = error.message ?: "Today's plan could not be recreated")
+                    }
+                },
+            )
+        }
     }
 
     fun refreshPreparedDays() {
