@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.*
@@ -21,7 +22,6 @@ import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.speech.SpeechInputController
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
-import androidx.compose.material.icons.filled.Refresh
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,37 +55,56 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { TodayHeader(onLogout, viewModel::refreshPreparedDays) },
+        topBar = {
+            TodayHeader(
+                onRefresh = viewModel::refreshPreparedDays,
+                onRecreateToday = viewModel::recreateTodayPlan,
+                recreatingToday = state.recreatingToday,
+                onLogout = onLogout,
+            )
+        },
         bottomBar = {
             ButlerControlBar(!state.processing && !capturing, state.captureMode, capturing, ::startCapture)
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            if (events.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyDay { startCapture(CaptureMode.ORDER) } }
-            } else {
-                LazyColumn(
-                    Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    item {
-                        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Your day", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
-                            val done = events.count { it.status.equals("completed", true) }
-                            Text(done.toString() + " of " + events.size + " complete", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    items(events, key = { it.id }) { event -> DailyEventCard(event) { selectedEvent = event } }
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            if (!state.overlayVisible) {
+                state.error?.let { message ->
+                    Text(
+                        message,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    )
                 }
             }
-            if (state.overlayVisible) {
-                ButlerConversationOverlay(
-                    state, capturing, viewModel::editDraft,
-                    { viewModel.sendDraft(CaptureMode.ORDER) }, { viewModel.sendDraft(CaptureMode.TALK) },
-                    viewModel::dismissOverlay,
-                    Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
-                )
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                if (events.isEmpty()) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyDay { startCapture(CaptureMode.ORDER) } }
+                } else {
+                    LazyColumn(
+                        Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        item {
+                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Your day", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
+                                val done = events.count { it.status.equals("completed", true) }
+                                Text(done.toString() + " of " + events.size + " complete", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        items(events, key = { it.id }) { event -> DailyEventCard(event) { selectedEvent = event } }
+                    }
+                }
+                if (state.overlayVisible) {
+                    ButlerConversationOverlay(
+                        state, capturing, viewModel::editDraft,
+                        { viewModel.sendDraft(CaptureMode.ORDER) }, { viewModel.sendDraft(CaptureMode.TALK) },
+                        viewModel::dismissOverlay,
+                        Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
+                    )
+                }
             }
         }
     }
@@ -99,8 +118,14 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TodayHeader(onLogout: () -> Unit, onRefresh: () -> Unit) {
+private fun TodayHeader(
+    onRefresh: () -> Unit,
+    onRecreateToday: () -> Unit,
+    recreatingToday: Boolean,
+    onLogout: () -> Unit,
+) {
     val today = remember { LocalDate.now() }
+    var accountMenuOpen by remember { mutableStateOf(false) }
     TopAppBar(
         title = {
             Column {
@@ -115,7 +140,21 @@ private fun TodayHeader(onLogout: () -> Unit, onRefresh: () -> Unit) {
         },
         actions = {
             IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh prepared days") }
-            IconButton(onClick = onLogout) { Icon(Icons.Outlined.AccountCircle, "Account and logout") }
+            Box {
+                IconButton(onClick = { accountMenuOpen = true }) { Icon(Icons.Outlined.AccountCircle, "Account menu") }
+                DropdownMenu(expanded = accountMenuOpen, onDismissRequest = { accountMenuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Profile") }, onClick = {}, enabled = false)
+                    DropdownMenuItem(text = { Text("Settings") }, onClick = {}, enabled = false)
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text(if (recreatingToday) "Recreating today's plan…" else "Recreate today's plan") },
+                        onClick = { accountMenuOpen = false; onRecreateToday() },
+                        enabled = !recreatingToday,
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(text = { Text("Log out") }, onClick = { accountMenuOpen = false; onLogout() })
+                }
+            }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
