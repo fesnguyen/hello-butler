@@ -55,23 +55,19 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
-        topBar = { TodayHeader(onLogout, viewModel::refreshPreparedDays) },
+        topBar = {
+            TodayHeader(
+                onRefresh = viewModel::refreshPreparedDays,
+                onRecreateToday = viewModel::recreateTodayPlan,
+                recreatingToday = state.recreatingToday,
+                onLogout = onLogout,
+            )
+        },
         bottomBar = {
             ButlerControlBar(!state.processing && !capturing, state.captureMode, capturing, ::startCapture)
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            FilledTonalButton(
-                onClick = viewModel::recreateTodayPlan,
-                enabled = !state.recreatingToday,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                if (state.recreatingToday) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                }
-                Text(if (state.recreatingToday) "Recreating today's plan…" else "Recreate today's plan")
-            }
             if (!state.overlayVisible) {
                 state.error?.let { message ->
                     Text(
@@ -122,8 +118,14 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun TodayHeader(onLogout: () -> Unit, onRefresh: () -> Unit) {
+private fun TodayHeader(
+    onRefresh: () -> Unit,
+    onRecreateToday: () -> Unit,
+    recreatingToday: Boolean,
+    onLogout: () -> Unit,
+) {
     val today = remember { LocalDate.now() }
+    var accountMenuOpen by remember { mutableStateOf(false) }
     TopAppBar(
         title = {
             Column {
@@ -138,7 +140,21 @@ private fun TodayHeader(onLogout: () -> Unit, onRefresh: () -> Unit) {
         },
         actions = {
             IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh prepared days") }
-            IconButton(onClick = onLogout) { Icon(Icons.Outlined.AccountCircle, "Account and logout") }
+            Box {
+                IconButton(onClick = { accountMenuOpen = true }) { Icon(Icons.Outlined.AccountCircle, "Account menu") }
+                DropdownMenu(expanded = accountMenuOpen, onDismissRequest = { accountMenuOpen = false }) {
+                    DropdownMenuItem(text = { Text("Profile") }, onClick = {}, enabled = false)
+                    DropdownMenuItem(text = { Text("Settings") }, onClick = {}, enabled = false)
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text(if (recreatingToday) "Recreating today's plan…" else "Recreate today's plan") },
+                        onClick = { accountMenuOpen = false; onRecreateToday() },
+                        enabled = !recreatingToday,
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(text = { Text("Log out") }, onClick = { accountMenuOpen = false; onLogout() })
+                }
+            }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
     )
