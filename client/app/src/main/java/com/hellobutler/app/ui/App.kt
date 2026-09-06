@@ -27,7 +27,7 @@ fun HelloButlerApp(container: AppContainer) {
             val mainViewModel: MainViewModel = viewModel(
                 factory = MainViewModel.factory(container.butlerRepository, container.dailyEventRepository)
             )
-            MainScreen(mainViewModel, authViewModel::logout)
+            MainScreen(mainViewModel) { mainViewModel.logout(authViewModel::logout) }
         }
     }
 }

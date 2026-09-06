@@ -28,6 +28,8 @@ class UserContextActions:
                 user_id=state["user_id"],
                 context_type=decision.context_type or "reference",
                 content=decision.context_content,
+                starts_on=decision.context_starts_on,
+                ends_on=decision.context_ends_on,
             )
             session.add(entry)
             changed = ChangedEntity(type="user_context", id=entry.id)

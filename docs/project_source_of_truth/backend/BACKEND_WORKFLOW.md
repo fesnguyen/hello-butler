@@ -994,6 +994,47 @@ Client sync
 
 The backend does not need to execute speech.
 
+## Implemented Tomorrow-Planning Workflow
+
+The initial vertical slice executes this focused workflow:
+
+```text
+authenticated user + target date
+        ↓
+active date-bounded User Context
+        +
+protected non-planner events for the target date
+        ↓
+structured AI day proposal
+        ↓
+deterministic field and time validation
+        ↓
+final protected + proposed event sequence
+        ↓
+structured Morning Brief generation
+        ↓
+one transaction locks/upserts DailyPlan and planner-keyed DailyEvents
+```
+
+No write occurs until both AI calls and deterministic validation succeed. A
+database failure rolls back the complete replacement. Regeneration locks the
+DailyPlan row, updates stable planner keys, removes only obsolete
+`origin=planner` rows, and never deletes non-planner commitments. Repeated runs
+therefore produce one DailyPlan, one Morning Brief, and no duplicate generated
+event keys. A Butler-mediated user update or skip clears the planner key and
+changes the event origin to `user`, so a later planning run treats that explicit
+decision as protected input. An identical regeneration preserves generated event
+IDs and versions; changed generated fields increment their versions.
+
+Application code owns the target date, event date, supported event types,
+ordering, Morning Brief event type, and proactive speech flag. Daytime proposed
+events are normalized to `speak_aloud=false`; the persisted Morning Brief is
+`speak_aloud=true` and uses its own scheduled start time.
+
+The configured Butler timezone currently applies to every user. Event dates and
+times are delivered as local values and Android interprets them in the device
+timezone. Per-user timezone storage is deferred.
+
 ---
 
 # Good Night Summary

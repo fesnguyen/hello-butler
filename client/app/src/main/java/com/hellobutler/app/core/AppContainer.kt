@@ -7,8 +7,10 @@ import com.hellobutler.app.auth.SecureSessionStore
 import com.hellobutler.app.data.local.ButlerDatabase
 import com.hellobutler.app.data.remote.AuthApi
 import com.hellobutler.app.data.remote.ButlerApi
+import com.hellobutler.app.data.remote.SyncApi
 import com.hellobutler.app.data.repository.ButlerRepository
 import com.hellobutler.app.data.repository.DailyEventRepository
+import com.hellobutler.app.execution.DailyEventScheduler
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import retrofit2.Retrofit
@@ -21,9 +23,15 @@ class AppContainer(context: Context) {
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
     private val sessionStore = SecureSessionStore(context)
-    private val database = ButlerDatabase.get(context)
+    val database = ButlerDatabase.get(context)
+    val eventScheduler = DailyEventScheduler(context.applicationContext)
 
     val authRepository = AuthRepository(retrofit.create(AuthApi::class.java), sessionStore)
     val butlerRepository = ButlerRepository(retrofit.create(ButlerApi::class.java), authRepository)
-    val dailyEventRepository = DailyEventRepository(database.dailyEventDao())
+    val dailyEventRepository = DailyEventRepository(
+        database,
+        retrofit.create(SyncApi::class.java),
+        authRepository,
+        eventScheduler,
+    )
 }

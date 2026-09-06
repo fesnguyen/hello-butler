@@ -40,6 +40,7 @@ class DailyEventActions:
                 speak_aloud=False,
                 sort_order=0,
                 version=1,
+                origin="user",
             )
             session.add(event)
             changed = ChangedEntity(type="daily_event", id=event.id)
@@ -92,6 +93,8 @@ class DailyEventActions:
             if not changed_fields:
                 return self._follow_up("What should I change about it?")
 
+            event.origin = "user"  # An explicit user change becomes protected planning input.
+            event.planner_key = None
             event.version += 1
             changed = ChangedEntity(type="daily_event", id=event.id)
 
@@ -109,6 +112,8 @@ class DailyEventActions:
             if event.status == "skipped":
                 return {"result": ButlerResult(response=f"{event.title} is already skipped.")}
             event.status = "skipped"
+            event.origin = "user"
+            event.planner_key = None
             event.version += 1
             changed = ChangedEntity(type="daily_event", id=event.id)
 

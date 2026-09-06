@@ -533,6 +533,28 @@ Backend background work may be used for:
 
 Do not introduce a separate worker platform until the workload requires it.
 
+## Initial Morning Brief Vertical Slice
+
+The first implemented planning trigger is the authenticated
+`POST /api/planning/prepare` use case. It defaults to tomorrow in the configured
+Butler timezone; nightly invocation is intentionally not yet attached to a
+separate worker platform. The same application service can be called by a future
+in-process or external scheduler without changing planning behavior.
+
+Prepared days are delivered through the focused authenticated read contract:
+
+```text
+GET /api/sync/daily-plan/{date}
+```
+
+This is a server-to-client bootstrap snapshot, not the complete future
+bidirectional synchronization protocol.
+
+`DailyEvent.origin` is initially `user` or `planner`. Planner-owned rows also
+carry a stable nullable `planner_key`; `(user_id, event_date, planner_key)` is
+unique. Existing rows migrate to `origin=user`, making them protected inputs to
+planning rather than replaceable generated output.
+
 ---
 
 # Guiding Architecture
