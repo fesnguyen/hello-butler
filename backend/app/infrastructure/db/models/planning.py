@@ -1,7 +1,7 @@
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time
 
-from sqlalchemy import Boolean, Date, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -48,3 +48,28 @@ class DailyEventModel(TimestampMixin, SoftDeleteMixin, Base):
     version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     origin: Mapped[str] = mapped_column(String(40), default="user", nullable=False)
     planner_key: Mapped[str | None] = mapped_column(String(120))
+
+
+class SyncOperationModel(TimestampMixin, Base):
+    __tablename__ = "sync_operations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    operation_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    result_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class PushDeviceModel(TimestampMixin, Base):
+    __tablename__ = "push_devices"
+    __table_args__ = (UniqueConstraint("registration_token"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    registration_token: Mapped[str] = mapped_column(String(512), nullable=False)
+    platform: Mapped[str] = mapped_column(String(40), default="android", nullable=False)

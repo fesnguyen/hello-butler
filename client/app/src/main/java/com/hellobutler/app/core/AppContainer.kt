@@ -8,6 +8,7 @@ import com.hellobutler.app.data.local.ButlerDatabase
 import com.hellobutler.app.data.remote.AuthApi
 import com.hellobutler.app.data.remote.ButlerApi
 import com.hellobutler.app.data.remote.PlanningApi
+import com.hellobutler.app.data.remote.PushApi
 import com.hellobutler.app.data.remote.SyncApi
 import com.hellobutler.app.data.repository.ButlerRepository
 import com.hellobutler.app.data.repository.DailyEventRepository
@@ -35,11 +36,14 @@ class AppContainer(context: Context) {
 
     val authRepository = AuthRepository(retrofit.create(AuthApi::class.java), sessionStore)
     val butlerRepository = ButlerRepository(retrofit.create(ButlerApi::class.java), authRepository)
+    val pushApi: PushApi = retrofit.create(PushApi::class.java)
     val dailyEventRepository = DailyEventRepository(
+        context.applicationContext,
         database,
         retrofit.create(SyncApi::class.java),
         retrofit.create(PlanningApi::class.java),
         authRepository,
         eventScheduler,
+        json,
     )
 }

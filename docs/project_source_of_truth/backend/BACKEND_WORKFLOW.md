@@ -1,6 +1,6 @@
 # Backend Workflow
 
-**Version:** 1.2  
+**Version:** 1.3
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
@@ -1057,6 +1057,15 @@ Client sync
 
 Again, playback is a client concern.
 
+## Implemented Evening Preparation
+
+At the configured preparation time (initially 22:30), or through authenticated
+`POST /api/planning/evening-prepare`, the backend serializes work for the user,
+loads today's actual event states, generates and validates Good Night Summary
+content, prepares tomorrow through the existing protected-event planner, and
+persists today's summary at 22:45. The workflow then emits a lightweight
+`daily_plan_changed` FCM data message. A user-owned summary is not overwritten.
+
 ---
 
 # Synchronization
@@ -1080,6 +1089,12 @@ Return authoritative state
 Use simple optimistic concurrency.
 
 No event-sourcing architecture is required.
+
+The implemented client mutation batch supports create, edit, complete, skip,
+delay, cancel, and delete. Each operation is idempotent by operation ID. Matching
+base versions apply and increment the event version; mismatches return the
+current canonical event with `status=conflict`. Deletion uses the existing
+server tombstone and disappears from subsequent day snapshots.
 
 ---
 

@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.2  
+**Version:** 1.3
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -193,6 +193,8 @@ uv run fastapi dev app/main.py
 /api/auth/...
 /api/butler/talk
 /api/sync/...
+/api/planning/evening-prepare
+/api/push/device
 ```
 
 `/api/butler/talk` is the single Butler conversational endpoint.
@@ -460,6 +462,10 @@ The database stores users, authentication identities and refresh sessions, User
 Context, conversation history, Daily Plans, Daily Events, devices, and
 synchronization metadata.
 
+`sync_operations` records processed client operation IDs so a WorkManager retry
+cannot apply one event mutation twice. `push_devices` stores authenticated FCM
+registration tokens; push payloads contain only a change hint.
+
 Types such as event type, context type, interaction mode, status, role, provider,
 and platform are stored as strings.
 
@@ -507,6 +513,12 @@ deleted_at nullable
 
 No event-sourcing system is required.
 
+The mutation boundary is `POST /api/sync/events`. A client operation contains a
+stable operation ID, event ID, action, base version, and the desired event state
+when applicable. Applied edits increment the canonical version and become
+`origin=user`; a version mismatch returns canonical state for deterministic
+client reconciliation.
+
 ---
 
 # Data Ownership
@@ -530,6 +542,11 @@ Backend background work may be used for:
 - preparing Morning Brief content
 - preparing Good Night Summary content
 - delayed maintenance tasks
+
+Evening preparation is one serialized application workflow per user. PostgreSQL
+advisory locks prevent overlapping planning requests across server processes.
+AI generation occurs while no write transaction is open; validated results are
+then persisted through focused transactions.
 
 Do not introduce a separate worker platform until the workload requires it.
 

@@ -24,7 +24,7 @@ class DailyEventScheduler(private val context: Context) {
     fun schedule(event: DailyEventEntity) {
         cancel(event)
         val triggerAt = event.triggerAtMillis() ?: return
-        if (!event.speakAloud || event.content.isNullOrBlank() || event.playbackAttemptedAt != null) return
+        if (event.status != "planned" || !event.speakAloud || event.content.isNullOrBlank() || event.playbackAttemptedAt != null) return
         if (triggerAt <= System.currentTimeMillis()) return
 
         val pending = alarmPendingIntent(event.id)

@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.2  
+**Version:** 1.3
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -607,6 +607,12 @@ Android local TTS speaks without backend access
 Normal app closure does not remove the schedule. Reboot and application update
 restore pending schedules. Android force-stop is an OS-level exception: work and
 alarms remain suppressed until the user launches the application again.
+
+When proactive speech starts, Android shows an ongoing "Butler is speaking"
+notification with Stop. The Main Screen also shows Stop while the process is
+alive. Stop immediately terminates TTS, releases audio focus, removes foreground
+state, and stops the service. Playback reads only Room content and therefore
+does not need authentication or network access.
 
 ---
 

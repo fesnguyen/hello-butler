@@ -1,6 +1,6 @@
 # Client Architecture
 
-**Version:** 1.1  
+**Version:** 1.2
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -398,6 +398,12 @@ A pending operation may identify its operation, target entity, local entity ID, 
 
 Exact fields belong in `CLIENT_WORKFLOW.md`.
 
+The implemented Room outbox stores one coalesced pending operation per event:
+operation ID, action, event ID, base server version, serialized desired state,
+creation time, and retry diagnostics. The event write and outbox write share one
+Room transaction. Snapshot pulls do not overwrite events that still have a
+pending operation.
+
 This queue supports reliable offline-first synchronization; it is not an event-sourcing system.
 
 ---
@@ -536,6 +542,11 @@ STT is an input mechanism and does not determine semantic intent.
 TTS may speak Morning wake-up, Morning Brief, Talk responses, optional confirmations, configured reminders, and Good Night Summary.
 
 Speech should remain intentional rather than accompany every notification.
+
+Scheduled proactive speech runs in a short-lived media-playback foreground
+service. It loads cached content from Room, claims the occurrence once, owns
+audio focus and Android TTS, exposes Stop in its ongoing notification and the
+Main Screen, and removes foreground state after completion or failure.
 
 ---
 

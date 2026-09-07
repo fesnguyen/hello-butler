@@ -1,6 +1,6 @@
 # Client Sync Flow
 
-**Status:** Determined before implementation  
+**Status:** Implemented
 **Authority:** Derived from `PROJECT.md`, `CLIENT_ARCHITECTURE.md`, and `CLIENT_WORKFLOW.md`
 
 ---
@@ -42,6 +42,12 @@ Room reconciled and pending operation removed
 
 Sync must not block ordinary event editing. Failed uploads remain pending and retry automatically. Opening the authenticated app and important background preparation should also drain pending changes before pulling newer server state.
 
+The implemented outbox covers create, edit, complete, skip, delay, cancel, and
+delete. Operations are coalesced per event while retaining the original base
+version and stable operation ID. A conflict accepts returned canonical server
+state; a successful or duplicate result reconciles Room before removing the
+pending operation.
+
 ---
 
 # Server → Client
@@ -61,6 +67,12 @@ Local alarms, notifications, and TTS schedules reconciled
 ```
 
 A visible notification is reserved for information that requires or deserves user attention. Routine synchronization should stay silent.
+
+FCM registration is authenticated. The data message contains only
+`type=daily_plan_changed`; receiving it enqueues the same constrained sync worker
+used by local edits. Startup, six-hour periodic work, connectivity-constrained
+retry, boot restoration, and evening preparation provide convergence when a
+push is delayed or missed.
 
 ---
 

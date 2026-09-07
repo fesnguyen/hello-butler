@@ -80,6 +80,10 @@ class MainViewModel(
         viewModelScope.launch { eventsRepository.update(event) }
     }
 
+    fun deleteEvent(event: DailyEventEntity) {
+        viewModelScope.launch { eventsRepository.delete(event) }
+    }
+
     fun recreateTodayPlan() {
         if (_state.value.recreatingToday) return
         _state.update { it.copy(recreatingToday = true, error = null) }
@@ -98,14 +102,12 @@ class MainViewModel(
     fun refreshPreparedDays() {
         viewModelScope.launch {
             val dates = listOf(LocalDate.now(), LocalDate.now().plusDays(1))
-            dates.forEach { date ->
-                runCatching { eventsRepository.refresh(date.toString()) }
-                    .onFailure { error ->
-                        _state.update { current ->
-                            current.copy(error = error.message ?: "Plan sync failed")
-                        }
+            runCatching { eventsRepository.synchronize(dates.map(LocalDate::toString)) }
+                .onFailure { error ->
+                    _state.update { current ->
+                        current.copy(error = error.message ?: "Plan sync failed")
                     }
-            }
+                }
         }
     }
 

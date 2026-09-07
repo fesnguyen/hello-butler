@@ -26,16 +26,18 @@ class NightlyPlanSyncWorker(
         }
 
         return runCatching {
-            val synced = container.dailyEventRepository.refresh(LocalDate.now().plusDays(1).toString())
-            if (!synced) return Result.retry() // Planning may still be finishing; retry until tomorrow exists.
+            val today = LocalDate.now()
+            container.dailyEventRepository.prepareEvening(
+                today.toString(), today.plusDays(1).toString()
+            )
             scheduleNext(applicationContext)
             Result.success()
         }.getOrElse { Result.retry() }
     }
 
     companion object {
-        private const val SYNC_HOUR = 23
-        private const val SYNC_MINUTE = 10
+        private const val SYNC_HOUR = 22
+        private const val SYNC_MINUTE = 30
 
         fun scheduleNext(context: Context) {
             val now = ZonedDateTime.now()

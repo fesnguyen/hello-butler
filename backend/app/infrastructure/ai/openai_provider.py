@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from app.application.butler import ButlerAIUnavailableError, ButlerContext, ButlerDecision
 from app.application.planning.contracts import (
     DayPlanningInput,
+    GoodNightSummaryDraft,
+    GoodNightSummaryInput,
     MorningBriefDraft,
     PlannedDayProposal,
 )
@@ -71,6 +73,15 @@ class OpenAIButlerProvider:
                 "final_events": final_events,
             },
             text_format=MorningBriefDraft,
+        )
+
+    async def compose_good_night_summary(
+        self, summary_input: GoodNightSummaryInput
+    ) -> GoodNightSummaryDraft:
+        return await self._parse(
+            instructions=GOOD_NIGHT_SUMMARY_INSTRUCTIONS,
+            payload=summary_input.model_dump(mode="json"),
+            text_format=GoodNightSummaryDraft,
         )
 
     async def _parse(
@@ -146,4 +157,13 @@ only on final_events, which is the day that will actually be shown. Sound like a
 calm personal Butler, not a database dump. Mention the useful morning sequence,
 important commitments, unusual circumstances, reminders, and selected later
 events. Do not list every field or invent events. Return only structured output.
+""".strip()
+
+GOOD_NIGHT_SUMMARY_INSTRUCTIONS = """
+Write a concise, natural Good Night Summary for spoken Android text-to-speech.
+Use the actual event status and changes supplied for the completed day. Mention
+useful accomplishments, skipped or unfinished commitments without judgment, and
+tomorrow context only when it is present. Be calm and supportive, not medical or
+authoritative. Do not invent activity or claim an event happened when its status
+does not show that. Return only structured output.
 """.strip()

@@ -1,9 +1,19 @@
 package com.hellobutler.app.execution
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
@@ -11,15 +21,30 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.hellobutler.app.ButlerApplication
+import com.hellobutler.app.sync.DailySyncWorker
 import java.time.Instant
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+
+object SpeechPlaybackState {
+    private val mutableSpeaking = MutableStateFlow(false)
+    val speaking = mutableSpeaking.asStateFlow()
+    internal fun setSpeaking(value: Boolean) { mutableSpeaking.value = value }
+}
 
 class DailyEventAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_EXECUTE_EVENT) return
         val eventId = intent.getStringExtra(EXTRA_EVENT_ID) ?: return
-        DailyEventExecutionWorker.enqueue(context, eventId, 0)
+        SpeechForegroundService.start(context, eventId)
     }
 }
 
@@ -28,29 +53,138 @@ class ScheduleRestoreReceiver : BroadcastReceiver() {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
             ScheduleRestoreWorker.enqueue(context)
             NightlyPlanSyncWorker.scheduleNext(context)
+            DailySyncWorker.enqueue(context)
         }
     }
 }
 
-class DailyEventExecutionWorker(
-    appContext: Context,
-    params: WorkerParameters,
-) : CoroutineWorker(appContext, params) {
+class SpeechForegroundService : Service() {
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var playback: Job? = null
+    private var tts: LocalTextToSpeech? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        val channel = NotificationChannel(
+            CHANNEL_ID, "Butler speech", NotificationManager.IMPORTANCE_LOW
+        ).apply { description = "Shows while Butler is speaking" }
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_STOP_SPEECH) {
+            stopSpeech()
+            return START_NOT_STICKY
+        }
+        val eventId = intent?.getStringExtra(EXTRA_EVENT_ID) ?: run {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        startAsForeground(notification("Preparing Butler speech…"))
+        playback?.cancel()
+        playback = scope.launch { speak(eventId, startId) }
+        return START_NOT_STICKY
+    }
+
+    private suspend fun speak(eventId: String, startId: Int) {
+        val container = (application as ButlerApplication).container
+        val dao = container.database.dailyEventDao()
+        val event = dao.get(eventId)
+        if (event?.content.isNullOrBlank() || event?.speakAloud != true) {
+            finish(startId)
+            return
+        }
+        if (dao.claimPlayback(event.id, Instant.now().toString()) != 1) {
+            finish(startId)
+            return
+        }
+        SpeechPlaybackState.setSpeaking(true)
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID, notification(event.title)
+        )
+        val player = LocalTextToSpeech(applicationContext)
+        tts = player
+        val spoken = withTimeoutOrNull(120_000) { player.speak(event.content.orEmpty()) } ?: false
+        if (!spoken) Log.w("HelloButlerTTS", "Local TTS could not play event ${event.id}")
+        finish(startId)
+    }
+
+    private fun stopSpeech() {
+        tts?.stop()
+        playback?.cancel()
+        finish(null)
+    }
+
+    private fun finish(startId: Int?) {
+        tts?.stop()
+        tts = null
+        SpeechPlaybackState.setSpeaking(false)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        if (startId == null) stopSelf() else stopSelf(startId)
+    }
+
+    private fun notification(title: String): Notification {
+        val stop = PendingIntent.getService(
+            this,
+            0,
+            Intent(this, SpeechForegroundService::class.java).setAction(ACTION_STOP_SPEECH),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setContentTitle("Butler is speaking")
+            .setContentText(title)
+            .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setOngoing(true)
+            .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
+            .build()
+    }
+
+    private fun startAsForeground(notification: Notification) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
+    }
+
+    override fun onDestroy() {
+        tts?.stop()
+        scope.cancel()
+        SpeechPlaybackState.setSpeaking(false)
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    companion object {
+        private const val CHANNEL_ID = "butler_speech"
+        private const val NOTIFICATION_ID = 4102
+        const val ACTION_STOP_SPEECH = "com.hellobutler.app.STOP_SPEECH"
+
+        fun start(context: Context, eventId: String) {
+            val intent = Intent(context, SpeechForegroundService::class.java)
+                .putExtra(EXTRA_EVENT_ID, eventId)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        fun stop(context: Context) {
+            context.startService(
+                Intent(context, SpeechForegroundService::class.java).setAction(ACTION_STOP_SPEECH)
+            )
+        }
+    }
+}
+
+class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val eventId = inputData.getString(EXTRA_EVENT_ID) ?: return Result.success()
-        val container = (applicationContext as ButlerApplication).container
-        val dao = container.database.dailyEventDao()
-        val event = dao.get(eventId) ?: return Result.success()
-        if (event.content.isNullOrBlank() || !event.speakAloud) return Result.success()
-
-        // Claim before TTS initialization: retries, duplicate alarms, and process restarts
-        // must never turn one proactive brief into repeated speech.
-        if (dao.claimPlayback(event.id, Instant.now().toString()) != 1) return Result.success()
-        val spoken = withTimeoutOrNull(120_000) {
-            LocalTextToSpeech(applicationContext).speak(event.content)
-        } ?: false
-        if (!spoken) Log.w("HelloButlerTTS", "Local TTS could not play event ${event.id}")
-        return Result.success() // TTS failures are terminal for this occurrence, not retryable work.
+        return runCatching {
+            SpeechForegroundService.start(applicationContext, eventId)
+            Result.success()
+        }.getOrElse { Result.failure() }
     }
 
     companion object {
@@ -72,15 +206,10 @@ class DailyEventExecutionWorker(
     }
 }
 
-class ScheduleRestoreWorker(
-    appContext: Context,
-    params: WorkerParameters,
-) : CoroutineWorker(appContext, params) {
+class ScheduleRestoreWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val container = (applicationContext as ButlerApplication).container
-        container.database.dailyEventDao().pendingSpokenEvents().forEach(
-            container.eventScheduler::schedule
-        )
+        container.database.dailyEventDao().pendingSpokenEvents().forEach(container.eventScheduler::schedule)
         return Result.success()
     }
 

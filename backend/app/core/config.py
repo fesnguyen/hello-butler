@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     butler_event_limit: int = 30
     nightly_planning_time: time = time(23, 0)
     morning_brief_default_time: time = time(6, 5)
+    evening_preparation_time: time = time(22, 30)
+    good_night_summary_time: time = time(22, 45)
+    firebase_project_id: str = ""
+    firebase_credentials_path: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
