@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from sqlalchemy import select
 
 from app.application.planning.evening import EveningPreparationService
-from app.application.push import PushService
 from app.core.config import Settings
 from app.core.database import AsyncSessionLocal
+from app.core.lifecycle import daily_plan_changes
 from app.infrastructure.ai.openai_provider import OpenAIButlerProvider
 from app.infrastructure.db.models import UserModel
 
@@ -22,19 +22,8 @@ class NightlyPlanningScheduler:
         provider = OpenAIButlerProvider(
             api_key=settings.openai_api_key, model=settings.openai_model
         )
-        from app.infrastructure.push import FirebasePushProvider
-
         self._service = EveningPreparationService(
-            settings,
-            AsyncSessionLocal,
-            provider,
-            PushService(
-                AsyncSessionLocal,
-                FirebasePushProvider(
-                    project_id=settings.firebase_project_id,
-                    credentials_path=settings.firebase_credentials_path,
-                ),
-            ),
+            settings, AsyncSessionLocal, provider, daily_plan_changes(settings)
         )
 
     async def run_forever(self) -> None:

@@ -7,6 +7,7 @@ from app.api.auth import AuthenticatedUser, get_authenticated_user
 from app.application.butler import ButlerAIUnavailableError, ButlerResult, ButlerService
 from app.core.config import Settings, get_settings
 from app.core.database import AsyncSessionLocal
+from app.core.lifecycle import daily_plan_changes
 from app.infrastructure.ai.openai_provider import OpenAIButlerProvider
 
 router = APIRouter(prefix="/api/butler", tags=["butler"])
@@ -30,6 +31,7 @@ async def talk(
         settings=settings,
         session_factory=AsyncSessionLocal,
         ai_provider=provider,
+        changes=daily_plan_changes(settings),
     )
     try:
         return await service.handle(

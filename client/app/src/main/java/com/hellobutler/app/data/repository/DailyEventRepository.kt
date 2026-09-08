@@ -38,6 +38,7 @@ class DailyEventRepository(
     private val auth: AuthRepository,
     private val scheduler: DailyEventScheduler,
     private val json: Json,
+    private val enqueueSync: (List<String>) -> Unit = { DailySyncWorker.enqueue(context, it) },
 ) {
     private val dao: DailyEventDao = database.dailyEventDao()
     private val pending = database.pendingSyncOperationDao()
@@ -78,7 +79,7 @@ class DailyEventRepository(
             }
         }
         scheduler.cancel(event)
-        DailySyncWorker.enqueue(context)
+        enqueueSync(emptyList())
     }
 
     private suspend fun queue(
@@ -112,8 +113,13 @@ class DailyEventRepository(
             )
         }
         scheduler.schedule(local)
-        DailySyncWorker.enqueue(context)
+        enqueueSync(emptyList())
     }
+
+    // This lock covers upload only, never the AI request. Direct edits keep their local path.
+    suspend fun flushPending() = syncMutex.withLock { pushPending() }
+
+    fun queueSynchronization(dates: List<String>) = enqueueSync(dates)
 
     suspend fun synchronize(dates: List<String>): Set<String> = syncMutex.withLock {
         pushPending()

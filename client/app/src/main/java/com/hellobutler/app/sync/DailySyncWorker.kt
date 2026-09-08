@@ -3,6 +3,7 @@ package com.hellobutler.app.sync
 import android.content.Context
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
@@ -20,21 +21,23 @@ class DailySyncWorker(appContext: Context, params: WorkerParameters) : Coroutine
         val today = LocalDate.now()
         return runCatching {
             container.dailyEventRepository.synchronize(
-                listOf(today.toString(), today.plusDays(1).toString())
+                listOf(today.toString(), today.plusDays(1).toString()) +
+                    inputData.getStringArray("plan_dates").orEmpty().toList()
             )
             Result.success()
         }.getOrElse { Result.retry() }
     }
 
     companion object {
-        fun enqueue(context: Context) {
+        fun enqueue(context: Context, dates: List<String> = emptyList()) {
             val request = OneTimeWorkRequestBuilder<DailySyncWorker>()
+                .setInputData(Data.Builder().putStringArray("plan_dates", dates.distinct().toTypedArray()).build())
                 .setConstraints(
                     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
                 )
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(
-                "daily-event-sync", ExistingWorkPolicy.KEEP, request
+                "daily-event-sync", ExistingWorkPolicy.APPEND_OR_REPLACE, request
             )
         }
 

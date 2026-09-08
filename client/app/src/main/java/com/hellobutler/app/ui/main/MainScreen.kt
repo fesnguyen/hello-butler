@@ -1,6 +1,12 @@
 package com.hellobutler.app.ui.main
 
 import android.Manifest
+import android.app.AlarmManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.hellobutler.app.execution.ScheduleRestoreWorker
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -24,7 +30,6 @@ import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.execution.SpeechForegroundService
 import com.hellobutler.app.execution.SpeechPlaybackState
 import com.hellobutler.app.speech.SpeechInputController
-import com.hellobutler.app.sync.PushRegistrationWorker
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -36,6 +41,13 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     val events by viewModel.events.collectAsState()
     val context = LocalContext.current
     val speaking by SpeechPlaybackState.speaking.collectAsState()
+    var exactAlarmsAllowed by remember { mutableStateOf(true) }
+    LifecycleResumeEffect(Unit) {
+        exactAlarmsAllowed = Build.VERSION.SDK_INT < 31 ||
+            context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+        ScheduleRestoreWorker.enqueue(context)
+        onPauseOrDispose { }
+    }
     val speech = remember { SpeechInputController(context) }
     var capturing by remember { mutableStateOf(false) }
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
@@ -49,7 +61,6 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 
     DisposableEffect(Unit) { onDispose { speech.destroy() } }
     LaunchedEffect(Unit) {
-        PushRegistrationWorker.enqueue(context)
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -101,6 +112,25 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            if (!exactAlarmsAllowed) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Automatic speech needs alarm access. Otherwise, allow notifications and tap Listen when a reminder arrives.",
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(onClick = {
+                            context.startActivity(Intent(
+                                Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                Uri.parse("package:${context.packageName}"),
+                            ))
+                        }) { Text("Enable") }
+                    }
+                }
+            }
             if (speaking) {
                 Surface(color = MaterialTheme.colorScheme.primaryContainer) {
                     Row(

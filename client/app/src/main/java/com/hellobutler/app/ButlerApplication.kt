@@ -5,7 +5,9 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.hellobutler.app.core.AppContainer
 import com.hellobutler.app.execution.NightlyPlanSyncWorker
+import com.hellobutler.app.execution.ScheduleRestoreWorker
 import com.hellobutler.app.sync.DailySyncWorker
+import com.hellobutler.app.sync.PushRegistrationWorker
 
 class ButlerApplication : Application() {
     val container by lazy { AppContainer(this) }
@@ -28,7 +30,9 @@ class ButlerApplication : Application() {
                     .build(),
             )
         }
+        ScheduleRestoreWorker.enqueue(this)
         NightlyPlanSyncWorker.scheduleNext(this)
         DailySyncWorker.schedulePeriodic(this)
+        if (container.authRepository.hasSession()) PushRegistrationWorker.enqueue(this)
     }
 }

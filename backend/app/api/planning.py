@@ -14,11 +14,10 @@ from app.application.planning import (
 )
 from app.application.planning.lock import UserPlanningLock
 from app.application.planning.service import PlanningValidationError
-from app.application.push import PushService
 from app.core.config import Settings, get_settings
 from app.core.database import AsyncSessionLocal
+from app.core.lifecycle import daily_plan_changes
 from app.infrastructure.ai.openai_provider import OpenAIButlerProvider
-from app.infrastructure.push import FirebasePushProvider
 
 router = APIRouter(prefix="/api/planning", tags=["planning"])
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -60,6 +59,7 @@ async def prepare_day(
         settings,
         AsyncSessionLocal,
         OpenAIButlerProvider(api_key=settings.openai_api_key, model=settings.openai_model),
+        daily_plan_changes(settings),
     )
     try:
         async with UserPlanningLock(AsyncSessionLocal).hold(user.id):
@@ -88,17 +88,10 @@ async def prepare_evening(
             status.HTTP_400_BAD_REQUEST, "Summary date override is development-only"
         )
     provider = OpenAIButlerProvider(api_key=settings.openai_api_key, model=settings.openai_model)
-    push = PushService(
-        AsyncSessionLocal,
-        FirebasePushProvider(
-            project_id=settings.firebase_project_id,
-            credentials_path=settings.firebase_credentials_path,
-        ),
-    )
     try:
-        return await EveningPreparationService(settings, AsyncSessionLocal, provider, push).prepare(
-            user.id, request.summary_date or today
-        )
+        return await EveningPreparationService(
+            settings, AsyncSessionLocal, provider, daily_plan_changes(settings)
+        ).prepare(user.id, request.summary_date or today)
     except ButlerAIUnavailableError as exc:
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Evening preparation AI is unavailable"

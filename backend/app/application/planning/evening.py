@@ -15,7 +15,7 @@ from app.application.planning.contracts import (
 )
 from app.application.planning.lock import UserPlanningLock
 from app.application.planning.service import DayPlanningService
-from app.application.push import PushService
+from app.application.push.changes import DailyPlanChanges
 from app.core.config import Settings
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel, UserContextEntryModel
 
@@ -26,13 +26,13 @@ class EveningPreparationService:
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
         ai_provider: DayPlanningAIProvider,
-        push_service: PushService,
+        changes: DailyPlanChanges,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._ai = ai_provider
-        self._push = push_service
-        self._planner = DayPlanningService(settings, session_factory, ai_provider)
+        self._changes = changes
+        self._planner = DayPlanningService(settings, session_factory, ai_provider, changes)
         self._lock = UserPlanningLock(session_factory)
 
     async def prepare(self, user_id: uuid.UUID, summary_date: date) -> EveningPreparationResult:
@@ -48,7 +48,6 @@ class EveningPreparationService:
             tomorrow_plan = await self._planner.prepare(user_id, tomorrow)
             if protected_summary is None:
                 await self._persist_summary(user_id, summary_date, summary_content)
-        await self._push.daily_plan_changed(user_id)
         return EveningPreparationResult(
             summary_date=summary_date,
             tomorrow_date=tomorrow,
@@ -138,7 +137,7 @@ class EveningPreparationService:
         )
 
     async def _persist_summary(self, user_id: uuid.UUID, summary_date: date, content: str) -> None:
-        async with self._session_factory() as session, session.begin():
+        async with self._changes.transaction(user_id) as session:
             plan = (
                 await session.execute(
                     select(DailyPlanModel)

@@ -81,6 +81,7 @@ class ButlerDecision(BaseModel):
 class ChangedEntity(BaseModel):
     type: str
     id: uuid.UUID
+    plan_dates: list[date] = Field(default_factory=list[date])
 
 
 class ButlerResult(BaseModel):

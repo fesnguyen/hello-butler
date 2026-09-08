@@ -112,10 +112,7 @@ class MainViewModel(
     }
 
     fun logout(onCleared: () -> Unit) {
-        viewModelScope.launch {
-            runCatching { eventsRepository.clear() }
-            onCleared()
-        }
+        onCleared() // AuthRepository invalidates credentials before clearing execution data.
     }
 
     private fun send(message: String, mode: CaptureMode) {
@@ -138,6 +135,7 @@ class MainViewModel(
                     _state.update {
                         it.copy(
                             processing = false,
+                            error = if (response.syncPending) "Butler finished. Updated plans will sync when connected." else null,
                             messages = it.messages + ConversationMessage("butler", response.response),
                         )
                     }
@@ -145,7 +143,6 @@ class MainViewModel(
                         delay(5_000)
                         _state.update { it.copy(overlayVisible = false, captureMode = null) }
                     }
-                    if (response.changedEntities.isNotEmpty()) refreshPreparedDays()
                 },
                 onFailure = { error -> _state.update { it.copy(processing = false, error = error.message ?: "Butler request failed") } },
             )

@@ -16,6 +16,7 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         val backendUrl = providers.gradleProperty("BACKEND_BASE_URL").orElse("http://10.0.2.2:8000/").get()
         val googleClientId = providers.gradleProperty("GOOGLE_SERVER_CLIENT_ID").orElse("").get()
@@ -77,5 +78,7 @@ dependencies {
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

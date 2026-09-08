@@ -8,12 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import AuthenticatedUser, get_authenticated_user
-from app.application.push import PushService
 from app.application.sync import DailyEventSyncService, EventSyncOperation, SyncBatchResult
 from app.core.config import Settings, get_settings
-from app.core.database import AsyncSessionLocal, get_session
+from app.core.database import get_session
+from app.core.lifecycle import daily_plan_changes
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
-from app.infrastructure.push import FirebasePushProvider
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -64,17 +63,9 @@ async def sync_events(
     user: AuthenticatedUserDep,
     settings: SettingsDep,
 ) -> SyncBatchResult:
-    result = await DailyEventSyncService(AsyncSessionLocal).apply(user.id, request.operations)
-    if any(item.status == "applied" for item in result.results):
-        push = PushService(
-            AsyncSessionLocal,
-            FirebasePushProvider(
-                project_id=settings.firebase_project_id,
-                credentials_path=settings.firebase_credentials_path,
-            ),
-        )
-        await push.daily_plan_changed(user.id)
-    return result
+    return await DailyEventSyncService(daily_plan_changes(settings)).apply(
+        user.id, request.operations
+    )
 
 
 @router.get("/daily-plan/{plan_date}", response_model=DailyPlanSnapshot)

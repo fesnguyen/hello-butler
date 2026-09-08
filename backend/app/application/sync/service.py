@@ -6,8 +6,9 @@ from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.push.changes import DailyPlanChanges
 from app.application.sync.contracts import (
     DailyEventMutation,
     DailyEventState,
@@ -20,15 +21,15 @@ from app.infrastructure.db.models import DailyEventModel, DailyPlanModel, SyncOp
 
 
 class DailyEventSyncService:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
+    def __init__(self, changes: DailyPlanChanges) -> None:
+        self._changes = changes
 
     async def apply(
         self, user_id: uuid.UUID, operations: list[EventSyncOperation]
     ) -> SyncBatchResult:
         results: list[EventSyncResult] = []
         for operation in operations:
-            async with self._session_factory() as session, session.begin():
+            async with self._changes.transaction(user_id) as session:
                 results.append(await self._apply_one(session, user_id, operation))
         return SyncBatchResult(results=results)
 
@@ -111,6 +112,8 @@ class DailyEventSyncService:
             )
         )
         await session.flush()
+        # UPDATE expires server-generated updated_at; read it inside an awaited ORM call.
+        await session.refresh(event)
         return EventSyncResult(
             operation_id=operation.operation_id, status="applied", event=self._state(event)
         )

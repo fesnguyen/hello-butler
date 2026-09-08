@@ -1033,7 +1033,11 @@ events are normalized to `speak_aloud=false`; the persisted Morning Brief is
 
 The configured Butler timezone currently applies to every user. Event dates and
 times are delivered as local values and Android interprets them in the device
-timezone. Per-user timezone storage is deferred.
+timezone. **The deployment requires the device timezone to equal
+`BUTLER_DEFAULT_TIMEZONE` for every user/device.** The default server UTC value
+must be changed when devices use another zone. Today/tomorrow, evening
+preparation and alarm conversion all depend on this constraint. Per-user
+timezone storage and cross-zone travel are deferred.
 
 ---
 
@@ -1064,7 +1068,12 @@ At the configured preparation time (initially 22:30), or through authenticated
 loads today's actual event states, generates and validates Good Night Summary
 content, prepares tomorrow through the existing protected-event planner, and
 persists today's summary at 22:45. The workflow then emits a lightweight
-`daily_plan_changed` FCM data message. A user-owned summary is not overwritten.
+`daily_plan_changed` FCM data message after each canonical transaction commits.
+A user-owned summary is not overwritten. `DailyPlanChanges` provides the same
+post-commit publication boundary for Butler event actions, explicit preparation
+and direct sync, even if a later workflow step fails. Push failure never rolls
+back canonical state. Each publication contains only the hint; clients fetch
+canonical state through authenticated sync.
 
 ---
 

@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -44,13 +45,24 @@ class DailyEventAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_EXECUTE_EVENT) return
         val eventId = intent.getStringExtra(EXTRA_EVENT_ID) ?: return
-        SpeechForegroundService.start(context, eventId)
+        try {
+            SpeechForegroundService.start(context, eventId)
+        } catch (error: IllegalStateException) {
+            // Permission can be revoked between scheduling and delivery. Do not consume the claim.
+            DailyEventExecutionWorker.enqueue(context, eventId, 0)
+        } catch (error: SecurityException) {
+            DailyEventExecutionWorker.enqueue(context, eventId, 0)
+        }
     }
 }
 
 class ScheduleRestoreReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED || intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) {
+        if (intent.action in setOf(
+                Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED,
+                Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED,
+                android.app.AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED,
+            )) {
             ScheduleRestoreWorker.enqueue(context)
             NightlyPlanSyncWorker.scheduleNext(context)
             DailySyncWorker.enqueue(context)
@@ -62,6 +74,8 @@ class SpeechForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playback: Job? = null
     private var tts: LocalTextToSpeech? = null
+    private var activeStartId = 0
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -80,24 +94,48 @@ class SpeechForegroundService : Service() {
             stopSelf(startId)
             return START_NOT_STICKY
         }
-        startAsForeground(notification("Preparing Butler speech…"))
+        try {
+            startAsForeground(notification("Preparing Butler speech…"))
+        } catch (error: IllegalStateException) {
+            DailyEventExecutionWorker.enqueue(this, eventId, 0)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        activeStartId = startId
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = getSystemService(PowerManager::class.java)
+            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HelloButler:ScheduledSpeech")
+            .apply { acquire(130_000) } // Bound CPU wake time while the locked device initializes TTS.
         playback?.cancel()
-        playback = scope.launch { speak(eventId, startId) }
+        tts?.stop()
+        playback = scope.launch {
+            try {
+                speak(eventId)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.w("HelloButlerTTS", "Scheduled speech failed", error)
+            } finally {
+                if (activeStartId == startId) finish(startId)
+            }
+        }
         return START_NOT_STICKY
     }
 
-    private suspend fun speak(eventId: String, startId: Int) {
+    private suspend fun speak(eventId: String) {
         val container = (application as ButlerApplication).container
         val dao = container.database.dailyEventDao()
         val event = dao.get(eventId)
-        if (event?.content.isNullOrBlank() || event?.speakAloud != true) {
-            finish(startId)
+        if (event == null || !event.isDueForSpeech()) {
             return
         }
-        if (dao.claimPlayback(event.id, Instant.now().toString()) != 1) {
-            finish(startId)
+        if (dao.claimPlayback(
+                event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(),
+                event.content.orEmpty(), event.version,
+            ) != 1) {
             return
         }
+        DeferredSpeechNotification.cancel(this, eventId)
         SpeechPlaybackState.setSpeaking(true)
         getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID, notification(event.title)
@@ -106,7 +144,6 @@ class SpeechForegroundService : Service() {
         tts = player
         val spoken = withTimeoutOrNull(120_000) { player.speak(event.content.orEmpty()) } ?: false
         if (!spoken) Log.w("HelloButlerTTS", "Local TTS could not play event ${event.id}")
-        finish(startId)
     }
 
     private fun stopSpeech() {
@@ -118,6 +155,8 @@ class SpeechForegroundService : Service() {
     private fun finish(startId: Int?) {
         tts?.stop()
         tts = null
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
         SpeechPlaybackState.setSpeaking(false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         if (startId == null) stopSelf() else stopSelf(startId)
@@ -151,6 +190,8 @@ class SpeechForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        wakeLock?.takeIf { it.isHeld }?.release()
+        wakeLock = null
         tts?.stop()
         scope.cancel()
         SpeechPlaybackState.setSpeaking(false)
@@ -181,10 +222,20 @@ class SpeechForegroundService : Service() {
 class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
     override suspend fun doWork(): Result {
         val eventId = inputData.getString(EXTRA_EVENT_ID) ?: return Result.success()
-        return runCatching {
-            SpeechForegroundService.start(applicationContext, eventId)
+        return try {
+            val container = (applicationContext as ButlerApplication).container
+            val event = container.database.dailyEventDao().get(eventId)
+            if (event != null && event.isDueForSpeech()) {
+                // A delayed worker has no background FGS exemption. The Listen action does.
+                if (!DeferredSpeechNotification.show(applicationContext, event)) return Result.retry()
+            }
             Result.success()
-        }.getOrElse { Result.failure() }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("HelloButlerTTS", "Could not offer scheduled playback", error)
+            Result.retry()
+        }
     }
 
     companion object {
@@ -194,7 +245,7 @@ class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) :
                 .setInitialDelay(delayMillis.coerceAtLeast(0), TimeUnit.MILLISECONDS)
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(
-                executionWorkName(eventId), ExistingWorkPolicy.KEEP, request
+                executionWorkName(eventId), ExistingWorkPolicy.REPLACE, request
             )
         }
 

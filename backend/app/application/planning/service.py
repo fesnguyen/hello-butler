@@ -18,6 +18,7 @@ from app.application.planning.contracts import (
     PreparedEvent,
     ProposedDailyEvent,
 )
+from app.application.push.changes import DailyPlanChanges
 from app.core.config import Settings
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel, UserContextEntryModel
 
@@ -32,10 +33,12 @@ class DayPlanningService:
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
         ai_provider: DayPlanningAIProvider,
+        changes: DailyPlanChanges,
     ) -> None:
         self._settings = settings
         self._session_factory = session_factory
         self._ai = ai_provider
+        self._changes = changes
 
     async def prepare(
         self,
@@ -181,7 +184,7 @@ class DayPlanningService:
         brief_content: str,
         brief_time: time,
     ) -> PreparedDayResult:
-        async with self._session_factory() as session, session.begin():
+        async with self._changes.transaction(user_id) as session:
             await session.execute(
                 insert(DailyPlanModel)
                 .values(id=uuid.uuid4(), user_id=user_id, plan_date=target_date, status="planned")

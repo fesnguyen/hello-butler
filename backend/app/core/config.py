@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     morning_brief_default_time: time = time(6, 5)
     evening_preparation_time: time = time(22, 30)
     good_night_summary_time: time = time(22, 45)
+    push_timeout_seconds: float = Field(default=5, gt=0, le=30)
     firebase_project_id: str = ""
     firebase_credentials_path: str = ""
 
