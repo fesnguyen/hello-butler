@@ -202,7 +202,7 @@ fun EventDetailDialog(
     )
 
     if (selectingStart) {
-        NativeTimePickerDialog(
+        MaterialTimePickerDialog(
             initialTime = startTime.toLocalTime(),
             title = "Select start time",
             onDismiss = { selectingStart = false },
@@ -210,7 +210,7 @@ fun EventDetailDialog(
         )
     }
     if (selectingEnd) {
-        NativeTimePickerDialog(
+        MaterialTimePickerDialog(
             initialTime = endTime.toLocalTime(),
             title = "Select end time",
             onDismiss = { selectingEnd = false },
@@ -242,7 +242,7 @@ private fun TimeField(label: String, value: String?, onClick: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NativeTimePickerDialog(
+private fun MaterialTimePickerDialog(
     initialTime: LocalTime?,
     title: String,
     onDismiss: () -> Unit,
@@ -250,13 +250,19 @@ private fun NativeTimePickerDialog(
 ) {
     val fallback = initialTime ?: LocalTime.now().withSecond(0).withNano(0)
     val state = rememberTimePickerState(initialHour = fallback.hour, initialMinute = fallback.minute, is24Hour = false)
-    TimePickerDialog(
-        onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = { onConfirm(LocalTime.of(state.hour, state.minute)) }) { Text("OK") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-        title = { Text(title) },
-    ) {
-        TimePicker(state = state)
+    Dialog(onDismissRequest = onDismiss) {
+        Surface(shape = RoundedCornerShape(28.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 6.dp) {
+            Column(Modifier.padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(title, style = MaterialTheme.typography.titleMedium, modifier = Modifier.align(Alignment.Start))
+                Spacer(Modifier.height(20.dp))
+                TimePicker(state = state)
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = onDismiss) { Text("Cancel") }
+                    TextButton(onClick = { onConfirm(LocalTime.of(state.hour, state.minute)) }) { Text("OK") }
+                }
+            }
+        }
     }
 }
 
@@ -273,11 +279,14 @@ private fun BriefContentDialog(event: DailyEventEntity, onDismiss: () -> Unit) {
 
     DisposableEffect(Unit) { onDispose { tts.stop() } }
 
-    Dialog(onDismissRequest = {
-        tts.stop()
-        speaking = false
-        onDismiss()
-    }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = {
+            tts.stop()
+            speaking = false
+            onDismiss()
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = false),
+    ) {
         Surface(
             modifier = Modifier.fillMaxWidth(.90f).fillMaxHeight(.78f),
             shape = RoundedCornerShape(28.dp),
