@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -37,9 +37,15 @@ class ButlerContextLoader:
             daily_plan = await self._daily_plan(session, user_id, today)
             events = await self._events_for_day(session, user_id, today)
 
+        now = datetime.now(timezone.utc)
         return ButlerContext(
             conversation_history=[
-                ContextMessage(role=row.role, content=row.content) for row in reversed(history)
+                ContextMessage(
+                    role=row.role,
+                    content=row.content,
+                    seconds_ago=max(0, int((now - row.created_at).total_seconds()))
+                )
+                for row in history
             ],
             user_context=[
                 ContextEntry(
@@ -62,14 +68,32 @@ class ButlerContextLoader:
         )
 
     async def _latest_messages(
-        self, session: AsyncSession, user_id: uuid.UUID
+        self,
+        session: AsyncSession,
+        user_id: uuid.UUID,
     ) -> Sequence[ConversationMessageModel]:
+        """Load the latest conversation messages for the user, limited by the history setting."""
+        user_message_cutoff = (
+            select(ConversationMessageModel.created_at)
+            .where(
+                ConversationMessageModel.user_id == user_id,
+                ConversationMessageModel.role == "user",
+            )
+            .order_by(ConversationMessageModel.created_at.desc())
+            .offset(self._settings.butler_history_limit - 1)
+            .limit(1)
+            .scalar_subquery()
+        )
+
         result = await session.execute(
             select(ConversationMessageModel)
-            .where(ConversationMessageModel.user_id == user_id)
-            .order_by(ConversationMessageModel.created_at.desc())
-            .limit(self._settings.butler_history_limit)
+            .where(
+                ConversationMessageModel.user_id == user_id,
+                ConversationMessageModel.created_at >= user_message_cutoff,
+            )
+            .order_by(ConversationMessageModel.created_at.asc())
         )
+
         return result.scalars().all()
 
     async def _active_context(

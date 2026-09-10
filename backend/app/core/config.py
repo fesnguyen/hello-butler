@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4-nano"
     butler_default_timezone: str = "UTC"
-    butler_history_limit: int = 12
+    butler_history_limit: int = 6
     butler_user_context_limit: int = 20
     butler_event_limit: int = 30
     nightly_planning_time: time = time(23, 0)

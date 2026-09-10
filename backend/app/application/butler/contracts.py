@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -21,6 +21,7 @@ RequestedAction = Literal[
 class ContextMessage(BaseModel):
     role: str
     content: str
+    seconds_ago: int
 
 
 class ContextEntry(BaseModel):
