@@ -1,6 +1,6 @@
 # Backend Workflow
 
-**Version:** 1.2  
+**Version:** 1.3
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
@@ -1033,7 +1033,11 @@ events are normalized to `speak_aloud=false`; the persisted Morning Brief is
 
 The configured Butler timezone currently applies to every user. Event dates and
 times are delivered as local values and Android interprets them in the device
-timezone. Per-user timezone storage is deferred.
+timezone. **The deployment requires the device timezone to equal
+`BUTLER_DEFAULT_TIMEZONE` for every user/device.** The default server UTC value
+must be changed when devices use another zone. Today/tomorrow, evening
+preparation and alarm conversion all depend on this constraint. Per-user
+timezone storage and cross-zone travel are deferred.
 
 ---
 
@@ -1056,6 +1060,20 @@ Client sync
 ```
 
 Again, playback is a client concern.
+
+## Implemented Evening Preparation
+
+At the configured preparation time (initially 22:30), or through authenticated
+`POST /api/planning/evening-prepare`, the backend serializes work for the user,
+loads today's actual event states, generates and validates Good Night Summary
+content, prepares tomorrow through the existing protected-event planner, and
+persists today's summary at 22:45. The workflow then emits a lightweight
+`daily_plan_changed` FCM data message after each canonical transaction commits.
+A user-owned summary is not overwritten. `DailyPlanChanges` provides the same
+post-commit publication boundary for Butler event actions, explicit preparation
+and direct sync, even if a later workflow step fails. Push failure never rolls
+back canonical state. Each publication contains only the hint; clients fetch
+canonical state through authenticated sync.
 
 ---
 
@@ -1080,6 +1098,12 @@ Return authoritative state
 Use simple optimistic concurrency.
 
 No event-sourcing architecture is required.
+
+The implemented client mutation batch supports create, edit, complete, skip,
+delay, cancel, and delete. Each operation is idempotent by operation ID. Matching
+base versions apply and increment the event version; mismatches return the
+current canonical event with `status=conflict`. Deletion uses the existing
+server tombstone and disappears from subsequent day snapshots.
 
 ---
 

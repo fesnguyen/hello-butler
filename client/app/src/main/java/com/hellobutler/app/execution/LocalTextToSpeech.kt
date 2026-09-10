@@ -14,6 +14,10 @@ import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
 
 class LocalTextToSpeech(private val context: Context) {
+    @Volatile private var stopAction: (() -> Unit)? = null
+
+    fun stop() = stopAction?.invoke() ?: Unit
+
     suspend fun speak(text: String): Boolean = suspendCancellableCoroutine { continuation ->
         val audio = context.getSystemService(AudioManager::class.java)
         val attributes = AudioAttributes.Builder()
@@ -30,14 +34,21 @@ class LocalTextToSpeech(private val context: Context) {
 
         fun finish(success: Boolean) {
             if (!completed.compareAndSet(false, true)) return
+            engine?.stop()
             engine?.shutdown()
             if (ownsFocus) audio.abandonAudioFocusRequest(focus)
+            stopAction = null
             if (continuation.isActive) continuation.resume(success)
         }
 
+        stopAction = { finish(false) }
         continuation.invokeOnCancellation { finish(false) }
         engine = TextToSpeech(context.applicationContext) { status ->
             val tts = engine
+            if (completed.get()) {
+                tts?.shutdown() // Stop can arrive before asynchronous engine initialization finishes.
+                return@TextToSpeech
+            }
             if (status != TextToSpeech.SUCCESS || tts == null) {
                 finish(false)
                 return@TextToSpeech
@@ -47,6 +58,14 @@ class LocalTextToSpeech(private val context: Context) {
                 finish(false)
                 return@TextToSpeech
             }
+            val offlineVoice = tts.voices?.filter {
+                !it.isNetworkConnectionRequired && it.locale.language == Locale.getDefault().language
+            }?.sortedByDescending { it.locale == Locale.getDefault() }?.firstOrNull()
+            if (offlineVoice == null || tts.setVoice(offlineVoice) == TextToSpeech.ERROR) {
+                finish(false) // Install an offline voice for the device language before relying on speech.
+                return@TextToSpeech
+            }
+            tts.setAudioAttributes(attributes)
             ownsFocus = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
             if (!ownsFocus) {
                 finish(false)

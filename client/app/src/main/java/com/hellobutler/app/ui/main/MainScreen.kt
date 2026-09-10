@@ -1,7 +1,14 @@
 package com.hellobutler.app.ui.main
 
 import android.Manifest
+import android.app.AlarmManager
+import android.content.Intent
+import android.net.Uri
+import android.provider.Settings
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.hellobutler.app.execution.ScheduleRestoreWorker
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -9,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.AccountCircle
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.*
@@ -19,9 +27,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hellobutler.app.data.local.DailyEventEntity
+import com.hellobutler.app.execution.SpeechForegroundService
+import com.hellobutler.app.execution.SpeechPlaybackState
 import com.hellobutler.app.speech.SpeechInputController
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
+import java.util.UUID
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -29,14 +40,35 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     val state by viewModel.state.collectAsState()
     val events by viewModel.events.collectAsState()
     val context = LocalContext.current
+    val speaking by SpeechPlaybackState.speaking.collectAsState()
+    var exactAlarmsAllowed by remember { mutableStateOf(true) }
+    LifecycleResumeEffect(Unit) {
+        exactAlarmsAllowed = Build.VERSION.SDK_INT < 31 ||
+            context.getSystemService(AlarmManager::class.java).canScheduleExactAlarms()
+        ScheduleRestoreWorker.enqueue(context)
+        onPauseOrDispose { }
+    }
     val speech = remember { SpeechInputController(context) }
     var capturing by remember { mutableStateOf(false) }
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
+    var creatingEvent by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) viewModel.captureError("Microphone permission is required for voice input")
     }
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
 
     DisposableEffect(Unit) { onDispose { speech.destroy() } }
+    LaunchedEffect(Unit) {
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
 
     fun startCapture(mode: CaptureMode) {
         if (capturing || state.processing) return
@@ -58,6 +90,18 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         topBar = {
             TodayHeader(
                 onRefresh = viewModel::refreshPreparedDays,
+                onAddEvent = {
+                    creatingEvent = true
+                    selectedEvent = DailyEventEntity(
+                        id = UUID.randomUUID().toString(), dailyPlanId = null,
+                        eventDate = LocalDate.now().toString(), title = "", description = null,
+                        eventType = "custom", status = "planned", startTime = null, endTime = null,
+                        durationMinutes = null, scheduledPrecision = null, content = null,
+                        reminderMinutesBefore = null, speakAloud = false, sortOrder = events.size,
+                        version = 0, origin = "user", syncedFromServer = false,
+                        playbackAttemptedAt = null,
+                    )
+                },
                 onRecreateToday = viewModel::recreateTodayPlan,
                 recreatingToday = state.recreatingToday,
                 onLogout = onLogout,
@@ -68,6 +112,36 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
+            if (!exactAlarmsAllowed) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Automatic speech needs alarm access. Otherwise, allow notifications and tap Listen when a reminder arrives.",
+                            Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                        )
+                        TextButton(onClick = {
+                            context.startActivity(Intent(
+                                Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,
+                                Uri.parse("package:${context.packageName}"),
+                            ))
+                        }) { Text("Enable") }
+                    }
+                }
+            }
+            if (speaking) {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text("Butler is speaking", Modifier.weight(1f))
+                        TextButton(onClick = { SpeechForegroundService.stop(context) }) { Text("Stop") }
+                    }
+                }
+            }
             if (!state.overlayVisible) {
                 state.error?.let { message ->
                     Text(
@@ -109,10 +183,20 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         }
     }
     selectedEvent?.let { event ->
-        EventDetailDialog(event, { selectedEvent = null }) {
-            viewModel.updateEvent(it)
-            selectedEvent = null
-        }
+        EventDetailDialog(
+            event = event,
+            onDismiss = { selectedEvent = null; creatingEvent = false },
+            onDelete = {
+                if (!creatingEvent) viewModel.deleteEvent(event)
+                selectedEvent = null
+                creatingEvent = false
+            },
+            onSave = {
+                viewModel.updateEvent(it)
+                selectedEvent = null
+                creatingEvent = false
+            },
+        )
     }
 }
 
@@ -120,6 +204,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
 @Composable
 private fun TodayHeader(
     onRefresh: () -> Unit,
+    onAddEvent: () -> Unit,
     onRecreateToday: () -> Unit,
     recreatingToday: Boolean,
     onLogout: () -> Unit,
@@ -139,6 +224,7 @@ private fun TodayHeader(
             }
         },
         actions = {
+            IconButton(onClick = onAddEvent) { Icon(Icons.Default.Add, "Add event") }
             IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh prepared days") }
             Box {
                 IconButton(onClick = { accountMenuOpen = true }) { Icon(Icons.Outlined.AccountCircle, "Account menu") }

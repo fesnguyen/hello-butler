@@ -16,7 +16,7 @@ interface DailyEventDao {
     @Query("SELECT * FROM daily_events WHERE id = :id LIMIT 1")
     suspend fun get(id: String): DailyEventEntity?
 
-    @Query("SELECT * FROM daily_events WHERE speakAloud = 1 AND playbackAttemptedAt IS NULL AND content IS NOT NULL AND TRIM(content) != ''")
+    @Query("SELECT * FROM daily_events WHERE status = 'planned' AND speakAloud = 1 AND playbackAttemptedAt IS NULL AND content IS NOT NULL AND TRIM(content) != ''")
     suspend fun pendingSpokenEvents(): List<DailyEventEntity>
 
     @Upsert suspend fun upsert(event: DailyEventEntity)
@@ -25,11 +25,14 @@ interface DailyEventDao {
     @Query("DELETE FROM daily_events WHERE id = :id")
     suspend fun delete(id: String)
 
-    @Query("DELETE FROM daily_events WHERE eventDate = :date AND syncedFromServer = 1")
-    suspend fun deleteServerDate(date: String)
+    @Query("DELETE FROM daily_events WHERE eventDate = :date AND syncedFromServer = 1 AND id NOT IN (SELECT eventId FROM pending_sync_operations)")
+    suspend fun deleteServerDateExceptPending(date: String)
 
-    @Query("UPDATE daily_events SET playbackAttemptedAt = :attemptedAt WHERE id = :id AND playbackAttemptedAt IS NULL AND speakAloud = 1 AND content IS NOT NULL AND TRIM(content) != ''")
-    suspend fun claimPlayback(id: String, attemptedAt: String): Int
+    @Query("UPDATE daily_events SET playbackAttemptedAt = :attemptedAt WHERE id = :id AND status = 'planned' AND eventDate = :eventDate AND startTime = :startTime AND content = :content AND version = :version AND playbackAttemptedAt IS NULL AND speakAloud = 1 AND content IS NOT NULL AND TRIM(content) != ''")
+    suspend fun claimPlayback(
+        id: String, attemptedAt: String, eventDate: String, startTime: String,
+        content: String, version: Int,
+    ): Int
 
     @Query("DELETE FROM daily_events")
     suspend fun deleteAll()

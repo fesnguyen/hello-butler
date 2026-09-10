@@ -3,17 +3,21 @@ from datetime import date, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import AuthenticatedUser, get_authenticated_user
+from app.application.sync import DailyEventSyncService, EventSyncOperation, SyncBatchResult
+from app.core.config import Settings, get_settings
 from app.core.database import get_session
+from app.core.lifecycle import daily_plan_changes
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 AuthenticatedUserDep = Annotated[AuthenticatedUser, Depends(get_authenticated_user)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
 class SyncEvent(BaseModel):
@@ -47,6 +51,21 @@ class SyncPlan(BaseModel):
 class DailyPlanSnapshot(BaseModel):
     plan: SyncPlan | None
     events: list[SyncEvent]
+
+
+class SyncBatchRequest(BaseModel):
+    operations: list[EventSyncOperation] = Field(min_length=1, max_length=100)
+
+
+@router.post("/events", response_model=SyncBatchResult)
+async def sync_events(
+    request: SyncBatchRequest,
+    user: AuthenticatedUserDep,
+    settings: SettingsDep,
+) -> SyncBatchResult:
+    return await DailyEventSyncService(daily_plan_changes(settings)).apply(
+        user.id, request.operations
+    )
 
 
 @router.get("/daily-plan/{plan_date}", response_model=DailyPlanSnapshot)

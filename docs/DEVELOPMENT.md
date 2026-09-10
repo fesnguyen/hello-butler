@@ -79,6 +79,12 @@ OPENAI_API_KEY=replace-with-openai-api-key
 OPENAI_MODEL=replace-with-configured-model
 BUTLER_DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh
 MORNING_BRIEF_DEFAULT_TIME=06:05
+EVENING_PREPARATION_TIME=22:30
+GOOD_NIGHT_SUMMARY_TIME=22:45
+
+# Firebase Cloud Messaging (optional locally; required for server wake-up hints)
+FIREBASE_PROJECT_ID=replace-with-firebase-project-id
+FIREBASE_CREDENTIALS_PATH=/absolute/path/to/firebase-service-account.json
 ```
 
 Generate a suitable local JWT secret with:
@@ -357,11 +363,25 @@ curl "http://127.0.0.1:8000/api/sync/daily-plan/$TARGET_DATE" \
 ```
 
 For a physical phone, set `BACKEND_BASE_URL` to the backend machine's LAN URL,
-install the app, sign in, and tap the toolbar Refresh button. Grant Android's
+and provide these Gradle properties through the user-level
+`~/.gradle/gradle.properties` file when testing FCM:
+
+```properties
+FIREBASE_APPLICATION_ID=replace-with-android-firebase-app-id
+FIREBASE_API_KEY=replace-with-firebase-api-key
+FIREBASE_PROJECT_ID=replace-with-firebase-project-id
+FIREBASE_SENDER_ID=replace-with-firebase-sender-id
+```
+
+Install the app and sign in. Synchronization runs automatically; toolbar Refresh
+is only a recovery/development action. Grant Android's
 **Alarms & reminders** special access when exact timing is required; without it,
-WorkManager provides a potentially delayed fallback. Confirm the generated
+WorkManager posts a potentially delayed **Listen** notification. Tap Listen to
+start offline speech; this fallback does not provide unattended playback.
+Enable notifications and install an offline TTS voice. Confirm the generated
 events appear on the Main Screen, put the app in the background or swipe it away,
-and wait for local TTS. Stop the backend after tapping Refresh to verify playback
+and wait for local TTS. The foreground notification and Main Screen expose Stop
+while Butler speaks. Stop the backend after synchronization to verify playback
 uses Room only. Do not force-stop the app in system settings because Android then
 suppresses its alarms and work until the next manual launch.
 
@@ -373,9 +393,16 @@ adb shell dumpsys jobscheduler | grep hellobutler
 adb logcat | grep -i hellobutler
 ```
 
-This milestone intentionally leaves automatic nightly invocation, complete
-bidirectional conflict resolution, per-user timezones, and general reminder
-execution for later work.
+The lifecycle now includes automatic 22:30 preparation, durable bidirectional
+event sync, FCM wake-up hints, and offline Morning Brief / Good Night Summary
+speech. Per-user timezones and user-configurable lifecycle times remain later
+product work; current server scheduling uses `BUTLER_DEFAULT_TIMEZONE`, while
+Android scheduling follows the device timezone. These zones **must match** on
+every device; use `BUTLER_DEFAULT_TIMEZONE=Asia/Ho_Chi_Minh` for Vietnam devices
+using that zone. Keep server evening preparation at 22:30 to match the client.
+
+See [daily lifecycle fix review](DAILY_LIFECYCLE_FIX_REVIEW.md) for implementation
+decisions, automated coverage, outstanding device gates and reproduction steps.
 
 ---
 

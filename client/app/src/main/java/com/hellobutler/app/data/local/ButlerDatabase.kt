@@ -8,13 +8,14 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [DailyPlanEntity::class, DailyEventEntity::class],
-    version = 2,
+    entities = [DailyPlanEntity::class, DailyEventEntity::class, PendingSyncOperationEntity::class],
+    version = 3,
     exportSchema = false,
 )
 abstract class ButlerDatabase : RoomDatabase() {
     abstract fun dailyEventDao(): DailyEventDao
     abstract fun dailyPlanDao(): DailyPlanDao
+    abstract fun pendingSyncOperationDao(): PendingSyncOperationDao
 
     companion object {
         @Volatile private var instance: ButlerDatabase? = null
@@ -24,7 +25,7 @@ abstract class ButlerDatabase : RoomDatabase() {
                 context.applicationContext,
                 ButlerDatabase::class.java,
                 "hello_butler.db",
-            ).addMigrations(MIGRATION_1_2).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3).build().also { instance = it }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
@@ -36,6 +37,13 @@ abstract class ButlerDatabase : RoomDatabase() {
                 db.execSQL("ALTER TABLE daily_events ADD COLUMN origin TEXT NOT NULL DEFAULT 'user'")
                 db.execSQL("ALTER TABLE daily_events ADD COLUMN syncedFromServer INTEGER NOT NULL DEFAULT 0")
                 db.execSQL("ALTER TABLE daily_events ADD COLUMN playbackAttemptedAt TEXT")
+            }
+        }
+
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS pending_sync_operations (operationId TEXT NOT NULL PRIMARY KEY, eventId TEXT NOT NULL, operationType TEXT NOT NULL, baseVersion INTEGER NOT NULL, payload TEXT, createdAt TEXT NOT NULL, attemptCount INTEGER NOT NULL DEFAULT 0, lastError TEXT)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS index_pending_sync_operations_eventId ON pending_sync_operations (eventId)")
             }
         }
     }

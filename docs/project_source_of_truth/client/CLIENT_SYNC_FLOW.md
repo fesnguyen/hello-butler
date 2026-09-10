@@ -1,6 +1,6 @@
 # Client Sync Flow
 
-**Status:** Determined before implementation  
+**Status:** Implemented
 **Authority:** Derived from `PROJECT.md`, `CLIENT_ARCHITECTURE.md`, and `CLIENT_WORKFLOW.md`
 
 ---
@@ -42,6 +42,19 @@ Room reconciled and pending operation removed
 
 Sync must not block ordinary event editing. Failed uploads remain pending and retry automatically. Opening the authenticated app and important background preparation should also drain pending changes before pulling newer server state.
 
+The implemented outbox covers create, edit, complete, skip, delay, cancel, and
+delete. Operations are coalesced per event while retaining the original base
+version and stable operation ID. A conflict accepts returned canonical server
+state; a successful or duplicate result reconciles Room before removing the
+pending operation.
+
+All Order/Talk/Text requests flush the outbox before sending `/api/butler/talk`.
+Upload failure prevents reasoning. The AI request does not hold the event-edit
+mutex. A mutation response carries affected `plan_dates` through authenticated
+HTTP; the repository pulls these dates plus today/tomorrow before returning.
+It durably queues reconciliation first, so losing connectivity after a successful
+command produces a sync-pending message, not a request to repeat the command.
+
 ---
 
 # Server → Client
@@ -61,6 +74,19 @@ Local alarms, notifications, and TTS schedules reconciled
 ```
 
 A visible notification is reserved for information that requires or deserves user attention. Routine synchronization should stay silent.
+
+FCM registration is authenticated. The data message contains only
+`type=daily_plan_changed`; receiving it enqueues the same constrained sync worker
+used by local edits. Startup, six-hour periodic work, connectivity-constrained
+retry, boot restoration, and evening preparation provide convergence when a
+push is delayed or missed. Sync hints append a follow-up pass when one is already
+running, so a second commit during an active pull is not dropped by KEEP policy.
+
+Canonical writes use the backend `DailyPlanChanges` transaction boundary.
+Butler actions, explicit planning, evening preparation and direct event sync
+publish after successful commit, including committed parts of a later-failing
+workflow. Rollbacks, duplicate operations and conflicts do not publish a new
+mutation hint. Delivery/registration lookup failure remains non-fatal.
 
 ---
 
@@ -131,3 +157,18 @@ This ordering prevents Good Night Summary, replanning, and similar workflows fro
 # User Experience Rule
 
 Ordinary synchronization is invisible. Do not show blocking sync screens or require a manual refresh for normal operation. Manual refresh may remain as a recovery/development action, but correctness must not depend on the user remembering to use it.
+
+
+# Current Timezone Constraint
+
+The initial deployment assumes **every device timezone equals the backend
+`BUTLER_DEFAULT_TIMEZONE`**. Dates and times are local wall-clock values; there is
+no per-user planning timezone field or client timezone negotiation. Configure
+`Asia/Ho_Chi_Minh` on the server for devices using that zone (the server default
+is UTC). This equality applies to today/tomorrow, 22:30 preparation and alarms.
+Keep the server preparation time at 22:30 to match the current client schedule.
+
+Travel or changing only a device timezone is unsupported until the deployment
+zones match again. Android reschedules after clock/timezone changes, but that
+cannot correct a server/device planning-zone mismatch. Per-user timezone support
+remains outside this fix.

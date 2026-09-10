@@ -23,11 +23,16 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4-nano"
     butler_default_timezone: str = "UTC"
-    butler_history_limit: int = 12
+    butler_history_limit: int = 6
     butler_user_context_limit: int = 20
     butler_event_limit: int = 30
     nightly_planning_time: time = time(23, 0)
     morning_brief_default_time: time = time(6, 5)
+    evening_preparation_time: time = time(22, 30)
+    good_night_summary_time: time = time(22, 45)
+    push_timeout_seconds: float = Field(default=5, gt=0, le=30)
+    firebase_project_id: str = ""
+    firebase_credentials_path: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

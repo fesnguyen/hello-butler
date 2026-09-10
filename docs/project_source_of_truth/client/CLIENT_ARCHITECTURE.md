@@ -1,6 +1,6 @@
 # Client Architecture
 
-**Version:** 1.1  
+**Version:** 1.2
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -398,6 +398,12 @@ A pending operation may identify its operation, target entity, local entity ID, 
 
 Exact fields belong in `CLIENT_WORKFLOW.md`.
 
+The implemented Room outbox stores one coalesced pending operation per event:
+operation ID, action, event ID, base server version, serialized desired state,
+creation time, and retry diagnostics. The event write and outbox write share one
+Room transaction. Snapshot pulls do not overwrite events that still have a
+pending operation.
+
 This queue supports reliable offline-first synchronization; it is not an event-sourcing system.
 
 ---
@@ -479,18 +485,27 @@ the previous local day untouched. The Main Screen continues to observe Room and
 never renders network DTOs directly. The toolbar refresh action repeats this
 bootstrap for immediate development and recovery use.
 
-After Room is updated, `DailyEventScheduler` reconciles local execution. Events
-with scheduled time, non-empty content, and `speak_aloud=true` use an exact alarm
-when Android grants exact-alarm access. WorkManager is the documented degraded
-fallback when that access is unavailable. Boot and package replacement enqueue a
-Room-backed reschedule pass.
+After Room is updated, `DailyEventScheduler` reconciles local execution. Eligible
+future speech uses an exact alarm when Android grants access. The receiver starts
+`SpeechForegroundService` directly under the exact-alarm exemption. Without
+access, delayed WorkManager work posts a local **Listen** notification; it never
+starts a foreground service. Tapping Listen supplies the user-interaction
+exemption and starts the same service. This fallback requires notifications and
+user action, can be delayed by Android, and does not promise automatic wake-up.
+The Main Screen explains this limit and links to Alarms & reminders access.
 
-The alarm enqueues one uniquely named execution worker. The worker atomically
-claims the local event before initializing Android TTS, preventing duplicate
-alarms, WorkManager retries, or process restarts from speaking it twice. TTS
-initialization, language support, audio focus, utterance completion, and shutdown
-are owned by the local execution layer. TTS failure is terminal for that event
-occurrence and does not crash or loop.
+Startup, boot, package replacement, clock/timezone changes and exact-alarm access
+grants restore schedules from Room. Past occurrences are not automatically
+replayed. A delivered Listen action rechecks the current Room event, including
+planned status, due time, same local day and playback claim. Updates, skips,
+cancellations and deletions cancel invalid schedules and pending notifications.
+
+The service atomically claims the exact cached version/date/time/content before
+initializing TTS. It uses an installed offline voice, audio focus and a bounded
+partial wake lock. Stop, cancellation and completion release these resources.
+An unavailable offline voice is a playback failure; install local voice data
+before relying on scheduled speech. Merely offering Listen, or a denied service
+start, does not consume the playback claim.
 
 ---
 
@@ -537,6 +552,11 @@ TTS may speak Morning wake-up, Morning Brief, Talk responses, optional confirmat
 
 Speech should remain intentional rather than accompany every notification.
 
+Scheduled proactive speech runs in a short-lived media-playback foreground
+service. It loads cached content from Room, claims the occurrence once, owns
+audio focus and Android TTS, exposes Stop in its ongoing notification and the
+Main Screen, and removes foreground state after completion or failure.
+
 ---
 
 # Authentication
@@ -580,8 +600,20 @@ When an authenticated API request encounters an expired access token, the
 network/session layer performs one coordinated refresh and retries the request.
 Concurrent requests must not independently rotate the same refresh token.
 
-Logout asks the backend to revoke the current refresh session, then removes local
-session credentials.
+Authentication success and session restoration explicitly enqueue registration
+of the current FCM token. Token refresh and authenticated process startup also
+request registration; the Main Screen is not responsible for it. Builds without
+Firebase configuration safely skip registration. Transient restoration failures
+retain the saved session and cached execution data; rejected refresh credentials
+return to authentication.
+
+Logout serializes device unregistration with registration, attempts authenticated
+unregistration before revoking the refresh session, clears local credentials,
+stops speech, then drains in-flight sync and clears Room/schedules. Network
+failure cannot prevent local logout. An offline logout may leave a server token
+until invalid-token cleanup or the next registration reassigns that token; a
+signed-out device ignores sync work. No credentials are retained just to retry
+unregistration.
 
 Normal local execution should not require an online authentication round-trip. If
 today's plan is synchronized and connectivity disappears, local execution

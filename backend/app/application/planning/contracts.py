@@ -95,6 +95,34 @@ class MorningBriefDraft(BaseModel):
         return value
 
 
+class GoodNightEvent(BaseModel):
+    title: str
+    event_type: str
+    status: str
+    start_time: time | None
+    description: str | None
+
+
+class GoodNightSummaryInput(BaseModel):
+    summary_date: date
+    tomorrow_date: date
+    timezone: str
+    user_context: list[PlanningContextEntry]
+    events: list[GoodNightEvent]
+
+
+class GoodNightSummaryDraft(BaseModel):
+    content: Annotated[str, Field(min_length=1, max_length=4000)]
+
+    @field_validator("content")
+    @classmethod
+    def strip_summary(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Good Night Summary content must not be blank")
+        return value
+
+
 class PreparedEvent(BaseModel):
     id: uuid.UUID
     title: str
@@ -110,9 +138,20 @@ class PreparedDayResult(BaseModel):
     morning_brief: str
 
 
+class EveningPreparationResult(BaseModel):
+    summary_date: date
+    tomorrow_date: date
+    good_night_summary: str
+    tomorrow_plan_id: uuid.UUID
+
+
 class DayPlanningAIProvider(Protocol):
     async def plan_day(self, planning_input: DayPlanningInput) -> PlannedDayProposal: ...
 
     async def compose_morning_brief(
         self, planning_input: DayPlanningInput, final_events: list[dict[str, object]]
     ) -> MorningBriefDraft: ...
+
+    async def compose_good_night_summary(
+        self, summary_input: GoodNightSummaryInput
+    ) -> GoodNightSummaryDraft: ...

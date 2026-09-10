@@ -16,11 +16,20 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         val backendUrl = providers.gradleProperty("BACKEND_BASE_URL").orElse("http://10.0.2.2:8000/").get()
         val googleClientId = providers.gradleProperty("GOOGLE_SERVER_CLIENT_ID").orElse("").get()
+        val firebaseAppId = providers.gradleProperty("FIREBASE_APPLICATION_ID").orElse("").get()
+        val firebaseApiKey = providers.gradleProperty("FIREBASE_API_KEY").orElse("").get()
+        val firebaseProjectId = providers.gradleProperty("FIREBASE_PROJECT_ID").orElse("").get()
+        val firebaseSenderId = providers.gradleProperty("FIREBASE_SENDER_ID").orElse("").get()
         buildConfigField("String", "BACKEND_BASE_URL", "\"$backendUrl\"")
         buildConfigField("String", "GOOGLE_SERVER_CLIENT_ID", "\"$googleClientId\"")
+        buildConfigField("String", "FIREBASE_APPLICATION_ID", "\"$firebaseAppId\"")
+        buildConfigField("String", "FIREBASE_API_KEY", "\"$firebaseApiKey\"")
+        buildConfigField("String", "FIREBASE_PROJECT_ID", "\"$firebaseProjectId\"")
+        buildConfigField("String", "FIREBASE_SENDER_ID", "\"$firebaseSenderId\"")
     }
 
     buildTypes {
@@ -63,10 +72,13 @@ dependencies {
     implementation("androidx.room:room-ktx:2.7.0")
     kapt("androidx.room:room-compiler:2.7.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
+    implementation("com.google.firebase:firebase-messaging:24.1.1")
 
     implementation("androidx.credentials:credentials:1.5.0")
     implementation("androidx.credentials:credentials-play-services-auth:1.5.0")
     implementation("com.google.android.libraries.identity.googleid:googleid:1.1.1")
 
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

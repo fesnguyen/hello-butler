@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.2  
+**Version:** 1.3
 **Status:** Initial  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -597,9 +597,11 @@ persist plan and events in Room
         ↓
 schedule eligible spoken event from its own date/time
         ↓
-alarm (or WorkManager fallback) becomes due
+exact alarm fires OR delayed worker offers a Listen notification
         ↓
-worker claims event once and loads content from Room
+exact-alarm receiver OR user taps Listen starts the short-lived speech service
+        ↓
+service validates and claims the Room occurrence once
         ↓
 Android local TTS speaks without backend access
 ```
@@ -607,6 +609,15 @@ Android local TTS speaks without backend access
 Normal app closure does not remove the schedule. Reboot and application update
 restore pending schedules. Android force-stop is an OS-level exception: work and
 alarms remain suppressed until the user launches the application again.
+
+When proactive speech starts, Android shows an ongoing "Butler is speaking"
+notification with Stop. The Main Screen also shows Stop while the process is
+alive. Stop immediately terminates TTS, releases audio focus, removes foreground
+state, and stops the service. Playback reads only Room content and therefore
+does not need authentication or network access. An installed offline voice is
+required. Without exact-alarm access, unattended speech is unavailable: the user
+must tap Listen in the scheduled notification, which Android may deliver late.
+The service does not replay a previous local day's stale notification.
 
 ---
 

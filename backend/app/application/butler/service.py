@@ -18,6 +18,7 @@ from app.application.butler.contracts import (
 from app.application.butler.graph import ButlerGraph
 from app.application.butler.history import ButlerHistoryWriter
 from app.application.butler.state import ButlerState
+from app.application.push.changes import DailyPlanChanges
 from app.core.config import Settings
 
 
@@ -28,12 +29,13 @@ class ButlerService:
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
         ai_provider: ButlerAIProvider,
+        changes: DailyPlanChanges,
     ) -> None:
         self._settings = settings
         self._graph = ButlerGraph(
             ai_provider=ai_provider,
             context_loader=ButlerContextLoader(settings, session_factory),
-            event_actions=DailyEventActions(session_factory),
+            event_actions=DailyEventActions(changes),
             context_actions=UserContextActions(session_factory),
             history_writer=ButlerHistoryWriter(session_factory),
         ).compiled

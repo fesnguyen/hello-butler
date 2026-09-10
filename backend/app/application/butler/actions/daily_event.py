@@ -4,16 +4,17 @@ import uuid
 from datetime import date, time
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.butler.contracts import ButlerResult, ChangedEntity
 from app.application.butler.state import ButlerState, ButlerStateUpdate, decision_from
+from app.application.push.changes import DailyPlanChanges
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
 
 
 class DailyEventActions:
-    def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
-        self._session_factory = session_factory
+    def __init__(self, changes: DailyPlanChanges) -> None:
+        self._changes = changes
 
     async def create(self, state: ButlerState) -> ButlerStateUpdate:
         decision = decision_from(state)
@@ -21,7 +22,7 @@ class DailyEventActions:
             return self._follow_up("What should I call this event?")
 
         event_date = decision.event_date or state["today"]
-        async with self._session_factory() as session, session.begin():
+        async with self._changes.transaction(state["user_id"]) as session:
             plan = await self._get_or_create_plan(session, state["user_id"], event_date)
             event = DailyEventModel(
                 id=uuid.uuid4(),
@@ -43,7 +44,7 @@ class DailyEventActions:
                 origin="user",
             )
             session.add(event)
-            changed = ChangedEntity(type="daily_event", id=event.id)
+            changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
 
         when = self._format_time(event_date, decision.start_time)
         return {
@@ -55,11 +56,12 @@ class DailyEventActions:
 
     async def update(self, state: ButlerState) -> ButlerStateUpdate:
         decision = decision_from(state)
-        async with self._session_factory() as session, session.begin():
+        async with self._changes.transaction(state["user_id"]) as session:
             event = await self._resolve_event(session, state)
             if event is None:
                 return self._follow_up("Which event should I update?")
 
+            previous_date = event.event_date
             changed_fields = False
             if decision.title:
                 event.title = decision.title
@@ -96,16 +98,21 @@ class DailyEventActions:
             event.origin = "user"  # An explicit user change becomes protected planning input.
             event.planner_key = None
             event.version += 1
-            changed = ChangedEntity(type="daily_event", id=event.id)
+            changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
 
         return {
             "result": ButlerResult(
-                response=f"Done. I updated {event.title}.", changed_entities=[changed]
+                response=f"Done. I updated {event.title}.",
+                changed_entities=[
+                    changed.model_copy(
+                        update={"plan_dates": sorted({previous_date, event.event_date})}
+                    )
+                ],
             )
         }
 
     async def skip(self, state: ButlerState) -> ButlerStateUpdate:
-        async with self._session_factory() as session, session.begin():
+        async with self._changes.transaction(state["user_id"]) as session:
             event = await self._resolve_event(session, state)
             if event is None:
                 return self._follow_up("Which event should I skip?")
@@ -115,7 +122,7 @@ class DailyEventActions:
             event.origin = "user"
             event.planner_key = None
             event.version += 1
-            changed = ChangedEntity(type="daily_event", id=event.id)
+            changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
 
         return {
             "result": ButlerResult(
@@ -150,11 +157,13 @@ class DailyEventActions:
         decision = decision_from(state)
         if decision.target_event_id is not None:
             result = await session.execute(
-                select(DailyEventModel).where(
+                select(DailyEventModel)
+                .where(
                     DailyEventModel.id == decision.target_event_id,
                     DailyEventModel.user_id == state["user_id"],
                     DailyEventModel.deleted_at.is_(None),
                 )
+                .with_for_update()
             )
             return result.scalar_one_or_none()
 
@@ -171,6 +180,7 @@ class DailyEventActions:
             )
             .order_by(DailyEventModel.start_time.is_(None), DailyEventModel.start_time)
             .limit(2)
+            .with_for_update()
         )
         matches = list(result.scalars())
         return matches[0] if len(matches) == 1 else None

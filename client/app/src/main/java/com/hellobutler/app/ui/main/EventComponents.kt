@@ -84,7 +84,7 @@ private fun eventIcon(type: String): ImageVector = when (type.lowercase()) {
     "work", "meeting" -> Icons.Outlined.WorkOutline
     "exercise" -> Icons.Outlined.FitnessCenter
     "reminder" -> Icons.Outlined.NotificationsNone
-    "goodnight_summary" -> Icons.Outlined.Bedtime
+    "good_night_summary" -> Icons.Outlined.Bedtime
     else -> Icons.Outlined.Event
 }
 
@@ -107,10 +107,16 @@ fun EmptyDay(onOrder: () -> Unit) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EventDetailDialog(event: DailyEventEntity, onDismiss: () -> Unit, onSave: (DailyEventEntity) -> Unit) {
+fun EventDetailDialog(
+    event: DailyEventEntity,
+    onDismiss: () -> Unit,
+    onDelete: () -> Unit,
+    onSave: (DailyEventEntity) -> Unit,
+) {
     var title by remember(event.id) { mutableStateOf(event.title) }
     var startTime by remember(event.id) { mutableStateOf(event.startTime.orEmpty()) }
     var status by remember(event.id) { mutableStateOf(event.status) }
+    var validationError by remember(event.id) { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onDismiss, shape = RoundedCornerShape(28.dp),
         icon = { Icon(eventIcon(event.eventType), null, tint = MaterialTheme.colorScheme.primary) },
@@ -124,6 +130,7 @@ fun EventDetailDialog(event: DailyEventEntity, onDismiss: () -> Unit, onSave: (D
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(title, { title = it }, label = { Text("Title") }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(15.dp))
                 OutlinedTextField(startTime, { startTime = it }, label = { Text("Start time") }, leadingIcon = { Icon(Icons.Outlined.Schedule, null) }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(15.dp))
+                validationError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Text("Status", style = MaterialTheme.typography.labelLarge)
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
                     listOf("planned", "completed", "skipped").forEachIndexed { index, value ->
@@ -135,8 +142,22 @@ fun EventDetailDialog(event: DailyEventEntity, onDismiss: () -> Unit, onSave: (D
             }
         },
         confirmButton = {
-            Button(onClick = { onSave(event.copy(title = title.trim(), startTime = startTime.trim().ifEmpty { null }, status = status, version = event.version + 1)) }) { Text("Save changes") }
+            Button(onClick = {
+                val normalizedTitle = title.trim()
+                val normalizedTime = startTime.trim().ifEmpty { null }
+                validationError = when {
+                    normalizedTitle.isEmpty() -> "Title is required"
+                    normalizedTime != null && runCatching { LocalTime.parse(normalizedTime) }.isFailure -> "Use time as HH:mm"
+                    else -> null
+                }
+                if (validationError == null) onSave(event.copy(title = normalizedTitle, startTime = normalizedTime, status = status))
+            }) { Text("Save changes") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+        dismissButton = {
+            Row {
+                TextButton(onClick = onDelete, colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Delete") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
     )
 }
