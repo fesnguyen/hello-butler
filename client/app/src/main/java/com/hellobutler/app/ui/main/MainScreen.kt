@@ -158,11 +158,11 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 } else {
                     LazyColumn(
                         Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 112.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 104.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
                         item {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                                 Text("Your day", style = MaterialTheme.typography.titleLarge, modifier = Modifier.weight(1f))
                                 val done = events.count { it.status.equals("completed", true) }
                                 Text(done.toString() + " of " + events.size + " complete", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
