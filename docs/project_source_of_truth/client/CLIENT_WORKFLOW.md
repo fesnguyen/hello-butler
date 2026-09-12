@@ -1,20 +1,14 @@
 # Client Workflow
 
-**Version:** 1.4  
+**Version:** 1.5  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
 ---
 
-# Purpose
-
-This document defines the user-facing Android flows for Daily Events, Butler interaction, notifications, audio playback, and background delivery.
-
----
-
 # Main Screen
 
-The Main Screen remains the primary product surface.
+Hello Butler has one primary product screen:
 
 ```text
 MainScreen
@@ -27,127 +21,100 @@ MainScreen
     └── Text
 ```
 
-Butler interaction should happen on top of the user's day rather than navigating to a separate chat screen.
+Butler interaction happens over the user's day. There is no separate conversation screen.
+
+When `Open in App` is selected from a notification, open Main Screen and show the Butler conversation overlay from the bottom at roughly 60–70% screen height as appropriate to the current UI.
 
 ---
 
-# Butler Conversation Overlay
+# Conversation Overlay
 
-The conversation overlay shows persistent recent conversation while leaving the Daily Event list visible.
+Recent conversation remains visible while the user interacts. Messages should be visually compact and close together.
 
-Recording should not replace the conversation with a dedicated voice screen.
+For Butler audio responses, duration belongs beside the role/title, for example:
 
 ```text
-conversation history
-      ↓
-user holds Order/Talk
-      ↓
-small recording animation appears in user's message area
-      ↓
-conversation remains readable
+Butler · 0:08
+Got it. I've moved your meeting to 4 PM.
+[ speaker icon ] [ private-listen icon ]
 ```
 
-No extra end button or explicit `Release to send` label is required. Releasing the existing hold gesture ends recording and starts send behavior naturally.
+Playback icons sit directly under the response text rather than in a large separate action area.
 
 ---
 
 # Order / Talk Recording
 
 ```text
-Press and hold Order or Talk
+press and hold Order or Talk
         ↓
-small listening animation
+small recording animation in user's message area
         ↓
-user speaks
+conversation remains readable
         ↓
 release
         ↓
 local outgoing entry = Sending...
         ↓
-compressed audio upload begins
+compressed audio upload
 ```
 
-The user can continue using the app immediately after release.
+No extra End button or `Release to send` instruction is required.
+
+After backend acceptance/handling:
+
+```text
+Sending... → Sent • <time>
+```
+
+After completion, replace the temporary content with the backend transcript. Do not show historical playback for the user's own audio.
 
 ---
 
-# Sending to Sent
+# Text Workflow
 
-After release, the user's temporary conversation entry represents transport state rather than transcript text.
-
-```text
-Sending...
-   ↓
-backend accepted / handling signal received
-   ↓
-Sent • 10:14 AM
-```
-
-Do not show the user's waveform/audio as a historical playable message.
-
-When the final Butler result arrives, replace the temporary `Sent` content with the backend-produced transcript.
-
-Example:
+Text is now direct typed composition.
 
 ```text
-Before completion
-You
-Sent • 10:14 AM
-
-After completion
-You
-hello tonight I have a meeting with John at 8:00 p.m.
+tap Text
+      ↓
+text composer appears/enables inside existing conversation overlay
+      ↓
+user types or edits
+      ↓
+Send
+      ↓
+exact typed text appears as user's message
+      ↓
+request state = Sending...
+      ↓
+backend accepts → Sent
+      ↓
+shared Butler processing completes
+      ↓
+Butler response appended
 ```
+
+Text uses no microphone, no local STT, no backend STT, and no intermediate server-generated draft.
+
+The user can edit freely before pressing Send. Once sent, the typed message follows the same asynchronous request/result lifecycle as Order/Talk.
 
 ---
 
-# Butler Processing
+# One Shared Result Experience
 
-While the request is in progress, the conversation may show a minimal Butler activity indicator such as:
-
-```text
-Butler
-••• Thinking...
-```
-
-Avoid large processing screens, progress wizards, or multiple intermediate cards.
-
----
-
-# Completed Response
-
-One completed Order/Talk interaction results in:
+Whether input was audio or typed text, completion results in:
 
 ```text
 You
-<server transcript>
+<transcript OR submitted text>
 
-Butler
+Butler · <audio duration>
 <canonical response text>
-[ speaker icon ] [ phone/private-listen icon ]
+[speaker icon] [private-listen icon]
 ```
 
-The response becomes normal conversation history. It is not a temporary separate late-response overlay.
-
-If Butler changed the user's day, the Daily Event list behind the conversation should reconcile through the normal data/sync path.
-
----
-
-# Same Message in Foreground and Background
-
-There is only one Butler response.
-
-## App foreground
-
-The fetched result is persisted, then the active conversation updates immediately.
-
-## App background / closed
-
-The fetched result is persisted, then Android shows a notification containing the same Butler response text.
-
-Opening the application later shows the same persisted message already present in conversation history.
-
-Do not generate a second response when opening the app.
+The Butler response becomes normal conversation history. There is only one canonical response.
 
 ---
 
@@ -174,248 +141,91 @@ start audio cache download
 active conversation OR notification
 ```
 
-The client should immediately fetch/cache audio after receiving completion rather than waiting for a playback button press.
+The same completion path applies to audio and text requests.
+
+---
+
+# Foreground vs Background
+
+If foreground, persist the result and update the active conversation.
+
+If background/closed, persist the same result and show a notification with the same Butler response text. Opening later must not generate a second response.
 
 ---
 
 # Ordinary Butler Notification
 
-The notification shows the same canonical Butler response text.
-
-Actions:
-
 ```text
-[ speaker icon ] [ phone/private-listen icon ] [ Open in App ]
+Hello Butler
+<canonical response text>
+[speaker icon] [private-listen icon] [Open in App]
 ```
 
-The notification may appear while response audio is still downloading.
-
-If the user selects an audio action before caching finishes:
-
-```text
-action tapped
-   ↓
-wait on current audio download
-   ↓
-play as soon as ready
-```
-
-Do not require another explicit `Audio ready` confirmation step.
-
-`Open in App` remains available so the user can view the response within conversation context.
+Audio download starts immediately after completion fetch. The notification may appear before caching finishes; selecting playback waits for the active download if necessary.
 
 ---
 
-# Speak Aloud
+# Playback
 
-The speaker icon plays the Butler response through the normal outward speaker route.
+Speaker icon plays outward through the normal speaker route. Phone icon provides private/call-style listening; it is not a real network call or realtime Butler session.
 
-```text
-speaker icon
-   ↓
-ensure audio available
-   ↓
-request appropriate audio focus
-   ↓
-play
-   ↓
-allow Stop
-```
+Both actions use the same cached Butler response audio.
 
 ---
 
-# Private / Receive-as-Call Listening
+# Morning Brief / Good Night Summary
 
-The phone icon means a private, call-like listening presentation.
-
-It is not a real network phone call and not a realtime session with Butler.
+These are proactive-speech exceptions:
 
 ```text
-phone icon
+content due
    ↓
-ensure response audio available
+notification/execution surface
    ↓
-route/present as private listening
+automatically Speak Aloud
    ↓
-user listens like receiving a short Butler call
+Stop available immediately
    ↓
-end / stop
+Open in App retained
 ```
 
-Exact Android audio-routing details may be refined during implementation while preserving this product behavior.
+Ordinary Butler messages do not auto-speak.
 
 ---
 
-# Morning Brief
-
-Morning Brief is a proactive-speech exception.
-
-At its scheduled delivery time:
-
-```text
-Morning Brief due
-    ↓
-show notification / execution surface
-    ↓
-automatically begin Speak Aloud
-    ↓
-user may Stop at any time
-```
-
-The notification/surface retains `Open in App` so the user can read the Morning Brief in context.
-
----
-
-# Good Night Summary
-
-Good Night Summary follows the same proactive pattern:
-
-```text
-Good Night Summary due
-    ↓
-show notification / execution surface
-    ↓
-automatically begin Speak Aloud
-    ↓
-user may Stop at any time
-```
-
-The notification/surface retains `Open in App`.
-
----
-
-# Default Speech Behavior
-
-```text
-Morning Brief       → automatically Speak Aloud; Stop available
-Good Night Summary  → automatically Speak Aloud; Stop available
-Ordinary Butler     → text first; no automatic speech
-```
-
-Ordinary Butler messages expose playback icons for user choice.
-
----
-
-# Text Workflow
-
-Text is context-aware speech-to-editable-text preparation.
-
-```text
-Press and hold Text
-      ↓
-record audio
-      ↓
-release / upload
-      ↓
-backend understands speech
-      +
-relevant user preference
-      +
-recent conversation
-      ↓
-rewrite / translate / normalize when useful
-      ↓
-editable text appears
-      ↓
-user edits / copies / uses text
-```
-
-Text should not automatically perform an Order/Talk action.
-
----
-
-# Instant Startup Workflow
+# Instant Startup
 
 ```text
 user taps app icon
       ↓
 render usable Main Screen shell
       ↓
-Order/Talk/Text hold-to-record available immediately
+Order/Talk recording + Text composer interaction available immediately
       ↓
 background loading continues
-      ├── Room content
+      ├── Room
       ├── plan sync
       ├── conversation sync
       ├── pending responses
-      └── other reconciliation
+      └── reconciliation
 ```
 
-Do not make voice capture wait for full Daily Plan/history synchronization.
+Do not make interaction wait for full synchronization.
 
 ---
 
-# Offline Voice Workflow
+# Offline
 
-```text
-user records while offline
-      ↓
-recording stored locally
-      ↓
-request queued
-      ↓
-connectivity returns
-      ↓
-WorkManager uploads
-      ↓
-normal Sending / Sent / completion flow resumes
-```
-
-The UI should make pending state understandable without forcing the user to stay in the app.
+Order/Talk recordings can be queued for later upload. Typed requests can be queued similarly when network is unavailable. The UI keeps pending state understandable without requiring the user to remain in the app.
 
 ---
 
 # Direct Event Configuration
 
-Direct event editing remains deterministic and local-first.
-
-```text
-tap event menu
-    ↓
-edit / delay / skip / complete / cancel
-    ↓
-Room updates immediately
-    ↓
-UI updates immediately
-    ↓
-sync queued
-```
-
-Do not route obvious direct event edits through Butler AI.
-
----
-
-# Notification Principle
-
-Notifications are presentation/wake-up surfaces, not a separate product state.
-
-A Butler result shown as a notification must correspond to the same persisted conversation message the user sees after opening the app.
-
-Morning Brief and Good Night Summary may auto-play; ordinary Butler notifications do not.
-
----
-
-# Complete UI Mental Model
-
-```text
-                         MAIN SCREEN
-                             │
-          ┌──────────────────┼──────────────────┐
-          ▼                  ▼                  ▼
-     DAILY EVENTS       CONVERSATION        CONTROL BAR
-                             │           Order / Talk / Text
-                             │
-                ┌────────────┼────────────┐
-                ▼            ▼            ▼
-             recording    Sending/Sent  final messages
-                │                           │
-          small animation              text + audio icons
-```
+Direct event edits remain deterministic/local-first and bypass Butler AI: update Room, update UI, queue sync, then reconcile with backend.
 
 ---
 
 # Guiding UI Principle
 
-Butler should feel continuously present without becoming visually heavy.
-
-The user should be able to speak, leave, return, read, listen aloud, listen privately, or open a notification in the app without encountering different copies of the same interaction.
+Butler should feel continuously present without becoming visually heavy. Audio and typed input differ only in how the user sends the message; the conversation, completion, notification, response audio, and history experience remain unified.
