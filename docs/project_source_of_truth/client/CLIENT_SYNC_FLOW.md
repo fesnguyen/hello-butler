@@ -1,174 +1,218 @@
 # Client Sync Flow
 
-**Status:** Implemented
+**Version:** 1.5  
+**Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `CLIENT_ARCHITECTURE.md`, and `CLIENT_WORKFLOW.md`
 
 ---
 
 # Principle
 
-Synchronization should require no normal user action.
-
-```text
-User action   → local effect now → sync in background
-Server change → silent push      → client refreshes automatically
-Important information            → user notification
-Scheduled event                  → local AlarmManager / TTS
-```
-
-Room remains the client's immediate working state. The backend becomes authoritative after successful synchronization.
+Synchronization should require no normal user action. Room is the client's immediate working state. Backend state becomes authoritative after authenticated reconciliation.
 
 ---
 
-# Client → Server
+# Two Butler Upload Paths
 
-Direct event changes are local-first.
+## Audio — Order / Talk
 
 ```text
-Edit / complete / skip / delay / cancel
-        ↓
-Room updated immediately
-        ↓
-UI updates immediately
-        ↓
-Pending sync operation recorded
-        ↓
-WorkManager attempts upload when network is available
-        ↓
-Backend validates and returns canonical state
-        ↓
-Room reconciled and pending operation removed
+record compressed audio
+      ↓
+release
+      ↓
+local placeholder = Sending...
+      ↓
+POST audio request
+      ↓
+202 + request_id
+      ↓
+accepted/handling
+      ↓
+placeholder = Sent • time
 ```
 
-Sync must not block ordinary event editing. Failed uploads remain pending and retry automatically. Opening the authenticated app and important background preparation should also drain pending changes before pulling newer server state.
+If upload cannot complete, retain the local recording/request and let WorkManager retry.
 
-The implemented outbox covers create, edit, complete, skip, delay, cancel, and
-delete. Operations are coalesced per event while retaining the original base
-version and stable operation ID. A conflict accepts returned canonical server
-state; a successful or duplicate result reconciles Room before removing the
-pending operation.
+## Text
 
-All Order/Talk/Text requests flush the outbox before sending `/api/butler/talk`.
-Upload failure prevents reasoning. The AI request does not hold the event-edit
-mutex. A mutation response carries affected `plan_dates` through authenticated
-HTTP; the repository pulls these dates plus today/tomorrow before returning.
-It durably queues reconciliation first, so losing connectivity after a successful
-command produces a sync-pending message, not a request to repeat the command.
+```text
+user types/edits
+      ↓
+Send
+      ↓
+insert exact text locally + Sending state
+      ↓
+POST text request
+      ↓
+202 + request_id
+      ↓
+accepted/handling
+      ↓
+exact text remains + Sent state
+```
+
+Text does not use audio recording or STT. Both request types then share the same completion/reconciliation path.
 
 ---
 
-# Server → Client
-
-Push is a wake-up signal, not the canonical payload.
+# Completion Push
 
 ```text
-Backend state changes
-        ↓
-Silent push: what changed / what should refresh
-        ↓
-Client performs authenticated sync
-        ↓
-Room updated
-        ↓
-Local alarms, notifications, and TTS schedules reconciled
+backend saves completed canonical result
+      ↓
+FCM: butler_request_completed + request_id
+      ↓
+client fetches authenticated canonical result
 ```
 
-A visible notification is reserved for information that requires or deserves user attention. Routine synchronization should stay silent.
-
-FCM registration is authenticated. The data message contains only
-`type=daily_plan_changed`; receiving it enqueues the same constrained sync worker
-used by local edits. Startup, six-hour periodic work, connectivity-constrained
-retry, boot restoration, and evening preparation provide convergence when a
-push is delayed or missed. Sync hints append a follow-up pass when one is already
-running, so a second commit during an active pull is not dropped by KEEP policy.
-
-Canonical writes use the backend `DailyPlanChanges` transaction boundary.
-Butler actions, explicit planning, evening preparation and direct event sync
-publish after successful commit, including committed parts of a later-failing
-workflow. Rollbacks, duplicate operations and conflicts do not publish a new
-mutation hint. Delivery/registration lookup failure remains non-fatal.
+FCM is a wake-up signal, not canonical response content and never transports response audio bytes.
 
 ---
 
-# Background Responsibilities
+# Foreground / Background Split
 
 ```text
-WorkManager   deferred/retryable network work and sync reliability
-Push          prompt server-originated wake-up / refresh signal
-Notification  intentional user-facing interruption
-AlarmManager  time-sensitive local execution
-Room          durable bridge between synchronization and execution
+                    FCM completed
+                           │
+             ┌─────────────┴─────────────┐
+             │                           │
+        App FOREGROUND              App BACKGROUND
+             │                           │
+     Coroutine / Repository          WorkManager
+             │                           │
+             └─────────────┬─────────────┘
+                           ▼
+                   Retrofit / OkHttp
+                           │
+                           ▼
+                  GET canonical result
+                           │
+                           ▼
+                      Room / cache
 ```
 
-Do not keep a long-lived background service merely to stay synchronized.
+Both paths call the same repository/persistence logic.
 
 ---
 
-# Evening Preparation Example
+# Final Result Reconciliation
 
-For an initial 23:00 sleep schedule:
+For audio input:
 
 ```text
-22:30 WorkManager wakes
-        ↓
-push pending client changes
-        ↓
-backend now has today's latest reality
-        ↓
-generate Good Night Summary
-        ↓
-prepare tomorrow + Morning Brief
-        ↓
-pull today + tomorrow
-        ↓
-store in Room
-        ↓
-schedule local execution
-        ├── 22:45 Good Night Summary → TTS
-        └── tomorrow Morning Brief   → TTS
-        ↓
-WorkManager finishes
+server transcript
+      ↓
+replace local Sending/Sent placeholder text
 ```
 
-The scheduled TTS events execute from Room and should not require backend access at playback time. If preparation completes asynchronously or server state changes later, a silent push can wake the client to refresh and reschedule.
+For text input:
+
+```text
+submitted text already canonical
+      ↓
+keep message text; reconcile delivery/result metadata
+```
+
+For both:
+
+```text
+server Butler response
+      ↓
+idempotent insert/update of one Butler message
+      ↓
+response audio reference
+      ↓
+start download immediately
+      ↓
+cache locally
+```
+
+Switching between notification and app must never create another copy of the response.
 
 ---
 
-# Sync Ordering
+# Notification Publication
 
-Whenever synchronization may precede backend reasoning about the user's day:
+Foreground: persist then update active conversation.
+
+Background/not visible: persist then publish notification using the same Butler message text.
+
+Ordinary actions:
 
 ```text
-PUSH pending local changes
-        ↓
-backend reasoning / preparation
-        ↓
-PULL canonical server state
-        ↓
-Room reconciliation
-        ↓
-local execution reconciliation
+speaker icon
+phone/private-listen icon
+Open in App
 ```
 
-This ordering prevents Good Night Summary, replanning, and similar workflows from reasoning over stale client state.
+`Open in App` opens Main Screen with the Butler conversation overlay visible; there is no separate chat screen.
+
+Playback actions may appear before audio caching completes and wait on the active download when needed.
+
+---
+
+# Audio Download / Cache
+
+Response audio download begins as part of completion handling for both audio-input and text-input requests.
+
+```text
+completed result fetched
+      ↓
+audio reference available
+      ↓
+download/cache starts
+      ↓
+Room records status/path
+```
+
+Server response audio is retention-limited. Local cached audio is the normal historical playback source.
+
+---
+
+# Morning Brief / Good Night Summary
+
+When synchronized/prepared content becomes due, automatically start Speak Aloud, expose Stop immediately, and retain Open in App. Prepare/cache content early enough when possible. Ordinary Butler responses remain silent by default.
+
+---
+
+# Direct Event Sync
+
+Direct event changes remain local-first and independent of Butler requests:
+
+```text
+Room update → immediate UI → pending sync → WorkManager → backend reconciliation → Room
+```
+
+---
+
+# Startup Convergence
+
+```text
+render usable Main Screen
++ enable Order/Talk recording
++ enable Text composition
+      ↓
+parallel background work
+      ├── drain pending audio/text uploads
+      ├── fetch pending completed requests
+      ├── sync plan/events
+      ├── refresh conversation
+      └── reconcile schedules/audio
+```
+
+Correctness must not depend on manual Refresh.
+
+---
+
+# Retry / Idempotency
+
+Client behavior must remain correct when FCM is delayed/duplicated, WorkManager retries, process dies during upload/download, foreground/background state changes, or results are fetched more than once.
+
+Use stable request/message identifiers and idempotent Room upserts so one backend result becomes one local Butler message.
 
 ---
 
 # User Experience Rule
 
-Ordinary synchronization is invisible. Do not show blocking sync screens or require a manual refresh for normal operation. Manual refresh may remain as a recovery/development action, but correctness must not depend on the user remembering to use it.
-
-
-# Current Timezone Constraint
-
-The initial deployment assumes **every device timezone equals the backend
-`BUTLER_DEFAULT_TIMEZONE`**. Dates and times are local wall-clock values; there is
-no per-user planning timezone field or client timezone negotiation. Configure
-`Asia/Ho_Chi_Minh` on the server for devices using that zone (the server default
-is UTC). This equality applies to today/tomorrow, 22:30 preparation and alarms.
-Keep the server preparation time at 22:30 to match the current client schedule.
-
-Travel or changing only a device timezone is unsupported until the deployment
-zones match again. Android reschedules after clock/timezone changes, but that
-cannot correct a server/device planning-zone mismatch. Per-user timezone support
-remains outside this fix.
+The user sees simple messages and delivery states. Audio/text transport, FCM, WorkManager, synchronization, and caching remain implementation details.
