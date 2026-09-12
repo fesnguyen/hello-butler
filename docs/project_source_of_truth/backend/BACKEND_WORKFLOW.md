@@ -1,6 +1,6 @@
 # Backend Workflow
 
-**Version:** 1.4  
+**Version:** 1.5  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
@@ -12,28 +12,61 @@ This document defines backend execution flows for Butler requests, planning, per
 
 ---
 
-# Core Butler Request Flow
+# Input Flows
 
-Order and Talk are recorded-audio requests processed asynchronously.
+## Order / Talk — audio ingress
 
 ```text
-POST /api/butler/requests
+POST /api/butler/requests/audio
         ↓
 authenticate
         ↓
-validate mode + audio
+validate mode = order | talk + audio
         ↓
-create request record
+create durable request
         ↓
 return 202 + request_id
         ↓
-publish/emit handling signal when accepted
+continue asynchronously
         ↓
-continue processing asynchronously
+transcribe / understand audio
         ↓
-understand/transcribe audio
+NormalizedButlerRequest(message=transcript)
+```
+
+## Text — text ingress
+
+```text
+POST /api/butler/requests/text
         ↓
-load recent conversation + User Context + relevant Daily Plan/Events
+authenticate
+        ↓
+validate typed message
+        ↓
+create durable request
+        ↓
+return 202 + request_id
+        ↓
+continue asynchronously
+        ↓
+NormalizedButlerRequest(message=submitted text)
+```
+
+Text does not use audio capture, STT, transcription, or a server-prepared editable-draft phase.
+
+---
+
+# Shared Butler Workflow
+
+Both ingress paths join here:
+
+```text
+NormalizedButlerRequest
+        ↓
+load newest relevant conversation
++ User Context
++ Daily Plan / Events
++ now / timezone
         ↓
 understand semantic intent
         ↓
@@ -50,54 +83,58 @@ produce Butler response text
         ↓
 generate Butler response audio
         ↓
-persist transcript + Butler text + result metadata
+persist user message + Butler message + result metadata
         ↓
 mark request completed
         ↓
 FCM completed(request_id)
 ```
 
-The request must survive the user leaving the app after upload.
+Do not fork this workflow based on `input_source` after normalization unless a concrete behavior requires it.
 
 ---
 
-# Client-Visible Sending / Sent State
+# Request State and Client Presentation
 
-The backend contract supports the client lifecycle:
+Server lifecycle:
 
 ```text
-release recording
-    ↓
-client = Sending...
-    ↓
-server accepts / handling acknowledgement
-    ↓
-client = Sent • time
-    ↓
-server completes processing
-    ↓
-client fetches final result
-    ↓
-Sent placeholder replaced by user transcript
+accepted → processing → completed | failed
 ```
 
-`Sending...` and `Sent` are client presentation states. They are not durable conversation messages on the backend.
+For audio requests, the client initially shows:
 
----
+```text
+Sending...
+   ↓
+accepted / handling signal
+   ↓
+Sent • time
+   ↓
+completion
+   ↓
+replace placeholder with server transcript
+```
 
-# Speech Understanding
+For text requests, the client already knows the exact user message, so it keeps that text visible while only delivery state changes:
 
-The backend receives the recorded audio rather than a locally transcribed Order/Talk message.
+```text
+<typed message> + Sending...
+   ↓
+<typed message> + Sent
+   ↓
+completion
+   ↓
+append Butler response
+```
 
-Speech understanding should preserve useful information from the original audio and produce a stable transcript for conversation history.
-
-The transcript becomes the durable user-side conversation text after completion.
+The backend does not persist Sending/Sent as conversation text.
 
 ---
 
 # Context Loading
 
-Use bounded relevant context, including:
+Use bounded relevant context:
 
 - newest relevant conversation messages
 - User Context
@@ -105,7 +142,7 @@ Use bounded relevant context, including:
 - relevant Daily Events
 - current date/time/timezone
 
-Recent conversation exists to resolve references and continue the immediate exchange. Older conversation must not override a newer explicit request.
+Recent conversation resolves references and continues the immediate exchange. Older conversation must not override a newer explicit request.
 
 ---
 
@@ -133,248 +170,129 @@ confirmation response
 
 ## Query
 
-```text
-understand information need
-      ↓
-load relevant state
-      ↓
-reason / answer
-      ↓
-persist conversation
-```
+Understand the information need, load relevant state, answer, and persist the conversation.
 
 ## Clarify
 
-Clarification should be concise and natural. Ask only when important information cannot reasonably be inferred from the current message, recent conversation, current time/timezone, events, or User Context.
+Clarification should be concise and natural. Ask only when important information cannot reasonably be inferred from the newest message, relevant recent conversation, current time/timezone, events, or User Context.
 
 ---
 
-# Order
+# Order / Talk Semantics
 
-Order prioritizes unattended execution.
-
-```text
-voice request
-   ↓
-accepted quickly
-   ↓
-user may leave
-   ↓
-backend completes action / answer / clarification
-   ↓
-FCM completed
-```
-
-Order does not require the user to keep an active screen open.
+Order prioritizes unattended execution; the user may leave after upload. Talk prioritizes conversational response but still uses asynchronous transport. Neither requires a realtime media/WebRTC session.
 
 ---
 
-# Talk
+# Text Semantics
 
-Talk prioritizes conversational response, but uses the same asynchronous transport.
-
-```text
-voice request
-   ↓
-accepted
-   ↓
-backend processes
-   ↓
-Butler message returned
-   ↓
-conversation can continue
-```
-
-Talk is not a realtime media/WebRTC call.
-
----
-
-# Text
-
-Text receives recorded audio but does not immediately execute it as a Butler action.
+Text is a direct typed input path into the same Butler workflow.
 
 ```text
-recorded audio
+user types/edits
    ↓
-speech understanding
+Send
    ↓
-relevant user preference + recent conversation
+text request accepted
    ↓
-rewrite / translate / normalize as appropriate
+shared Butler workflow
    ↓
-editable text result
+normal Butler response
 ```
 
-The client presents the result for editing. Explicit later use of that text is a separate user action.
+Text is not a semantic intent. It normally uses the conversational/Talk expectation while the shared reasoning layer determines command, query, or clarify from the actual message.
 
 ---
 
 # Result Persistence
 
-A completed Order/Talk request persists:
+Every completed interaction persists exactly one user message and one Butler message:
 
 ```text
 ConversationHistory
-├── role=user   → final transcript
-└── role=butler → canonical Butler response text
+├── role=user
+│   ├── audio source → final transcript
+│   └── text source  → submitted text
+└── role=butler → canonical response text
 ```
 
-The same result may also reference response audio and changed domain entities.
-
-Do not create separate conversation records for notification delivery versus in-app delivery.
+The result references Butler response audio and changed domain entities where relevant. Do not create separate records for notification versus in-app delivery.
 
 ---
 
-# Response Audio Generation
-
-Response text is finalized before response audio generation.
+# Response Audio and Completion
 
 ```text
-Butler response text
+final Butler response text
       ↓
 audio generation
       ↓
 temporary server audio asset
       ↓
-result metadata references asset
-```
-
-Audio retention is limited and cleaned regularly.
-
----
-
-# Completion Push
-
-After the canonical result has been saved:
-
-```text
-persist completed result
+persist canonical result
       ↓
 commit
       ↓
 FCM butler_request_completed(request_id)
 ```
 
-Push failure must not roll back the canonical result.
-
-FCM contains identifiers/hints, not the audio file.
+Push failure must not roll back the canonical result. Audio retention is limited and cleaned regularly.
 
 ---
 
 # Result Retrieval
 
-After completion signal:
-
 ```text
 GET /api/butler/requests/{request_id}
       ↓
-user transcript
+user message text
 Butler response text
 response audio URL/reference
 changed entities / status metadata
 ```
 
-The fetch is idempotent and safe to retry from foreground or WorkManager.
+Fetch is idempotent and safe to retry from foreground or WorkManager.
 
 ---
 
 # Morning Brief / Good Night Summary
 
-Planning remains separate from ordinary Butler requests.
-
-```text
-prepare content
-      ↓
-persist Daily Event / canonical result
-      ↓
-client syncs/caches required content
-      ↓
-due time arrives
-      ↓
-client auto-starts Speak Aloud
-      ↓
-user can Stop immediately
-```
-
-These are proactive-speech exceptions. Ordinary Butler message delivery stays silent unless the user explicitly selects an audio action.
+These remain proactive-speech exceptions. Prepared canonical content becomes due, the client automatically starts Speak Aloud, and the user can Stop immediately. Ordinary Butler messages remain silent unless the user selects a playback action.
 
 ---
 
 # Direct Event Updates
 
-Direct visible event edits bypass AI:
-
-```text
-client edit
-   ↓
-local-first Room update
-   ↓
-sync operation
-   ↓
-backend validates version
-   ↓
-persist canonical state
-   ↓
-return/reconcile
-```
-
----
-
-# Daily Lifecycle
-
-```text
-Night
-  ↓
-prepare tomorrow
-  ↓
-create/update Daily Events
-  ↓
-generate Morning Brief
-  ↓
-persist
-
-Day
-  ↓
-execute / adapt / replan
-
-Night
-  ↓
-read final day reality
-  ↓
-generate Good Night Summary
-  ↓
-prepare tomorrow
-```
+Direct visible event edits bypass AI and remain local-first: Room updates immediately, sync is queued, backend validates/reconciles, then Room receives canonical state.
 
 ---
 
 # Reliability Rules
 
-- request creation must be idempotent where retries can occur
+- request creation must tolerate retries
+- domain mutations must be idempotent
 - result fetch must be retryable
-- FCM is a hint, never the only copy of canonical data
-- background work may be delayed or retried
+- FCM is a hint, never the only canonical copy
+- background work may be delayed or repeated
 - push/audio-storage failure must not corrupt domain state
 - AI never directly owns database mutation
 - conversation text is durable; server audio is not
+- input transport must not duplicate Butler reasoning logic
 
 ---
 
 # Guiding Workflow
 
-The backend should answer:
-
 ```text
-Who is the user?
-What did they say?
-What do they mean?
+What transport arrived?
+      ↓
+Normalize it to message text
+      ↓
+What does the user mean?
+      ↓
 What state should change?
+      ↓
 What should Butler say?
-What audio represents that response?
-```
-
-Android answers:
-
-```text
-How should this one canonical message be presented and played right now?
+      ↓
+Generate one canonical text + audio response
 ```
