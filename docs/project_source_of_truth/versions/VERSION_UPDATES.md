@@ -4,83 +4,89 @@ This file records coordinated version updates for documents under `docs/project_
 
 ---
 
-## Version 1.4 — 2026-09-12
+## Version 1.5 — 2026-09-12
 
 ### Scope
 
-This release aligns the core source-of-truth documents on the new asynchronous recorded-audio Butler interaction model.
+Version 1.5 refines the v1.4 async Butler architecture by separating input transport from Butler reasoning.
 
-Updated to version `1.4`:
+Updated to `1.5`:
 
 - `PROJECT.md`
-- `ENGINEERING.md`
 - `backend/BACKEND_ARCHITECTURE.md`
 - `backend/BACKEND_WORKFLOW.md`
 - `client/CLIENT_ARCHITECTURE.md`
 - `client/CLIENT_WORKFLOW.md`
 - `client/CLIENT_SYNC_FLOW.md`
 
-### Product changes
+`ENGINEERING.md` remains `1.4` because no engineering rule changed.
 
-- Order and Talk use press-and-hold recorded audio, then upload on release.
-- The normal Butler voice path is no longer local STT → text → backend → local TTS.
-- Voice is not a persistent realtime/WebRTC conversation.
-- Conversation history remains visible while recording.
-- Recording uses only a small in-message animation; no dedicated recording screen is required.
-- After release, the client creates a local `Sending...` placeholder.
-- After backend acceptance/handling acknowledgement, the placeholder becomes `Sent • <time>`.
-- After completion, the temporary user placeholder is replaced by the backend-produced transcript.
-- A completed Order/Talk request creates one user conversation message and one Butler conversation message.
-- Notification and in-app presentation are two surfaces for the same Butler response, not separate responses.
-- Text mode sends audio to the backend and receives context-aware editable text instead of relying on local STT as the authoritative path.
+### Main change
 
-### Backend changes
+The three client controls are now:
 
-- Introduced the asynchronous Butler request mental model using a stable `request_id`.
-- Request creation returns quickly (conceptually `202 Accepted`) while processing continues asynchronously.
-- Backend processing includes speech understanding/transcription, Butler reasoning, tools/domain changes, response text generation, and response audio generation.
-- FCM carries lightweight handling/completion signals, not response audio.
-- Completed results are fetched through authenticated HTTP.
-- Backend conversation text remains durable while audio uses limited retention.
-- User input audio is treated as temporary processing data unless a future requirement says otherwise.
+```text
+Order → recorded audio
+Talk  → recorded audio
+Text  → direct typed/editable text
+```
 
-### Client changes
+Text no longer records audio, uses local STT, sends audio for backend transcription, or waits for a server-generated editable draft.
 
-- Foreground completion uses coroutine/repository work.
-- Background completion uses WorkManager.
-- Both paths converge through Retrofit/OkHttp, Room, and the same repository/persistence logic.
-- Client begins downloading/caching Butler response audio immediately after completion result retrieval.
-- Audio playback actions remain visible even while audio is still downloading; selecting them waits for the active download when necessary.
-- Butler response audio is stored locally for historical playback.
-- Old server audio may be unavailable after reinstall because backend audio is retention-limited.
-- App startup prioritizes rendering and immediate voice capture; plan/history synchronization runs in the background.
+### Backend architecture
 
-### Notification changes
+There are two input ingress boundaries:
 
-Ordinary Butler message notifications expose:
+```text
+Audio API → Order/Talk audio → transcription ┐
+                                             ├→ normalized message → shared Butler workflow
+Text API  → typed Text ──────────────────────┘
+```
 
-- speaker icon for Speak Aloud
-- phone/private-listen icon for receive-as-call style playback
-- `Open in App`
+Both return an asynchronous request identity and use the same request/result lifecycle. Do not implement separate audio and text Butler graphs.
 
-`Open in App` remains present for Butler notifications.
+After normalization, both use the same context loading, semantic intent routing, deterministic actions, response text generation, response audio generation, persistence, completion FCM, and result retrieval.
 
-### Morning Brief / Good Night Summary changes
+Text is an input method, not a semantic intent. Typed Text normally uses the conversational/Talk expectation while semantic intent remains command/query/clarify based on message content.
 
-- Morning Brief automatically starts Speak Aloud when delivered/due.
-- Good Night Summary automatically starts Speak Aloud when delivered/due.
-- Both must expose an immediate Stop action while playing.
-- Both retain `Open in App`.
-- Ordinary Butler responses remain silent by default.
+### Client behavior
 
-### Compatibility / implementation note
+- Order/Talk retain hold-to-record and `Sending... → Sent → transcript` behavior.
+- Text enables a normal editable composer inside the existing Butler conversation overlay.
+- Text sends the exact submitted text; no transcript replacement is required.
+- Audio and text requests share foreground/background completion, Room persistence, notification, and response-audio caching logic.
+- `Open in App` opens the single Main Screen with the Butler conversation overlay visible; there is no dedicated conversation screen.
+- Butler response messages remain compact: response text first, duration beside `Butler`, and playback icons directly below the response.
 
-Version 1.4 defines the intended architecture and behavior. Existing implementation may still reflect older local-STT/local-TTS or synchronous request paths until the corresponding implementation task is completed. Code changes should follow the v1.4 documents rather than preserving obsolete behavior solely for compatibility.
+### Unchanged v1.4 behavior
+
+- no realtime/WebRTC Butler voice conversation
+- one canonical Butler response across app and notification
+- FCM as wake-up/completion signal rather than canonical payload
+- foreground Coroutine/Repository vs background WorkManager convergence
+- immediate response-audio caching after completion
+- speaker/private-listen playback actions
+- `Open in App` on Butler notifications
+- Morning Brief and Good Night Summary automatically Speak Aloud, allow immediate Stop, and retain Open in App
+- client-side long-lived response-audio cache with limited backend audio retention
+- instant app startup with interaction available before synchronization completes
+
+---
+
+## Version 1.4 — 2026-09-12
+
+### Scope
+
+Version 1.4 introduced the asynchronous recorded-audio Butler interaction model: Order/Talk record then upload audio, requests continue asynchronously, FCM wakes the client on completion, foreground/background paths converge through one repository, canonical results persist in Room, and Butler response audio is downloaded/cached locally.
+
+It also established one canonical response across notification and in-app presentation, compact speaker/private-listen actions, Open in App, limited backend audio retention, instant startup, and automatic Speak Aloud with Stop for Morning Brief and Good Night Summary.
+
+Version 1.5 supersedes v1.4's temporary assumption that Text also used recorded audio.
 
 ---
 
 ## Versioning Rule
 
-When a coordinated architecture/product change modifies multiple source-of-truth documents, update them to the same release version and record the change here.
+When a coordinated architecture/product change modifies multiple source-of-truth documents, update the affected documents to the same release version and record the change here.
 
-Minor wording changes that do not alter behavior or architecture do not require a coordinated version bump.
+Documents whose rules did not change do not require a version bump solely to match unrelated architecture documents.
