@@ -1,7 +1,7 @@
 # Personal Butler
 
 **Document:** Project Overview  
-**Version:** 1.4  
+**Version:** 1.5  
 **Status:** Source of Truth
 
 ---
@@ -42,9 +42,9 @@ Daily Events remain the concrete representation of the user's day. User Context 
 
 ---
 
-## Three Primary Butler Interactions
+## Three Primary Butler Controls
 
-The client exposes three persistent actions:
+The client exposes three persistent controls:
 
 ```text
 Order
@@ -52,15 +52,50 @@ Talk
 Text
 ```
 
-They are three interaction expectations with one Butler, not three assistants.
+They are three ways to interact with one Butler, not three assistants and not three reasoning systems.
 
 ```text
-Order → handle this for me; I may leave immediately
-Talk  → I am actively talking with Butler
-Text  → turn my speech into editable text using Butler's context
+Order → recorded audio; handle this for me; I may leave immediately
+Talk  → recorded audio; I am actively talking with Butler
+Text  → typed/editable text; send what I wrote to Butler
 ```
 
-Order and Talk accept recorded voice as the normal input path. Text also accepts recorded voice, but returns editable prepared text rather than immediately executing an Order/Talk action.
+Order and Talk use recorded audio as their normal input transport. Text uses direct typed text and does not record audio or use STT.
+
+The input transport and Butler reasoning are separate concerns. Audio and text are normalized into the same Butler application/graph workflow after audio transcription.
+
+---
+
+## One Butler Workflow, Two Input Transports
+
+```text
+                    USER
+                     │
+          ┌──────────┴──────────┐
+          │                     │
+     Order / Talk              Text
+          │                     │
+     record audio           type/edit text
+          │                     │
+      audio API               text API
+          │                     │
+      transcribe                  │
+          └──────────┬───────────┘
+                     ↓
+             normalized message
+                     ↓
+              Butler workflow
+                     ↓
+        command / query / clarify
+                     ↓
+             tools / DB / state
+                     ↓
+        one canonical Butler result
+                     ↓
+              text + audio
+```
+
+Do not create separate Audio and Text Butler graphs. Once an audio request has been transcribed, downstream reasoning should not need to care whether the normalized message originated from audio or typed text except where provenance is operationally useful.
 
 ---
 
@@ -86,13 +121,13 @@ execute / answer / clarify
 produce one Butler response
 ```
 
-The conversation history remains visible while recording. Recording should be represented by only a small animation in the user's message area. Do not replace the conversation with a full-screen recorder or a multi-step voice wizard.
+Conversation history remains visible while recording. Recording is represented by only a small animation in the user's message area. Do not replace the conversation with a full-screen recorder or multi-step voice wizard.
 
 ---
 
-## Outgoing Voice Message State
+## Audio Outgoing State
 
-After release, the client immediately creates a local outgoing conversation entry.
+After release, the client immediately creates a local outgoing conversation entry:
 
 ```text
 release
@@ -105,16 +140,46 @@ Sent • <time>
   ↓
 final result arrives
   ↓
-replace temporary Sent content with the server transcript
+replace temporary Sent content with server transcript
 ```
 
-The user has no normal need to replay their own recorded request. Once the final result is available, the visible user message is the transcripted text, not an audio player for the user's own recording.
+The user has no normal need to replay their own recorded request. The final visible user message is transcript text, not an audio player.
+
+---
+
+## Text Interaction
+
+Text is direct composition, not speech-to-editable-text.
+
+```text
+tap Text
+   ↓
+show/enable composer inside existing Butler conversation overlay
+   ↓
+type or edit text
+   ↓
+Send
+   ↓
+POST text request
+   ↓
+normal Butler request lifecycle
+   ↓
+Butler workflow
+   ↓
+canonical Butler response text + audio
+```
+
+Text does not use microphone capture, local STT, or backend transcription. The user's typed text is already the canonical user-side message content.
+
+Text should use the same asynchronous request/result model as Order/Talk so process death, background completion, FCM, Room persistence, notifications, audio caching, and conversation history do not need separate implementations.
+
+Text is a client input method, not a third semantic intent. Semantic intent remains command, query, or clarify. Unless a future product requirement says otherwise, typed Text enters the normal conversational/Talk expectation while the model still infers semantic intent from the message.
 
 ---
 
 ## One Interaction, One Conversation Result
 
-A completed Order/Talk interaction becomes:
+A completed Butler interaction becomes:
 
 ```text
 one user message
@@ -122,43 +187,36 @@ one user message
 one Butler message
 ```
 
-The Butler message contains canonical response text and has associated response audio.
+For audio input, the user message is the final transcript. For text input, it is the exact submitted text.
 
-There is no separate in-app response and notification response. A notification is only another presentation surface for the same Butler message.
-
-If the app is open, the result appears in the existing Butler conversation. If the app is not open, the same Butler message is surfaced as a notification. Opening the app later shows that same persisted message in conversation history.
+The Butler message contains canonical response text and associated response audio. There is no separate in-app response and notification response. A notification is only another presentation surface for the same Butler message.
 
 ---
 
 ## Asynchronous Delivery
 
-The user must not remain on the screen while Butler processes a request.
-
-Conceptually:
+Both input transports share one request/result lifecycle:
 
 ```text
-Android records audio
-      ↓
-POST request with audio
+POST audio OR POST text
       ↓
 backend creates request
       ↓
-client shows Sending...
-      ↓
-backend acceptance / handling signal
-      ↓
-client shows Sent • time
+202 + request_id
       ↓
 backend continues asynchronously
-      ├── speech understanding / transcription
-      ├── Butler reasoning
-      ├── tools / database operations
-      ├── response text
-      └── response audio
       ↓
-backend saves result
+normalize input
+      ├── audio → transcribe
+      └── text  → use submitted text
       ↓
-FCM completed signal
+Butler reasoning / tools / DB
+      ↓
+response text + response audio
+      ↓
+save canonical result
+      ↓
+FCM completed(request_id)
       ↓
 client fetches canonical result
 ```
@@ -168,8 +226,6 @@ FCM is a wake-up/completion signal, not the canonical response payload.
 ---
 
 ## Foreground and Background Completion
-
-After FCM reports completion, the client fetches the same canonical result through one repository/data path.
 
 ```text
                     FCM completed
@@ -184,37 +240,33 @@ After FCM reports completion, the client fetches the same canonical result throu
                          ↓
                  Retrofit / OkHttp
                          ↓
-             GET response + audio URL
+              GET canonical result
                          ↓
                    Room / cache
 ```
 
-Foreground/background only changes how Android executes the work. It must not change the product result.
+Foreground/background only changes how Android executes work. It must not change the product result.
 
 ---
 
 ## Response Audio
 
-Butler response audio is generated by the backend-side AI/audio pipeline and delivered as an asset associated with the Butler message.
+Butler response audio is generated by the backend-side AI/audio pipeline and associated with the canonical Butler message regardless of whether input was audio or text.
 
-The client should start fetching/caching the response audio immediately when it receives the completed signal. It should not wait until the user presses a playback action.
-
-A Butler message exposes two compact audio actions using icons rather than potentially misleading labels:
+The client starts fetching/caching response audio immediately after completion. A Butler message exposes compact playback actions:
 
 ```text
-speaker icon  → play aloud through device speaker
-phone icon    → receive/listen privately in call-style presentation
+speaker icon → play aloud
+phone icon   → private/call-style listening
 ```
 
-If the user selects either action before audio download has finished, the client waits for the in-progress download and begins playback when ready. Do not require a separate "audio ready" interaction step.
+If playback is selected before download finishes, wait for the in-progress download and play when ready.
 
 ---
 
 ## Notification Behavior
 
-Ordinary Butler-response notifications contain response text and indicate that response audio is available/caching. They do not carry the audio file itself.
-
-Notification actions are:
+Ordinary Butler-response notifications contain the same canonical response text and expose:
 
 ```text
 speaker icon
@@ -222,96 +274,45 @@ phone / private-listen icon
 Open in App
 ```
 
-`Open in App` must remain available so the user can inspect the message in conversation context.
-
-When the completed FCM signal arrives, foreground or background client work immediately fetches the canonical result and starts caching the audio. Notification actions may be visible before caching finishes; selecting an audio action simply waits for the active download when necessary.
+The notification does not carry the audio binary. `Open in App` opens the single Main Screen with the Butler conversation overlay visible; there is no separate conversation screen.
 
 ---
 
 ## Morning Brief and Good Night Summary
 
-Morning Brief and Good Night Summary are intentional proactive-speech exceptions.
+Morning Brief and Good Night Summary are proactive-speech exceptions. When due, they automatically begin Speak Aloud playback. The user must always be able to Stop immediately, and the notification retains `Open in App`.
 
-When their notification/execution time arrives, they automatically begin **Speak Aloud** playback by default.
-
-The user must always be able to stop that playback immediately.
-
-Conceptually:
-
-```text
-Morning Brief / Good Night Summary due
-      ↓
-notification / execution surface
-      ↓
-automatically Speak Aloud
-      ↓
-ongoing playback controls
-      ├── Stop
-      └── Open in App
-```
-
-Ordinary Butler responses must not automatically speak aloud by default.
-
----
-
-## Text Interaction
-
-Text is not local Android speech recognition followed by editing.
-
-```text
-press and hold Text
-      ↓
-record audio
-      ↓
-upload audio
-      ↓
-backend uses speech + user preference + relevant conversation context
-      ↓
-understand / rewrite / translate as appropriate
-      ↓
-return editable text
-      ↓
-user reviews and edits
-```
-
-Text mode prepares text for the user. It does not automatically execute the content as an Order or Talk request.
+Ordinary Butler responses remain silent by default.
 
 ---
 
 ## Audio Storage and Retention
 
-Text conversation history is the durable cross-device/server record.
-
-Audio follows different ownership rules:
-
 ```text
 Client
-- caches/stores Butler response audio locally for conversation playback
+- stores Butler response audio locally for conversation playback
 
 Backend
-- stores response audio only for a limited retention period
+- stores response audio for limited retention
 - removes old response audio regularly
-- treats user input audio as temporary processing data unless a concrete requirement says otherwise
+- treats uploaded user audio as temporary processing data
 ```
 
-Therefore, a user who keeps the same device may replay old locally stored Butler audio. After reinstalling or moving to another device, old conversation text can still be restored while old audio may no longer exist if server retention already removed it.
-
-This is intentional.
+Conversation text is the durable cross-device record. After reinstall, old text may be restored while old audio may no longer exist after server retention expires.
 
 ---
 
 ## Instant App Startup
 
-The app must become usable immediately after the user taps the app icon.
-
-Voice capture must not wait for plan synchronization, conversation refresh, pending-response refresh, or other non-critical loading.
+The app must become usable immediately after launch.
 
 ```text
 APP LAUNCH
     │
     ├── critical path
-    │     ├── render app shell
-    │     └── enable hold-to-record immediately
+    │     ├── render Main Screen shell
+    │     ├── enable Order/Talk recording immediately
+    │     └── make Text composer interaction immediately available
     │
     └── background path
           ├── load/sync Daily Plan
@@ -320,27 +321,7 @@ APP LAUNCH
           └── reconcile other data
 ```
 
-The user should be able to capture a thought immediately even when background data is still loading.
-
-If offline, recording may be saved locally and queued for upload when connectivity returns.
-
----
-
-## Daily Notifications
-
-Daytime reminders are silent by default unless the user has explicitly configured otherwise.
-
-Speech should be intentional rather than constant.
-
-Typical reminder actions may include deterministic event actions plus `Open in App` when useful.
-
----
-
-## Offline-First Execution
-
-Internet connectivity is required for novel server-side Butler reasoning, but it is not required for execution of an already synchronized day.
-
-The client should continue to support local Daily Event display, direct editing, alarms, notifications, prepared playback, queued Butler audio requests, and queued synchronization while offline.
+Order/Talk recording must not wait for network synchronization. Offline audio requests may be queued for later upload. Typed requests may likewise be queued when appropriate.
 
 ---
 
@@ -349,22 +330,22 @@ The client should continue to support local Daily Event display, direct editing,
 ### Backend owns
 
 - Butler reasoning
-- speech understanding for uploaded Butler requests
+- speech understanding for uploaded Order/Talk audio
+- normalization into one Butler workflow
 - user/context-aware interpretation
 - Daily Plan / Daily Event authority after synchronization
 - domain actions and validation
 - conversation text history
-- response text generation
-- response audio generation
+- response text and response audio generation
 - temporary server audio retention
 - completion push publication
 
 ### Client owns
 
-- immediate UI
-- recording compressed audio
-- temporary Sending / Sent states
-- conversation presentation
+- immediate Main Screen UI and conversation overlay
+- Order/Talk compressed-audio recording
+- Text typed composer
+- temporary Sending/Sent state
 - Room/cache
 - local response-audio storage
 - foreground/background result fetch
@@ -372,60 +353,25 @@ The client should continue to support local Daily Event display, direct editing,
 - notifications and actions
 - alarms/local execution
 - offline queues
-- instant-start behavior
 
 ---
 
 ## Simplicity Principle
 
-The user should experience:
+The user experiences:
 
 ```text
 One Butler
 One day
-One visible conversation
+One Main Screen
+One conversation overlay
 Three controls: Order / Talk / Text
 ```
 
-Audio processing, FCM, WorkManager, server retention, caching, and asynchronous execution are implementation details used to keep that experience simple.
-
----
-
-## Product Principles
-
-- Butler feels like one person.
-- Conversation history remains visible during voice interaction.
-- Voice input is recorded then sent, not a live continuous call.
-- Order/Talk become normal conversation messages after processing.
-- Temporary Sending/Sent state is replaced by the final server transcript.
-- There is exactly one Butler result for a completed interaction.
-- Notification and in-app display are two surfaces for that same result.
-- Client starts caching response audio immediately on completion.
-- Speaker/private-listen actions remain available even while audio is still downloading.
-- Notifications retain Open in App.
-- Morning Brief and Good Night Summary automatically Speak Aloud and always allow Stop.
-- Ordinary Butler messages do not auto-speak by default.
-- Client stores response audio locally; backend audio retention is limited.
-- App startup prioritizes immediate recording availability over data loading.
-- Backend owns intelligence; client owns interaction and local execution.
-- The user remains in control.
+Order/Talk differ from Text at input only. After normalization, they share one Butler brain and one result lifecycle.
 
 ---
 
 ## Source of Truth
 
-`PROJECT.md` is authoritative for product behavior. Technical documents derive from it:
-
-```text
-PROJECT.md + ENGINEERING.md
-           ↓
-backend/BACKEND_ARCHITECTURE.md
-backend/BACKEND_WORKFLOW.md
-client/CLIENT_ARCHITECTURE.md
-client/CLIENT_WORKFLOW.md
-client/CLIENT_SYNC_FLOW.md
-           ↓
-implementation
-```
-
-Version history for this source-of-truth set is recorded under `docs/project_source_of_truth/versions/VERSION_UPDATES.md`.
+`PROJECT.md` is authoritative for product behavior. Technical documents derive from it. Version history is recorded in `docs/project_source_of_truth/versions/VERSION_UPDATES.md`.
