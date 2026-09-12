@@ -1,6 +1,6 @@
 # Client Sync Flow
 
-**Version:** 1.4  
+**Version:** 1.5  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `CLIENT_ARCHITECTURE.md`, and `CLIENT_WORKFLOW.md`
 
@@ -8,37 +8,13 @@
 
 # Principle
 
-Synchronization should require no normal user action.
-
-Room is the client's immediate working state. Backend state becomes authoritative after authenticated reconciliation.
+Synchronization should require no normal user action. Room is the client's immediate working state. Backend state becomes authoritative after authenticated reconciliation.
 
 ---
 
-# Direct Event Sync
+# Two Butler Upload Paths
 
-Direct event changes remain local-first:
-
-```text
-edit / complete / skip / delay / cancel
-        ↓
-Room updated immediately
-        ↓
-UI updates immediately
-        ↓
-pending sync operation recorded
-        ↓
-WorkManager uploads when possible
-        ↓
-backend validates / reconciles
-        ↓
-Room updated with canonical result
-```
-
-This path is independent from Butler audio requests.
-
----
-
-# Butler Audio Request Upload
+## Audio — Order / Talk
 
 ```text
 record compressed audio
@@ -47,32 +23,50 @@ release
       ↓
 local placeholder = Sending...
       ↓
-POST /api/butler/requests
+POST audio request
       ↓
 202 + request_id
       ↓
-server accepted/handling signal
+accepted/handling
       ↓
-local placeholder = Sent • time
+placeholder = Sent • time
 ```
 
-If upload cannot complete, retain the local pending request and let WorkManager retry when connectivity returns.
+If upload cannot complete, retain the local recording/request and let WorkManager retry.
+
+## Text
+
+```text
+user types/edits
+      ↓
+Send
+      ↓
+insert exact text locally + Sending state
+      ↓
+POST text request
+      ↓
+202 + request_id
+      ↓
+accepted/handling
+      ↓
+exact text remains + Sent state
+```
+
+Text does not use audio recording or STT. Both request types then share the same completion/reconciliation path.
 
 ---
 
 # Completion Push
 
-Push is a wake-up signal, not the canonical response payload.
-
 ```text
-backend saves completed Butler result
+backend saves completed canonical result
       ↓
 FCM: butler_request_completed + request_id
       ↓
 client fetches authenticated canonical result
 ```
 
-Do not transport response audio bytes in FCM.
+FCM is a wake-up signal, not canonical response content and never transports response audio bytes.
 
 ---
 
@@ -85,7 +79,6 @@ Do not transport response audio bytes in FCM.
              │                           │
         App FOREGROUND              App BACKGROUND
              │                           │
-             ▼                           ▼
      Coroutine / Repository          WorkManager
              │                           │
              └─────────────┬─────────────┘
@@ -93,47 +86,59 @@ Do not transport response audio bytes in FCM.
                    Retrofit / OkHttp
                            │
                            ▼
-             GET canonical response + audio
+                  GET canonical result
                            │
                            ▼
                       Room / cache
 ```
 
-Both paths must call the same repository/persistence logic so the final conversation state is identical.
+Both paths call the same repository/persistence logic.
 
 ---
 
 # Final Result Reconciliation
 
-After canonical result fetch:
+For audio input:
 
 ```text
-server user transcript
+server transcript
       ↓
 replace local Sending/Sent placeholder text
+```
 
+For text input:
+
+```text
+submitted text already canonical
+      ↓
+keep message text; reconcile delivery/result metadata
+```
+
+For both:
+
+```text
 server Butler response
       ↓
-insert/update one Butler conversation message
-
-response audio URL/reference
+idempotent insert/update of one Butler message
       ↓
-start audio download immediately
+response audio reference
+      ↓
+start download immediately
       ↓
 cache locally
 ```
 
-The user does not get a second copy of the response when switching between notification and app.
+Switching between notification and app must never create another copy of the response.
 
 ---
 
 # Notification Publication
 
-If the app is foreground, update the active conversation immediately.
+Foreground: persist then update active conversation.
 
-If the app is background/not visible, persist first and publish a notification using the same Butler message text.
+Background/not visible: persist then publish notification using the same Butler message text.
 
-Ordinary Butler notification actions:
+Ordinary actions:
 
 ```text
 speaker icon
@@ -141,15 +146,15 @@ phone/private-listen icon
 Open in App
 ```
 
-`Open in App` should always be retained.
+`Open in App` opens Main Screen with the Butler conversation overlay visible; there is no separate chat screen.
 
-The notification may appear before the audio file finishes caching. Playback actions wait on the active download if necessary.
+Playback actions may appear before audio caching completes and wait on the active download when needed.
 
 ---
 
 # Audio Download / Cache
 
-Audio download begins as part of completion handling, not after the user asks to play it.
+Response audio download begins as part of completion handling for both audio-input and text-input requests.
 
 ```text
 completed result fetched
@@ -158,103 +163,51 @@ audio reference available
       ↓
 download/cache starts
       ↓
-Room/cache records status/path
+Room records status/path
 ```
 
-If the app/process is backgrounded, WorkManager owns retryable completion/audio work.
-
-Server response audio is retention-limited. Local cached audio is the normal source for historical playback.
+Server response audio is retention-limited. Local cached audio is the normal historical playback source.
 
 ---
 
-# Morning Brief / Good Night Summary Delivery
+# Morning Brief / Good Night Summary
 
-Morning Brief and Good Night Summary are proactive-speech exceptions.
-
-When scheduled content becomes due:
-
-```text
-local/synchronized content ready
-      ↓
-notification/execution surface
-      ↓
-automatically start Speak Aloud
-      ↓
-ongoing playback exposes Stop
-      ↓
-notification retains Open in App
-```
-
-The user can stop playback at any time.
-
-If audio/content needs network retrieval, the client should prepare/cache it early enough when possible. Existing offline/local fallback behavior may remain where it improves reliability.
+When synchronized/prepared content becomes due, automatically start Speak Aloud, expose Stop immediately, and retain Open in App. Prepare/cache content early enough when possible. Ordinary Butler responses remain silent by default.
 
 ---
 
-# Ordinary Server-to-Client Sync
+# Direct Event Sync
 
-Daily Plan changes continue to use silent synchronization hints:
-
-```text
-backend state changes
-      ↓
-FCM daily_plan_changed
-      ↓
-client authenticated sync
-      ↓
-Room
-      ↓
-reconcile alarms / notifications / execution
-```
-
-Routine synchronization should stay invisible.
-
----
-
-# Background Responsibilities
+Direct event changes remain local-first and independent of Butler requests:
 
 ```text
-Coroutine/Repository  immediate foreground fetch and persistence
-WorkManager           retryable background network work
-FCM                   wake-up/completion/change hints
-Notification          user-facing result/reminder surface
-AlarmManager          exact local execution when required
-Room                  durable bridge between network, UI, and execution
-Audio cache           durable device-side Butler playback
+Room update → immediate UI → pending sync → WorkManager → backend reconciliation → Room
 ```
-
-Do not keep a long-lived background service merely to remain synchronized.
 
 ---
 
 # Startup Convergence
 
-Startup must prioritize immediate interaction, then converge data in the background:
-
 ```text
-render usable shell + enable recording
+render usable Main Screen
++ enable Order/Talk recording
++ enable Text composition
       ↓
 parallel background work
-      ├── drain pending uploads
+      ├── drain pending audio/text uploads
       ├── fetch pending completed requests
       ├── sync plan/events
       ├── refresh conversation
       └── reconcile schedules/audio
 ```
 
-Correctness must not depend on the user pressing manual Refresh.
+Correctness must not depend on manual Refresh.
 
 ---
 
 # Retry / Idempotency
 
-Client work must remain correct when:
-
-- FCM is delayed or duplicated
-- WorkManager retries
-- process dies during download
-- foreground/background state changes during fetch
-- result is fetched more than once
+Client behavior must remain correct when FCM is delayed/duplicated, WorkManager retries, process dies during upload/download, foreground/background state changes, or results are fetched more than once.
 
 Use stable request/message identifiers and idempotent Room upserts so one backend result becomes one local Butler message.
 
@@ -262,4 +215,4 @@ Use stable request/message identifiers and idempotent Room upserts so one backen
 
 # User Experience Rule
 
-Synchronization, completion fetching, and audio caching should be invisible during normal operation. The user sees simple conversation states and notifications, not transport machinery.
+The user sees simple messages and delivery states. Audio/text transport, FCM, WorkManager, synchronization, and caching remain implementation details.
