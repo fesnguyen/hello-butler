@@ -1,874 +1,421 @@
 # Client Workflow
 
-**Version:** 1.3
-**Status:** Initial  
+**Version:** 1.4  
+**Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
 ---
 
 # Purpose
 
-This document defines the Android client's user-facing workflows and UI behavior.
-
-It focuses on:
-
-- Authentication entry
-- Main Screen behavior
-- Daily Event interaction
-- Event configuration
-- Butler Order / Talk / Text interaction
-- Butler conversation overlay
-- Butler late-response presentation
-- Morning Brief and Good Night Summary presentation
-- speech and response choices
-
-Technical implementation details that do not directly affect UI behavior belong in `CLIENT_ARCHITECTURE.md` or implementation code.
-
----
-
-# Authentication Entry
-
-When no Butler session exists, the user enters through a small authentication
-surface before the Main Screen.
-
-```text
-Welcome
-├── Sign in with Google
-├── Login with email + password
-└── Register with email + password
-```
-
-Registration collects the minimum account information required by the backend.
-Login and registration errors should be concise and should not expose sensitive
-account-existence details returned by the backend.
-
-After successful authentication:
-
-```text
-Authenticated session
-        ↓
-initial synchronization
-        ↓
-Main Screen
-```
-
-Logout returns the application to the authentication surface after local session
-credentials are cleared. Previously synchronized local execution data may be
-removed or isolated according to the client data-lifecycle implementation; it
-must never become accessible to a different authenticated account.
+This document defines the user-facing Android flows for Daily Events, Butler interaction, notifications, audio playback, and background delivery.
 
 ---
 
 # Main Screen
 
-The Main Screen is the primary client surface.
-
-```text
-MainScreen
-│
-├── DailyContent
-│   ├── Today
-│   ├── DailyEventList
-│   └── Upcoming information
-│
-├── ButlerConversationOverlay
-│
-├── ButlerResponseOverlay
-│
-└── ButlerControlBar
-    ├── Order
-    ├── Talk
-    └── Text
-```
-
-The user should normally stay on the Main Screen while managing their day or interacting with Butler.
-
-Butler interaction does not navigate to a separate chat screen.
-
----
-
-# Main Screen Layout
-
-Conceptually:
-
-```text
-┌────────────────────────────────┐
-│ Today                          │
-│                                │
-│ Morning Brief              ⋮   │
-│ Breakfast                  ⋮   │
-│ Work                       ⋮   │
-│ Meeting                    ⋮   │
-│ Exercise                   ⋮   │
-│                                │
-│ Upcoming                       │
-│ Tomorrow: Appointment          │
-│                                │
-├────────────────────────────────┤
-│     Order     Talk     Text     │
-└────────────────────────────────┘
-```
-
-Each event item has a configuration button at its end.
-
-The Butler controls remain available at the bottom.
-
----
-
-# Daily Event Item
-
-Each Daily Event is shown as a compact row/card.
-
-Conceptually:
-
-```text
-┌────────────────────────────────┐
-│ 15:00   Project Review      ⋮   │
-│         Meeting                │
-└────────────────────────────────┘
-```
-
-The event item may show:
-
-- time
-- title
-- short description or type
-- current state
-- visual indication for completed/past events
-- configuration button
-
-The configuration button should remain easy to reach without requiring Butler interaction.
-
----
-
-# Event Configuration Button
-
-A button at the end of every event opens the Event Detail popup.
-
-Example:
-
-```text
-Meeting                          ⋮
-                                 ↑
-                          configure event
-```
-
-The button is for deterministic event management.
-
-It should not call Butler or AI.
-
----
-
-# Event Detail Popup
-
-Selecting the event configuration button opens a popup / overlay for that event.
-
-```text
-┌────────────────────────────────┐
-│ Project Review                 │
-│                                │
-│ Time          15:00            │
-│ End           16:00            │
-│ Reminder      15 min before    │
-│ Speak aloud   Off              │
-│ Status        Planned          │
-│                                │
-│ [Complete] [Delay] [Skip]      │
-│                                │
-│ [Save]                 [Close] │
-└────────────────────────────────┘
-```
-
-The exact fields shown depend on what the event supports.
-
-Possible controls include:
-
-- title
-- description
-- start time
-- end time / duration
-- reminder timing
-- speak-aloud behavior
-- complete
-- skip
-- delay
-- move
-- cancel
-- delete
-
-The popup should stay focused on the selected event rather than exposing unrelated application settings.
-
----
-
-# Event Configuration Workflow
-
-```text
-User taps event config button
-        ↓
-Event Detail popup opens
-        ↓
-User changes fields / state
-        ↓
-Save
-        ↓
-Event list updates immediately
-        ↓
-Popup closes
-```
-
-Direct event configuration is local-first and should feel immediate.
-
-The user should not need to wait for Butler to edit an event that is already visible and directly configurable.
-
----
-
-# Butler Control Bar
-
-Three Butler buttons remain fixed at the bottom:
-
-```text
-┌───────────────────────────────┐
-│     Order     Talk     Text    │
-└───────────────────────────────┘
-```
-
-All three use the same Butler conversation overlay.
-
-They differ in interaction behavior.
-
----
-
-# Butler Conversation Overlay
-
-When the user presses any Butler button, a conversation popup appears directly above the controls.
-
-```text
-┌────────────────────────────────┐
-│                                │
-│       Daily Event List         │
-│       remains visible          │
-│                                │
-│ ┌────────────────────────────┐ │
-│ │ Butler Conversation       │ │
-│ │                           │ │
-│ │ You: Shift meeting...    │ │
-│ │ Butler: Done.            │ │
-│ │                           │ │
-│ │ STT / composer           │ │
-│ └────────────────────────────┘ │
-├────────────────────────────────┤
-│     Order     Talk     Text     │
-└────────────────────────────────┘
-```
-
-Initial behavior:
-
-```text
-ButlerConversationOverlay
-├── anchored above ButlerControlBar
-├── appears when press-and-hold begins
-├── begins compact
-├── expands as content grows
-├── maximum height ≈ 70% screen [DRAFT]
-├── scrolls internally after maximum height
-└── leaves the Daily Event list visible
-```
-
-The overlay exists on top of the current day rather than becoming a separate chat page.
-
----
-
-# Shared Press-and-Hold Flow
-
-All three buttons begin the same way:
-
-```text
-Press and hold
-      ↓
-Conversation overlay appears
-      ↓
-Start speech recognition
-      ↓
-User speaks
-      ↓
-Live STT shown
-      ↓
-Release
-```
-
-The user can watch recognition while still seeing the Daily Event list.
-
-Behavior after release depends on the chosen button.
-
----
-
-# Order Workflow
-
-Order means the user does not need to stay in an active conversation.
-
-```text
-Press and hold Order
-        ↓
-Speak
-        ↓
-Release
-        ↓
-Send immediately
-        ↓
-Show user message
-        ↓
-Butler processes
-```
-
-If the result comes back immediately, it appears in the conversation overlay.
-
-After a completed result:
-
-```text
-Show result
-    ↓
-Keep visible briefly
-    ↓
-Auto-dismiss
-```
-
-Initial hold duration:
-
-```text
-≈ 5 seconds [DRAFT]
-```
-
-If the result arrives later, use the Butler Response Overlay described below.
-
----
-
-# Talk Workflow
-
-Talk means the user expects to stay actively engaged.
-
-```text
-Press and hold Talk
-        ↓
-Speak
-        ↓
-Release
-        ↓
-Send immediately
-        ↓
-Show user message
-        ↓
-Butler processes
-        ↓
-Show response
-        ↓
-Keep conversation overlay open
-```
-
-The user can continue the conversation.
-
-Talk may answer a question, change an event, or ask for clarification.
-
----
-
-# Text Workflow
-
-Text is a precise input-preparation path.
-
-```text
-Press and hold Text
-        ↓
-Speak
-        ↓
-Release
-        ↓
-Transcript becomes editable
-        ↓
-User reviews / edits
-        ↓
-Choose:
-   ├── Send as Order
-   └── Send as Talk
-```
-
-Conceptually:
-
-```text
-┌──────────────────────────────┐
-│ Shift my meeting to 4 PM_    │
-│                              │
-│ [ Send as Order ] [ Talk ]   │
-└──────────────────────────────┘
-```
-
-Text does not create a third Butler semantic mode.
-
-It produces an exact message, then sends it with either Order or Talk behavior.
-
----
-
-# Conversation Continuity
-
-The Butler overlay shows the active conversation rather than only the latest message.
-
-```text
-You:
-Move my meeting to 4.
-
-Butler:
-Which meeting?
-
-You:
-Project Review.
-
-Butler:
-Done. Project Review is now at 4 PM.
-```
-
-Clarifications continue in the same overlay.
-
----
-
-# Butler Late Response
-
-A Butler response may arrive after the original conversation popup has already closed, especially for Order.
-
-Late responses use a dedicated Butler Response Overlay.
-
-Conceptually:
-
-```text
-┌────────────────────────────────┐
-│ Butler                         │
-│                                │
-│ Your Project Review meeting    │
-│ has been moved to 4:00 PM.     │
-│                                │
-│ [Call] [Speak] [OK, I see]     │
-└────────────────────────────────┘
-```
-
-This popup appears over the Main Screen so the user can still see their current day.
-
----
-
-# Butler Response Choices
-
-For Butler responses, the user controls how they consume the response.
-
-Default presentation:
-
-```text
-response arrives
-      ↓
-show response text overlay
-```
-
-The user can then choose:
-
-```text
-Call
-Speak
-OK, I see
-```
-
-These correspond to:
-
-### Call
-
-Present the Butler response like receiving a phone call.
-
-The user explicitly enters a more immersive listening mode.
-
-This is useful when the user wants to listen without reading and without having the response spoken publicly.
-
-Exact call-screen visual design can be refined later.
-
-### Speak
-
-Read the response aloud immediately through TTS.
-
-This is appropriate when the user is comfortable having Butler speak through the device speaker.
-
-### OK, I see
-
-Acknowledge the text response and close the overlay without speech.
-
----
-
-# Response Preference
-
-The user's preferred response presentation may be configurable.
-
-Possible preference:
-
-```text
-Butler response default
-├── Text overlay
-├── Speak aloud
-└── Call-style receive
-```
-
-Initial product default for ordinary Butler responses:
-
-```text
-Text overlay
-```
-
-This avoids unexpectedly speaking private responses aloud.
-
-The user can still choose `Call` or `Speak` from the response overlay.
-
-A future user preference may change the default behavior.
-
----
-
-# Call-Style Response
-
-Call-style response is a listening presentation mode.
-
-Conceptually:
-
-```text
-Butler Response
-      ↓
-User chooses Call
-      ↓
-Call-style overlay / screen
-      ↓
-Butler speaks response
-      ↓
-User listens
-      ↓
-End / close
-```
-
-The intent is similar to receiving a short phone call from Butler.
-
-This is distinct from automatic speaker playback.
-
-The exact audio route, screen design, and interaction controls can be refined during UI design.
-
----
-
-# Speak-Aloud Response
-
-If the user chooses Speak:
-
-```text
-Response overlay
-      ↓
-Tap Speak
-      ↓
-TTS starts
-      ↓
-Response remains visible
-      ↓
-User may stop / close when finished
-```
-
-The response text remains visible so listening and reading can happen together.
-
----
-
-# Morning Brief
-
-Morning Brief is different from ordinary Butler responses.
-
-Default:
-
-```text
-Morning Brief
-      ↓
-Speak aloud automatically
-```
-
-The content can also remain available visually in its Daily Event / associated presentation.
-
-This behavior is configurable by the user.
-
-Implemented delivery and playback flow:
-
-```text
-open authenticated Main Screen / tap Refresh
-        ↓
-fetch today + tomorrow snapshots
-        ↓
-persist plan and events in Room
-        ↓
-schedule eligible spoken event from its own date/time
-        ↓
-exact alarm fires OR delayed worker offers a Listen notification
-        ↓
-exact-alarm receiver OR user taps Listen starts the short-lived speech service
-        ↓
-service validates and claims the Room occurrence once
-        ↓
-Android local TTS speaks without backend access
-```
-
-Normal app closure does not remove the schedule. Reboot and application update
-restore pending schedules. Android force-stop is an OS-level exception: work and
-alarms remain suppressed until the user launches the application again.
-
-When proactive speech starts, Android shows an ongoing "Butler is speaking"
-notification with Stop. The Main Screen also shows Stop while the process is
-alive. Stop immediately terminates TTS, releases audio focus, removes foreground
-state, and stops the service. Playback reads only Room content and therefore
-does not need authentication or network access. An installed offline voice is
-required. Without exact-alarm access, unattended speech is unavailable: the user
-must tap Listen in the scheduled notification, which Android may deliver late.
-The service does not replay a previous local day's stale notification.
-
----
-
-# Good Night Summary
-
-Good Night Summary also defaults to spoken presentation.
-
-```text
-Good Night Summary
-      ↓
-Speak aloud automatically
-```
-
-The user may configure this behavior.
-
----
-
-# Default Speech Behavior
-
-Initial defaults:
-
-```text
-Morning Brief
-→ Speak aloud
-
-Good Night Summary
-→ Speak aloud
-
-Ordinary Butler response
-→ Show text overlay
-```
-
-For an ordinary Butler response, the user may explicitly choose:
-
-```text
-Call
-Speak
-OK, I see
-```
-
-This keeps Butler from unexpectedly speaking normal responses in public while allowing proactive daily rituals to remain voice-first.
-
----
-
-# Butler Response Overlay Behavior
-
-The response overlay should be compact and non-destructive.
-
-```text
-ButlerResponseOverlay
-├── appears over Main Screen
-├── displays response text
-├── allows reading without leaving current context
-├── offers Call
-├── offers Speak
-├── offers OK / close
-└── does not require opening a separate chat screen
-```
-
-For a response that changes the day, the Daily Event list behind the overlay should reflect the updated synchronized state when available.
-
----
-
-# Example: Late Order Response
-
-```text
-User:
-[holds Order]
-"Move my dentist appointment to Friday afternoon."
-
-User releases
-      ↓
-Order sent
-      ↓
-User continues using app / leaves popup
-      ↓
-Butler finishes later
-      ↓
-ButlerResponseOverlay appears
-
-"Your dentist appointment has been moved to
-Friday at 3:00 PM."
-
-[Call] [Speak] [OK, I see]
-```
-
----
-
-# Example: Immediate Talk Response
-
-```text
-User:
-[holds Talk]
-"Do I have anything important tomorrow?"
-
-      ↓
-Butler responds in active conversation overlay
-
-"You have a dentist appointment at 3 PM."
-
-Overlay stays open.
-```
-
-No late-response popup is needed because the active Talk conversation is still visible.
-
----
-
-# Example: Text to Order
-
-```text
-Hold Text
-    ↓
-Speak:
-"Shift the planning session to four and tell Minh"
-
-    ↓
-STT:
-"Shift the planning season to four and tell men"
-
-    ↓
-User edits:
-"Shift the planning session to 4 PM and tell Minh."
-
-    ↓
-Send as Order
-    ↓
-Normal Order behavior
-```
-
----
-
-# Example: Event Configuration
-
-```text
-Today
-
-15:00  Project Review              ⋮
-                                      ↓
-                               User taps
-                                      ↓
-┌────────────────────────────────┐
-│ Project Review                 │
-│ Time       [15:00]             │
-│ Reminder   [15 min]            │
-│ Speak      [Off]               │
-│                                │
-│ [Delay] [Skip] [Complete]      │
-│                                │
-│ [Save]                 [Close] │
-└────────────────────────────────┘
-```
-
-No Butler request is required.
-
----
-
-# Initial UI State
-
-Conceptually:
+The Main Screen remains the primary product surface.
 
 ```text
 MainScreen
 │
 ├── DailyEventList
-│   └── EventDetailPopup?
-│
-├── ButlerConversationOverlay?
-│   ├── live STT
-│   ├── messages
-│   ├── editor
-│   └── active response
-│
-├── ButlerResponseOverlay?
-│   ├── response text
-│   ├── Call
-│   ├── Speak
-│   └── OK
-│
+├── ButlerConversationOverlay
 └── ButlerControlBar
     ├── Order
     ├── Talk
     └── Text
 ```
 
-Only the relevant overlay should take interaction focus at a time.
+Butler interaction should happen on top of the user's day rather than navigating to a separate chat screen.
 
 ---
 
-# Draft UX Values
+# Butler Conversation Overlay
 
-Current provisional values:
+The conversation overlay shows persistent recent conversation while leaving the Daily Event list visible.
+
+Recording should not replace the conversation with a dedicated voice screen.
 
 ```text
-Butler conversation overlay max height ≈ 70% screen
-Order immediate-result hold ≈ 5 seconds
+conversation history
+      ↓
+user holds Order/Talk
+      ↓
+small recording animation appears in user's message area
+      ↓
+conversation remains readable
 ```
 
-These values are intentionally easy to tune after real-device use.
+No extra end button or explicit `Release to send` label is required. Releasing the existing hold gesture ends recording and starts send behavior naturally.
+
+---
+
+# Order / Talk Recording
+
+```text
+Press and hold Order or Talk
+        ↓
+small listening animation
+        ↓
+user speaks
+        ↓
+release
+        ↓
+local outgoing entry = Sending...
+        ↓
+compressed audio upload begins
+```
+
+The user can continue using the app immediately after release.
+
+---
+
+# Sending to Sent
+
+After release, the user's temporary conversation entry represents transport state rather than transcript text.
+
+```text
+Sending...
+   ↓
+backend accepted / handling signal received
+   ↓
+Sent • 10:14 AM
+```
+
+Do not show the user's waveform/audio as a historical playable message.
+
+When the final Butler result arrives, replace the temporary `Sent` content with the backend-produced transcript.
+
+Example:
+
+```text
+Before completion
+You
+Sent • 10:14 AM
+
+After completion
+You
+hello tonight I have a meeting with John at 8:00 p.m.
+```
+
+---
+
+# Butler Processing
+
+While the request is in progress, the conversation may show a minimal Butler activity indicator such as:
+
+```text
+Butler
+••• Thinking...
+```
+
+Avoid large processing screens, progress wizards, or multiple intermediate cards.
+
+---
+
+# Completed Response
+
+One completed Order/Talk interaction results in:
+
+```text
+You
+<server transcript>
+
+Butler
+<canonical response text>
+[ speaker icon ] [ phone/private-listen icon ]
+```
+
+The response becomes normal conversation history. It is not a temporary separate late-response overlay.
+
+If Butler changed the user's day, the Daily Event list behind the conversation should reconcile through the normal data/sync path.
+
+---
+
+# Same Message in Foreground and Background
+
+There is only one Butler response.
+
+## App foreground
+
+The fetched result is persisted, then the active conversation updates immediately.
+
+## App background / closed
+
+The fetched result is persisted, then Android shows a notification containing the same Butler response text.
+
+Opening the application later shows the same persisted message already present in conversation history.
+
+Do not generate a second response when opening the app.
+
+---
+
+# FCM Completion Flow
+
+```text
+FCM completed(request_id)
+          │
+    ┌─────┴─────┐
+    │           │
+foreground   background
+    │           │
+coroutine    WorkManager
+repository
+    │           │
+    └─────┬─────┘
+          ↓
+GET canonical result
+          ↓
+Room persistence
+          ↓
+start audio cache download
+          ↓
+active conversation OR notification
+```
+
+The client should immediately fetch/cache audio after receiving completion rather than waiting for a playback button press.
+
+---
+
+# Ordinary Butler Notification
+
+The notification shows the same canonical Butler response text.
+
+Actions:
+
+```text
+[ speaker icon ] [ phone/private-listen icon ] [ Open in App ]
+```
+
+The notification may appear while response audio is still downloading.
+
+If the user selects an audio action before caching finishes:
+
+```text
+action tapped
+   ↓
+wait on current audio download
+   ↓
+play as soon as ready
+```
+
+Do not require another explicit `Audio ready` confirmation step.
+
+`Open in App` remains available so the user can view the response within conversation context.
+
+---
+
+# Speak Aloud
+
+The speaker icon plays the Butler response through the normal outward speaker route.
+
+```text
+speaker icon
+   ↓
+ensure audio available
+   ↓
+request appropriate audio focus
+   ↓
+play
+   ↓
+allow Stop
+```
+
+---
+
+# Private / Receive-as-Call Listening
+
+The phone icon means a private, call-like listening presentation.
+
+It is not a real network phone call and not a realtime session with Butler.
+
+```text
+phone icon
+   ↓
+ensure response audio available
+   ↓
+route/present as private listening
+   ↓
+user listens like receiving a short Butler call
+   ↓
+end / stop
+```
+
+Exact Android audio-routing details may be refined during implementation while preserving this product behavior.
+
+---
+
+# Morning Brief
+
+Morning Brief is a proactive-speech exception.
+
+At its scheduled delivery time:
+
+```text
+Morning Brief due
+    ↓
+show notification / execution surface
+    ↓
+automatically begin Speak Aloud
+    ↓
+user may Stop at any time
+```
+
+The notification/surface retains `Open in App` so the user can read the Morning Brief in context.
+
+---
+
+# Good Night Summary
+
+Good Night Summary follows the same proactive pattern:
+
+```text
+Good Night Summary due
+    ↓
+show notification / execution surface
+    ↓
+automatically begin Speak Aloud
+    ↓
+user may Stop at any time
+```
+
+The notification/surface retains `Open in App`.
+
+---
+
+# Default Speech Behavior
+
+```text
+Morning Brief       → automatically Speak Aloud; Stop available
+Good Night Summary  → automatically Speak Aloud; Stop available
+Ordinary Butler     → text first; no automatic speech
+```
+
+Ordinary Butler messages expose playback icons for user choice.
+
+---
+
+# Text Workflow
+
+Text is context-aware speech-to-editable-text preparation.
+
+```text
+Press and hold Text
+      ↓
+record audio
+      ↓
+release / upload
+      ↓
+backend understands speech
+      +
+relevant user preference
+      +
+recent conversation
+      ↓
+rewrite / translate / normalize when useful
+      ↓
+editable text appears
+      ↓
+user edits / copies / uses text
+```
+
+Text should not automatically perform an Order/Talk action.
+
+---
+
+# Instant Startup Workflow
+
+```text
+user taps app icon
+      ↓
+render usable Main Screen shell
+      ↓
+Order/Talk/Text hold-to-record available immediately
+      ↓
+background loading continues
+      ├── Room content
+      ├── plan sync
+      ├── conversation sync
+      ├── pending responses
+      └── other reconciliation
+```
+
+Do not make voice capture wait for full Daily Plan/history synchronization.
+
+---
+
+# Offline Voice Workflow
+
+```text
+user records while offline
+      ↓
+recording stored locally
+      ↓
+request queued
+      ↓
+connectivity returns
+      ↓
+WorkManager uploads
+      ↓
+normal Sending / Sent / completion flow resumes
+```
+
+The UI should make pending state understandable without forcing the user to stay in the app.
+
+---
+
+# Direct Event Configuration
+
+Direct event editing remains deterministic and local-first.
+
+```text
+tap event menu
+    ↓
+edit / delay / skip / complete / cancel
+    ↓
+Room updates immediately
+    ↓
+UI updates immediately
+    ↓
+sync queued
+```
+
+Do not route obvious direct event edits through Butler AI.
+
+---
+
+# Notification Principle
+
+Notifications are presentation/wake-up surfaces, not a separate product state.
+
+A Butler result shown as a notification must correspond to the same persisted conversation message the user sees after opening the app.
+
+Morning Brief and Good Night Summary may auto-play; ordinary Butler notifications do not.
 
 ---
 
 # Complete UI Mental Model
 
 ```text
-                           MAIN SCREEN
-                               │
-            ┌──────────────────┼──────────────────┐
-            ▼                  ▼                  ▼
-       DAILY EVENTS       BUTLER OVERLAYS    CONTROL BAR
-            │                  │                  │
-            │            ┌─────┴─────┐     Order Talk Text
-            │            ▼           ▼
-            │      Conversation   Late Response
-            │         Overlay        Overlay
-            │            │           │
-            │         Live STT    Response text
-            │         Messages     Call / Speak
-            │         Editor       OK, I see
-            │
-            ▼
-     Event config button
-            │
-            ▼
-     Event Detail Popup
-            │
-       Edit / Delay /
-      Skip / Complete
+                         MAIN SCREEN
+                             │
+          ┌──────────────────┼──────────────────┐
+          ▼                  ▼                  ▼
+     DAILY EVENTS       CONVERSATION        CONTROL BAR
+                             │           Order / Talk / Text
+                             │
+                ┌────────────┼────────────┐
+                ▼            ▼            ▼
+             recording    Sending/Sent  final messages
+                │                           │
+          small animation              text + audio icons
 ```
 
 ---
 
 # Guiding UI Principle
 
-Butler should feel like it exists **on top of the user's day**, not inside a separate chat application.
+Butler should feel continuously present without becoming visually heavy.
 
-The user should be able to:
-
-- see today's events
-- configure an event directly
-- hold Order, Talk, or Text
-- watch STT live
-- see Butler respond without losing context
-- receive a late Butler result as a compact overlay
-- choose whether to read, hear aloud, or receive the response in a call-like mode
-
-The default behavior should respect context:
-
-```text
-Morning Brief       → speak aloud
-Good Night Summary  → speak aloud
-Butler response     → show text
-```
-
-The user remains in control of how Butler speaks.
+The user should be able to speak, leave, return, read, listen aloud, listen privately, or open a notification in the app without encountering different copies of the same interaction.

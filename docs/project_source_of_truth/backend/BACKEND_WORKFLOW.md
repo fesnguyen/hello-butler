@@ -1,1127 +1,380 @@
 # Backend Workflow
 
-**Version:** 1.3
-**Status:** Initial  
+**Version:** 1.4  
+**Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
 ---
 
 # Purpose
 
-This document defines how backend workflows behave.
-
-It describes:
-
-- authentication
-- Butler request handling
-- LangGraph routing
-- state fields
-- persistence
-- synchronization
-- Daily Plan lifecycle
-- Morning Brief and Good Night Summary generation
-
-The most important Butler workflow is `/api/butler/talk`.
+This document defines backend execution flows for Butler requests, planning, persistence, and synchronization.
 
 ---
 
-# Authentication Workflows
+# Core Butler Request Flow
 
-Authentication is deterministic backend behavior and does not involve Butler or
-AI reasoning.
-
-Supported entry points are conceptually:
+Order and Talk are recorded-audio requests processed asynchronously.
 
 ```text
-POST /api/auth/register
-POST /api/auth/login
-POST /api/auth/google
-POST /api/auth/refresh
-POST /api/auth/logout
+POST /api/butler/requests
+        ↓
+authenticate
+        ↓
+validate mode + audio
+        ↓
+create request record
+        ↓
+return 202 + request_id
+        ↓
+publish/emit handling signal when accepted
+        ↓
+continue processing asynchronously
+        ↓
+understand/transcribe audio
+        ↓
+load recent conversation + User Context + relevant Daily Plan/Events
+        ↓
+understand semantic intent
+        ↓
+route
+   ┌────┼────┐
+   ▼    ▼    ▼
+COMMAND QUERY CLARIFY
+   │    │    │
+   └────┼────┘
+        ↓
+apply validated deterministic actions when required
+        ↓
+produce Butler response text
+        ↓
+generate Butler response audio
+        ↓
+persist transcript + Butler text + result metadata
+        ↓
+mark request completed
+        ↓
+FCM completed(request_id)
 ```
 
-Exact route naming may evolve without changing the workflow contract.
-
-## Email Registration
-
-```text
-email + password
-      ↓
-normalize and validate email
-      ↓
-validate password requirements
-      ↓
-email already registered for password login?
-      ├── yes → reject
-      └── no
-           ↓
-      hash password with Argon2id
-           ↓
-      create User
-           +
-      create password AuthIdentity
-           ↓
-      create refresh session
-           ↓
-      issue access + refresh tokens
-```
-
-Registration must not persist a plaintext or reversibly encrypted password.
-
-## Email Login
-
-```text
-email + password
-      ↓
-normalize email
-      ↓
-resolve password AuthIdentity
-      ↓
-verify Argon2id password hash
-      ├── invalid → generic authentication failure
-      └── valid
-           ↓
-      create refresh session
-           ↓
-      issue access + refresh tokens
-```
-
-Authentication failures should not reveal whether a particular account exists.
-
-## Google Login
-
-```text
-Google ID token from client
-      ↓
-verify token with Google
-      ├── signature
-      ├── issuer
-      ├── audience
-      └── expiry
-      ↓
-read stable Google subject (`sub`)
-      ↓
-find google AuthIdentity(provider_subject = sub)
-      │
-      ├── found → resolve User
-      │
-      └── not found
-            ↓
-         create User
-            +
-         create google AuthIdentity
-      ↓
-create refresh session
-      ↓
-issue access + refresh tokens
-```
-
-Google identity is keyed by the verified provider subject, not by email alone.
-
-If the verified Google email matches an existing password account but no Google
-identity is already linked, do not silently merge the accounts. Explicit account
-linking can be added later as an authenticated workflow.
-
-## Access Token Authentication
-
-Protected requests use:
-
-```text
-Authorization: Bearer <access token>
-              ↓
-verify signature
-              ↓
-verify expiry / required claims
-              ↓
-resolve internal user identity
-              ↓
-execute endpoint as that user
-```
-
-The authenticated user is injected/resolved at the API boundary. Request bodies
-do not establish ownership by supplying `user_id`.
-
-## Token Refresh
-
-```text
-refresh token
-      ↓
-hash presented secret
-      ↓
-find active refresh session
-      ↓
-validate expiry + revocation + rotation state
-      ├── invalid/reused → revoke session → reject
-      └── valid
-           ↓
-      consume current refresh token
-           ↓
-      generate replacement refresh token
-           ↓
-      store replacement hash / rotation metadata
-           ↓
-      issue new access + refresh tokens
-```
-
-Refresh rotation is atomic so a refresh token cannot be successfully consumed
-more than once.
-
-## Logout
-
-```text
-current refresh token/session
-      ↓
-resolve session
-      ↓
-revoke session
-      ↓
-client deletes local tokens
-```
-
-Access tokens remain intentionally short-lived; logout does not require a global
-access-token denylist.
+The request must survive the user leaving the app after upload.
 
 ---
 
-# Core Butler Mental Model
+# Client-Visible Sending / Sent State
 
-`/api/butler/talk` is the single conversational entry point into Butler.
-
-The backend receives:
+The backend contract supports the client lifecycle:
 
 ```text
-message
-interaction_mode = order | talk
+release recording
+    ↓
+client = Sending...
+    ↓
+server accepts / handling acknowledgement
+    ↓
+client = Sent • time
+    ↓
+server completes processing
+    ↓
+client fetches final result
+    ↓
+Sent placeholder replaced by user transcript
 ```
 
-The client may have captured that message by direct speech or by the Text
-editing flow, but that input method is no longer a backend concern.
-
-```text
-POST /api/butler/talk
-          │
-          ▼
-     Build ButlerState
-          │
-          ▼
-      Load Context
-          │
-          ▼
-   Understand Request
-          │
-          ▼
-   Route by semantics
-```
-
-Keep these concerns separate:
-
-```text
-How is the user interacting?
-→ order | talk
-
-What does the request mean?
-→ command | query | clarification
-
-What changes?
-→ domain persistence | conversation persistence | no domain mutation
-
-What does Butler return?
-→ text response + semantic result metadata
-```
-
-The client decides how that text is presented.
+`Sending...` and `Sent` are client presentation states. They are not durable conversation messages on the backend.
 
 ---
 
-# Interaction Modes
+# Speech Understanding
 
-## Order
+The backend receives the recorded audio rather than a locally transcribed Order/Talk message.
 
-Purpose:
+Speech understanding should preserve useful information from the original audio and produce a stable transcript for conversation history.
 
-> The user wants Butler to handle the request without requiring them to stay in an active conversation.
-
-Typical behavior:
-
-```text
-final message
-    ↓
-request
-    ↓
-Butler processes
-    ↓
-domain change when needed
-    ↓
-text result
-```
-
-The client may show the result immediately or later as a response overlay.
-
-Order requests may still require clarification.
+The transcript becomes the durable user-side conversation text after completion.
 
 ---
 
-## Talk
+# Context Loading
 
-Purpose:
+Use bounded relevant context, including:
 
-> The user is actively present and expects an immediate conversational response.
+- newest relevant conversation messages
+- User Context
+- target/current Daily Plan
+- relevant Daily Events
+- current date/time/timezone
 
-Typical behavior:
-
-```text
-final message
-    ↓
-request
-    ↓
-Butler processing
-    ↓
-text response
-```
-
-Talk may still execute commands.
-
-Example:
-
-```text
-Mode: Talk
-Request: "Move my workout to seven tonight."
-
-Semantic intent: command
-Domain persistence: yes
-Response text: "Done. I moved your workout to 7 PM."
-```
-
-Talk may also be a pure query.
-
-```text
-Mode: Talk
-Request: "What do I have tonight?"
-
-Semantic intent: query
-Domain persistence: no
-Response text: "You have exercise at 7 PM and groceries afterward."
-```
-
----
-
-# Text Input Is Client-Side
-
-Text is not a backend interaction mode.
-
-Client flow:
-
-```text
-speech
-  ↓
-STT
-  ↓
-editable transcript
-  ↓
-user correction
-  ↓
-send as order | talk
-```
-
-By the time the backend receives the request:
-
-```text
-interaction_mode = order | talk
-message = finalized text
-```
-
-The backend does not need to know whether the message originated from direct
-speech or from the editable Text flow.
+Recent conversation exists to resolve references and continue the immediate exchange. Older conversation must not override a newer explicit request.
 
 ---
 
 # Semantic Routes
 
-LangGraph routes by meaning rather than by UI button.
+## Command
 
 ```text
-                         START
-                           │
-                           ▼
-                    LOAD CONTEXT
-                           │
-                           ▼
-                  UNDERSTAND REQUEST
-                           │
-             ┌─────────────┼─────────────┐
-             │             │             │
-             ▼             ▼             ▼
-          COMMAND         QUERY        CLARIFY
-             │             │             │
-             ▼             ▼             │
-        PLAN ACTION    BUILD ANSWER       │
-             │             │             │
-             ▼             │             │
-       APPLY ACTION        │             │
-             │             │             │
-             └─────────────┼─────────────┘
-                           ▼
-                     BUILD RESULT
-                           │
-                           ▼
-                     SAVE HISTORY
-                           │
-                           ▼
-                          END
+understand requested change
+      ↓
+resolve target
+      ↓
+enough information?
+  ├── no → clarify
+  └── yes
+        ↓
+structured mutation proposal
+        ↓
+validate deterministically
+        ↓
+apply / persist
+        ↓
+confirmation response
 ```
+
+## Query
+
+```text
+understand information need
+      ↓
+load relevant state
+      ↓
+reason / answer
+      ↓
+persist conversation
+```
+
+## Clarify
+
+Clarification should be concise and natural. Ask only when important information cannot reasonably be inferred from the current message, recent conversation, current time/timezone, events, or User Context.
 
 ---
 
-# Command Route
+# Order
 
-Purpose:
-
-> Change Butler-managed state.
-
-Examples:
-
-- move an event
-- create a reminder
-- skip an event
-- update User Context
-- change tomorrow's plan
-- record a meaningful preference
-
-Flow:
+Order prioritizes unattended execution.
 
 ```text
-COMMAND
-   │
-   ▼
-Understand requested change
-   │
-   ▼
-Determine target entity
-   │
-   ├── User Context
-   ├── Daily Plan
-   ├── Daily Event
-   └── other supported state
-   │
-   ▼
-Load required state
-   │
-   ▼
-Enough information?
-   │
-   ├── no ─────→ CLARIFY
-   │
-   └── yes
-        │
-        ▼
-   Propose mutation
-        │
-        ▼
-   Validate mutation
-        │
-        ▼
-   Apply deterministic change
-        │
-        ▼
-      Persist
-        │
-        ▼
-   Build response text
+voice request
+   ↓
+accepted quickly
+   ↓
+user may leave
+   ↓
+backend completes action / answer / clarification
+   ↓
+FCM completed
 ```
 
-AI determines what should happen.
-
-Application code performs validated mutations.
+Order does not require the user to keep an active screen open.
 
 ---
 
-# Query Route
+# Talk
 
-Purpose:
-
-> Return information, reasoning, explanation, or advice without changing domain state.
-
-Flow:
+Talk prioritizes conversational response, but uses the same asynchronous transport.
 
 ```text
-QUERY
-   │
-   ▼
-Understand information need
-   │
-   ▼
-Determine required context
-   │
-   ├── User Context
-   ├── Daily Plan
-   ├── Daily Events
-   └── Conversation History
-   │
-   ▼
-Retrieve relevant information
-   │
-   ▼
-Reason / generate answer
-   │
-   ▼
-Build response text
-   │
-   ▼
-Save conversation history
+voice request
+   ↓
+accepted
+   ↓
+backend processes
+   ↓
+Butler message returned
+   ↓
+conversation can continue
 ```
 
-The Query route is read-only with respect to domain state.
+Talk is not a realtime media/WebRTC call.
 
 ---
 
-# Clarification Route
+# Text
 
-Purpose:
-
-> Ask for missing information when Butler cannot safely continue.
-
-Example:
+Text receives recorded audio but does not immediately execute it as a Butler action.
 
 ```text
-User:
-"Move my meeting later."
-
-Missing:
-target time
+recorded audio
+   ↓
+speech understanding
+   ↓
+relevant user preference + recent conversation
+   ↓
+rewrite / translate / normalize as appropriate
+   ↓
+editable text result
 ```
 
-Flow:
-
-```text
-COMMAND or QUERY
-       │
-       ▼
-Required information missing
-       │
-       ▼
-     CLARIFY
-       │
-       ▼
-Generate concise question text
-       │
-       ▼
-Persist conversation context
-       │
-       ▼
-Return clarification text
-```
-
-The next request is interpreted with previous conversation history.
-
-No PlannerSession-style table is required.
+The client presents the result for editing. Explicit later use of that text is a separate user action.
 
 ---
 
-# ButlerState Mental Model
+# Result Persistence
+
+A completed Order/Talk request persists:
 
 ```text
-ButlerState
-│
-├── Request
-│   ├── user_id
-│   ├── message
-│   └── interaction_mode
-│
-├── Context
-│   ├── conversation_history
-│   ├── user_context
-│   ├── daily_plan
-│   └── relevant_events
-│
-├── Understanding
-│   ├── intent
-│   ├── requested_action
-│   ├── required_information
-│   └── missing_information
-│
-├── Execution
-│   ├── proposed_changes
-│   ├── applied_changes
-│   └── execution_status
-│
-└── Result
-    ├── response
-    ├── changed_entities
-    └── requires_follow_up
+ConversationHistory
+├── role=user   → final transcript
+└── role=butler → canonical Butler response text
 ```
 
-This is a conceptual grouping, not a requirement for nested Python models.
+The same result may also reference response audio and changed domain entities.
+
+Do not create separate conversation records for notification delivery versus in-app delivery.
 
 ---
 
-# Request Fields
+# Response Audio Generation
 
-## `user_id`
-
-Derived from authenticated identity.
-
-Never trust arbitrary request payload `user_id`.
-
-## `message`
-
-The finalized text Butler should interpret.
-
-Its client origin may have been:
+Response text is finalized before response audio generation.
 
 ```text
-direct speech
-reviewed/edited Text input
-```
-
-That distinction is not needed for backend reasoning.
-
-## `interaction_mode`
-
-Allowed initial values:
-
-```text
-order
-talk
-```
-
-It describes the user's interaction expectation.
-
-It must not be treated as semantic intent.
-
----
-
-# Context Fields
-
-## `conversation_history`
-
-Provides continuity for:
-
-- clarification responses
-- references
-- follow-up requests
-- recent conversational context
-
-Load bounded relevant history rather than everything.
-
-## `user_context`
-
-Durable or temporary information relevant to reasoning.
-
-## `daily_plan`
-
-The relevant day's plan.
-
-## `relevant_events`
-
-Only the subset of events directly relevant to the request when practical.
-
----
-
-# Understanding Fields
-
-## `intent`
-
-Initial semantic values:
-
-```text
-command
-query
-clarify
-```
-
-## `requested_action`
-
-Examples:
-
-```text
-create_event
-update_event
-skip_event
-delay_event
-update_user_context
-```
-
-## `required_information`
-
-Information required to safely complete the current task.
-
-## `missing_information`
-
-Required information that could not be resolved from the current message,
-conversation history, User Context, Daily Plan, or relevant events.
-
----
-
-# Execution Fields
-
-## `proposed_changes`
-
-Structured domain changes suggested by reasoning before application.
-
-Example:
-
-```json
-{
-  "entity": "daily_event",
-  "entity_id": "...",
-  "action": "update",
-  "changes": {
-    "start_time": "16:00"
-  }
-}
-```
-
-These must be validated before persistence.
-
-## `applied_changes`
-
-Changes successfully applied by deterministic application logic.
-
-## `execution_status`
-
-Possible initial strings:
-
-```text
-pending
-completed
-clarifying
-failed
-```
-
----
-
-# Result Fields
-
-## `response`
-
-The canonical textual Butler response.
-
-Examples:
-
-```text
-"Done. Your meeting is now at 4 PM."
-
-"You have a meeting at 3 PM and groceries after work."
-
-"What time would you like me to move it to?"
-```
-
-The backend returns text.
-
-The client decides whether to:
-
-- show it in an overlay
-- read it aloud
-- present it in call-style mode
-- let the user simply read and dismiss it
-
-## `changed_entities`
-
-Identifies domain entities changed during execution.
-
-Useful for sync, refresh, confirmation, and tracing.
-
-## `requires_follow_up`
-
-```text
-true  → clarification/user input still required
-false → interaction complete
-```
-
----
-
-# Response Delivery Boundary
-
-The backend no longer owns a speech/text delivery mode for ordinary Butler
-responses.
-
-The separation is:
-
-```text
-LangGraph
-→ semantic result
-
-Application
-→ response text + semantic metadata
-
-Client
-→ visual overlay / Speak / Call-style / dismiss
-```
-
-Therefore, do not return backend concepts such as:
-
-```text
-spoken
-text
-call
-```
-
-as authoritative delivery modes for ordinary Butler responses.
-
-The response payload should remain presentation-neutral.
-
----
-
-# Persistence and Response Are Independent
-
-Examples:
-
-```text
-"Move my meeting to 4 PM."
-
-Domain persistence: yes
-Conversation persistence: yes
-Response text: yes
-```
-
-```text
-"What do I have after lunch?"
-
-Domain persistence: no
-Conversation persistence: yes
-Response text: yes
-```
-
-```text
-"Remember that I prefer late meetings."
-
-Domain persistence: yes
-Conversation persistence: yes
-Response text: yes
-```
-
-Do not equate response generation with read-only behavior.
-
----
-
-# Domain Persistence
-
-Domain persistence changes product state.
-
-Examples:
-
-- Daily Plan
-- Daily Event
-- User Context
-- device or sync state
-
-Mutations are performed by deterministic application code after validation.
-
----
-
-# Conversation Persistence
-
-Conversation history may be written for both Query and Command routes.
-
-```text
-user message
-    ↓
-conversation_history
-    ↓
 Butler response text
-    ↓
-conversation_history
+      ↓
+audio generation
+      ↓
+temporary server audio asset
+      ↓
+result metadata references asset
 ```
 
-Conversation persistence is separate from domain mutation.
+Audio retention is limited and cleaned regularly.
 
 ---
 
-# Talk Endpoint Detailed Flow
+# Completion Push
+
+After the canonical result has been saved:
 
 ```text
-POST /api/butler/talk
-        │
-        ▼
-Authenticate request
-        │
-        ▼
-Normalize message
-        │
-        ▼
-Validate interaction_mode = order | talk
-        │
-        ▼
-Build initial ButlerState
-        │
-        ▼
-Load conversation history
-        │
-        ▼
-Load relevant User Context
-        │
-        ▼
-Load relevant Daily Plan / Events
-        │
-        ▼
-UNDERSTAND REQUEST
-        │
-        ├── infer semantic intent
-        ├── resolve references
-        ├── determine required information
-        └── detect missing information
-        │
-        ▼
-Route
-   ┌────┼────┐
-   │    │    │
-   ▼    ▼    ▼
-COMMAND QUERY CLARIFY
-   │    │    │
-   │    │    └── build clarification text
-   │    │
-   │    └── reason over loaded context
-   │         └── build answer text
-   │
-   └── produce structured mutation proposal
-        ├── validate
-        ├── execute
-        └── persist
-             │
-             ▼
-        BUILD RESULT
-             │
-             ▼
-     persist conversation
-             │
-             ▼
-       return text result
+persist completed result
+      ↓
+commit
+      ↓
+FCM butler_request_completed(request_id)
 ```
+
+Push failure must not roll back the canonical result.
+
+FCM contains identifiers/hints, not the audio file.
 
 ---
 
-# Example Request and Result
+# Result Retrieval
 
-Request:
+After completion signal:
 
-```json
-{
-  "interaction_mode": "order",
-  "message": "Move my project review to 4 PM."
-}
+```text
+GET /api/butler/requests/{request_id}
+      ↓
+user transcript
+Butler response text
+response audio URL/reference
+changed entities / status metadata
 ```
 
-Result:
+The fetch is idempotent and safe to retry from foreground or WorkManager.
 
-```json
-{
-  "response": "Done. I moved your project review to 4 PM.",
-  "changed_entities": [
-    {
-      "type": "daily_event",
-      "id": "..."
-    }
-  ],
-  "requires_follow_up": false
-}
+---
+
+# Morning Brief / Good Night Summary
+
+Planning remains separate from ordinary Butler requests.
+
+```text
+prepare content
+      ↓
+persist Daily Event / canonical result
+      ↓
+client syncs/caches required content
+      ↓
+due time arrives
+      ↓
+client auto-starts Speak Aloud
+      ↓
+user can Stop immediately
 ```
 
-The backend does not specify whether that response should be spoken.
+These are proactive-speech exceptions. Ordinary Butler message delivery stays silent unless the user explicitly selects an audio action.
 
 ---
 
 # Direct Event Updates
 
-Direct client CRUD should bypass AI.
+Direct visible event edits bypass AI:
 
 ```text
-Client edit
+client edit
    ↓
-Sync API
+local-first Room update
    ↓
-Authenticate
+sync operation
    ↓
-Validate version
+backend validates version
    ↓
-Apply deterministic update
+persist canonical state
    ↓
-Persist
-   ↓
-Return authoritative entity
+return/reconcile
 ```
 
 ---
 
-# Daily Plan Lifecycle
+# Daily Lifecycle
 
 ```text
 Night
   ↓
-Prepare tomorrow plan
+prepare tomorrow
   ↓
-Create Daily Events
+create/update Daily Events
   ↓
-Generate Morning Brief content
+generate Morning Brief
   ↓
-Persist
+persist
 
 Day
   ↓
-Events change as reality changes
-  ↓
-Client syncs updates
+execute / adapt / replan
 
 Night
   ↓
-Read final day state
+read final day reality
   ↓
-Generate Good Night Summary content
+generate Good Night Summary
   ↓
-Persist
+prepare tomorrow
 ```
-
-The backend generates content.
-
-The client controls how that content is presented or spoken.
 
 ---
 
-# Morning Brief
+# Reliability Rules
 
-Morning Brief generation:
-
-```text
-Tomorrow Daily Plan
-      ↓
-Relevant User Context
-      ↓
-Generate brief text/content
-      ↓
-Persist as Daily Event content
-      ↓
-Client sync
-```
-
-The backend does not need to execute speech.
-
-## Implemented Tomorrow-Planning Workflow
-
-The initial vertical slice executes this focused workflow:
-
-```text
-authenticated user + target date
-        ↓
-active date-bounded User Context
-        +
-protected non-planner events for the target date
-        ↓
-structured AI day proposal
-        ↓
-deterministic field and time validation
-        ↓
-final protected + proposed event sequence
-        ↓
-structured Morning Brief generation
-        ↓
-one transaction locks/upserts DailyPlan and planner-keyed DailyEvents
-```
-
-No write occurs until both AI calls and deterministic validation succeed. A
-database failure rolls back the complete replacement. Regeneration locks the
-DailyPlan row, updates stable planner keys, removes only obsolete
-`origin=planner` rows, and never deletes non-planner commitments. Repeated runs
-therefore produce one DailyPlan, one Morning Brief, and no duplicate generated
-event keys. A Butler-mediated user update or skip clears the planner key and
-changes the event origin to `user`, so a later planning run treats that explicit
-decision as protected input. An identical regeneration preserves generated event
-IDs and versions; changed generated fields increment their versions.
-
-Application code owns the target date, event date, supported event types,
-ordering, Morning Brief event type, and proactive speech flag. Daytime proposed
-events are normalized to `speak_aloud=false`; the persisted Morning Brief is
-`speak_aloud=true` and uses its own scheduled start time.
-
-The configured Butler timezone currently applies to every user. Event dates and
-times are delivered as local values and Android interprets them in the device
-timezone. **The deployment requires the device timezone to equal
-`BUTLER_DEFAULT_TIMEZONE` for every user/device.** The default server UTC value
-must be changed when devices use another zone. Today/tomorrow, evening
-preparation and alarm conversion all depend on this constraint. Per-user
-timezone storage and cross-zone travel are deferred.
-
----
-
-# Good Night Summary
-
-Good Night Summary generation:
-
-```text
-Final Daily Plan state
-      ↓
-Actual event outcomes
-      ↓
-Relevant context
-      ↓
-Generate summary text/content
-      ↓
-Persist as Daily Event content
-      ↓
-Client sync
-```
-
-Again, playback is a client concern.
-
-## Implemented Evening Preparation
-
-At the configured preparation time (initially 22:30), or through authenticated
-`POST /api/planning/evening-prepare`, the backend serializes work for the user,
-loads today's actual event states, generates and validates Good Night Summary
-content, prepares tomorrow through the existing protected-event planner, and
-persists today's summary at 22:45. The workflow then emits a lightweight
-`daily_plan_changed` FCM data message after each canonical transaction commits.
-A user-owned summary is not overwritten. `DailyPlanChanges` provides the same
-post-commit publication boundary for Butler event actions, explicit preparation
-and direct sync, even if a later workflow step fails. Push failure never rolls
-back canonical state. Each publication contains only the hint; clients fetch
-canonical state through authenticated sync.
-
----
-
-# Synchronization
-
-```text
-Client change
-   ↓
-Sync request
-   ↓
-Authenticate
-   ↓
-Validate entity/version
-   ↓
-Reconcile
-   ↓
-Persist
-   ↓
-Return authoritative state
-```
-
-Use simple optimistic concurrency.
-
-No event-sourcing architecture is required.
-
-The implemented client mutation batch supports create, edit, complete, skip,
-delay, cancel, and delete. Each operation is idempotent by operation ID. Matching
-base versions apply and increment the event version; mismatches return the
-current canonical event with `status=conflict`. Deletion uses the existing
-server tombstone and disappears from subsequent day snapshots.
+- request creation must be idempotent where retries can occur
+- result fetch must be retryable
+- FCM is a hint, never the only copy of canonical data
+- background work may be delayed or retried
+- push/audio-storage failure must not corrupt domain state
+- AI never directly owns database mutation
+- conversation text is durable; server audio is not
 
 ---
 
 # Guiding Workflow
 
-The backend should answer four questions cleanly:
+The backend should answer:
 
 ```text
 Who is the user?
-What does the request mean?
+What did they say?
+What do they mean?
 What state should change?
-What text should Butler return?
+What should Butler say?
+What audio represents that response?
 ```
 
-The client answers the presentation question:
+Android answers:
 
 ```text
-How should the user receive that text?
+How should this one canonical message be presented and played right now?
 ```
-
-That keeps Butler semantics and Android presentation cleanly separated.

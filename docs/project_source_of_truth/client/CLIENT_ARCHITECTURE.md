@@ -1,72 +1,66 @@
 # Client Architecture
 
-**Version:** 1.2
-**Status:** Initial  
+**Version:** 1.4  
+**Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
 ---
 
 # Purpose
 
-This document defines how the Android client is built.
-
-It owns client-specific decisions such as technology stack, architectural components, local persistence, backend communication, synchronization, local event execution, speech, notifications, authentication state, and offline behavior.
-
-Product behavior belongs in `PROJECT.md`. Global engineering rules belong in `ENGINEERING.md`. Detailed execution and data flows belong in `CLIENT_WORKFLOW.md`.
+This document defines the Android architecture for Hello Butler, including local persistence, recording, asynchronous Butler delivery, synchronization, notifications, playback, background work, and instant startup.
 
 ---
 
 # Core Mental Model
 
-The Android client is not a thin UI over the backend. It is the **local execution engine for the user's day**.
-
-The backend reasons, prepares plans, generates Butler content, and maintains authoritative server state. The client stores synchronized state locally, presents it immediately, executes time-sensitive behavior on the device, accepts local changes, and synchronizes with the backend when connectivity is available.
+The Android client is the local execution engine for the user's day and the presentation layer for one persistent Butler conversation.
 
 ```text
                          BACKEND
                             │
-                 Plans / reasons / syncs
+             plans / reasons / returns results
                             │
                             ▼
-                    Synchronization
+                    authenticated APIs
                             │
                             ▼
                     LOCAL DATABASE
                             │
           ┌─────────────────┼─────────────────┐
           ▼                 ▼                 ▼
-        UI STATE       DAILY EXECUTION    SYNC QUEUE
+        UI STATE       DAILY EXECUTION    PENDING WORK
                             │
                      ┌──────┼──────┐
                      ▼      ▼      ▼
-                   Alarm  Notify  Speech
-                            │
-                            ▼
-                           USER
+                   Alarm  Notify  Audio
 ```
 
-> **Read locally, write locally first, synchronize automatically, and depend on the backend only when backend intelligence or authoritative reconciliation is required.**
+> Read locally, write local UI state immediately, synchronize automatically, and use the backend only when backend intelligence or authoritative reconciliation is required.
 
 ---
 
-# Client Responsibilities
+# Responsibilities
 
-The Android client owns:
+The client owns:
 
-- main UI and Daily Event presentation
-- direct Daily Event editing
-- local application state and persistence
-- immediate local updates
-- offline execution
-- synchronization and pending queues
-- Butler request delivery and response presentation
-- local STT and TTS
-- alarms, notifications, and event scheduling
+- Compose UI and Daily Event presentation
+- conversation presentation
+- compressed audio recording
+- temporary `Sending...` / `Sent` message state
+- Room and local caches
+- local Butler response-audio storage
+- foreground result fetch
+- WorkManager background result fetch
+- Retrofit / OkHttp transport
+- notifications and notification actions
+- audio playback/routing
+- alarms and scheduled local execution
+- offline queues
 - authentication session state
-- connectivity awareness
-- lightweight user preferences
+- instant-start behavior
 
-The client does not own core Butler reasoning, nightly planning, semantic request interpretation, or authoritative server planning state.
+The client does not own core Butler reasoning, semantic intent, planning, or authoritative server state.
 
 ---
 
@@ -80,620 +74,333 @@ UI
 └── Jetpack Compose
 
 State / Concurrency
-├── Android ViewModel
+├── ViewModel
 ├── Kotlin Coroutines
-└── Kotlin Flow
+└── Flow
 
 Persistence
-├── Room                  Local relational database
-└── DataStore             Lightweight preferences
+├── Room
+└── DataStore
 
 Networking
-├── Retrofit              Backend API client
-├── OkHttp                HTTP transport / streaming
-└── kotlinx.serialization DTO serialization
+├── Retrofit
+├── OkHttp
+└── kotlinx.serialization
 
 Background / Scheduling
-├── WorkManager           Deferred and retryable work
-└── AlarmManager          Exact time-sensitive execution when required
+├── WorkManager
+└── AlarmManager when exact execution is genuinely required
 
 Device Services
-├── Android Speech Recognition / STT
-├── Android Text-to-Speech / TTS
-└── Android Notifications
+├── microphone / compressed audio capture
+├── Android audio playback/routing
+└── Android notifications
 ```
 
-Keep the stack small. Do not add architecture frameworks, RxJava, MVI frameworks, or extra abstraction layers without a concrete requirement. Dependency injection may be introduced when implementation complexity justifies it.
+Local Android STT is no longer the normal Order/Talk pipeline. Local TTS may remain as fallback/offline support where a prepared local event specifically needs it, but ordinary conversational responses use Butler response audio returned from the backend.
 
 ---
 
 # Architectural Shape
 
-The normal path is intentionally compact:
-
 ```text
-UI
- ↓
+Compose UI
+   ↓
 ViewModel
- ↓
+   ↓
 Repository
+   ├── Room
+   ├── Remote API
+   ├── Audio cache
+   └── Pending work
+```
+
+Do not introduce extra use-case/manager layers without a concrete need.
+
+---
+
+# Instant Startup
+
+Opening the app must not block voice capture on synchronization.
+
+```text
+APP LAUNCH
+    │
+    ├── critical path
+    │     ├── restore minimal local session/UI
+    │     ├── render Main Screen shell
+    │     └── enable hold-to-record immediately
+    │
+    └── background path
+          ├── read Room
+          ├── sync today's plan
+          ├── refresh conversation
+          ├── fetch pending results
+          └── reconcile schedules
+```
+
+The app should feel immediately usable even while data is still loading.
+
+---
+
+# Butler Conversation
+
+The Main Screen keeps the Daily Event list visible and overlays the Butler conversation above the persistent Order/Talk/Text controls.
+
+Recording is intentionally lightweight:
+
+```text
+hold Order/Talk
+      ↓
+small recording animation in user's message area
+      ↓
+conversation history remains visible
+```
+
+Do not navigate to a dedicated recorder screen.
+
+---
+
+# Voice Request Lifecycle
+
+```text
+hold
  ↓
-Data / Device Services
+record compressed audio
+ ↓
+release
+ ↓
+create local outgoing placeholder = Sending...
+ ↓
+upload audio request
+ ↓
+server accepted / handling signal
+ ↓
+placeholder = Sent • time
+ ↓
+server completed FCM
+ ↓
+fetch canonical result
+ ↓
+replace placeholder with final transcript
+ ↓
+append Butler response text + audio reference
 ```
 
-Two major cross-cutting paths are:
-
-```text
-Room → Sync Engine → Backend
-
-DailyEvent → Daily Execution → Alarm / Notification / TTS
-```
-
-A simple feature should not require unnecessary use-case, interactor, manager, gateway, and data-source layers.
+The user's own recorded audio does not need a normal playback control.
 
 ---
 
-# Client Components
+# Foreground / Background Completion
 
 ```text
-Android Client
-│
-├── UI
-│   ├── Main Screen
-│   ├── Event Components
-│   ├── Butler Interaction
-│   └── Response Presentation
-│
-├── ViewModel
-│   ├── Main
-│   └── Butler
-│
-├── Data
-│   ├── Repositories
-│   ├── Local Database
-│   ├── Remote API
-│   └── Preferences
-│
-├── Sync
-│   ├── Sync Engine
-│   └── Pending Operations
-│
-├── Execution
-│   ├── Event Scheduler
-│   ├── Alarm
-│   └── Notification
-│
-├── Speech
-│   ├── STT
-│   └── TTS
-│
-├── Authentication
-│
-└── Core
-    ├── Network
-    ├── Connectivity
-    └── Configuration
-```
-
-These are responsibilities, not a requirement for one class or directory per box.
-
----
-
-# UI
-
-Jetpack Compose owns presentation and direct user interaction: Main Screen, Daily Event list and editing, upcoming information, Order/Talk/Text interactions, response overlays, clarification, and loading/pending states.
-
-```text
-Room / Repository
-       ↓
-      Flow
-       ↓
-   ViewModel
-       ↓
- Compose UI
-```
-
-The UI expresses user intent. It does not implement persistence versioning, sync queues, or backend reconciliation. Detailed visual decisions belong in `client/ui/`.
-
----
-
-# ViewModel
-
-ViewModels own screen-level state and orchestration.
-
-They expose observable UI state, translate UI actions into repository operations, coordinate Butler interaction state, and expose loading, pending, error, and response states.
-
-```text
-User moves event → MainViewModel → DailyEventRepository
-
-User presses Talk → ButlerViewModel → ButlerRepository → Backend
-```
-
-ViewModels should not contain SQL, HTTP implementation details, alarm APIs, or Butler reasoning.
-
----
-
-# Repositories
-
-Repositories are the primary boundary between ViewModels and data operations.
-
-```text
-ViewModel
-    ↓
-Repository
-    ├── Room
-    ├── Remote API
-    └── Sync Queue
-```
-
-Initial repository responsibilities center on Daily Plans/Events, Butler interaction, authentication/session state, and synchronization where repository-level coordination is useful.
-
-Avoid repositories for concepts that do not need a meaningful data boundary.
-
----
-
-# Local Database
-
-Room is the primary local persistence mechanism and the immediate source observed by the UI.
-
-```text
-Open screen → Room → Render immediately
+                    FCM completed
                          │
-                         └── Sync in parallel
+            ┌────────────┴────────────┐
+            │                         │
+       APP FOREGROUND            APP BACKGROUND
+            │                         │
+ Coroutine / Repository           WorkManager
+            │                         │
+            └────────────┬────────────┘
+                         ▼
+                 Retrofit / OkHttp
+                         │
+                         ▼
+          GET canonical result + audio URL
+                         │
+                         ▼
+                   Room / audio cache
 ```
 
-When synchronization updates Room:
-
-```text
-Backend → Sync → Room → Flow → ViewModel → Compose
-```
-
-Room may initially persist Daily Plans, Daily Events, client-needed synchronized context, pending sync operations, pending Butler requests, and execution state that must survive process death.
-
-Do not duplicate backend-only data unless the client needs it for presentation, execution, offline behavior, or synchronization.
+Foreground and background paths must converge through the same repository/persistence logic.
 
 ---
 
-# Immediate Local Writes
+# FCM Handling
 
-Direct user changes update local state first whenever safe.
+FCM is a wake-up/completion signal, not the full response.
+
+On completed Butler request:
+
+1. start foreground coroutine/repository work if app process/screen is active;
+2. otherwise enqueue WorkManager;
+3. fetch the canonical result;
+4. persist transcript and Butler message in Room;
+5. start response-audio download immediately;
+6. update active conversation UI or publish the notification.
+
+---
+
+# Local Conversation Persistence
+
+Room stores the client-visible conversation needed for immediate rendering, including:
+
+- message id / request id
+- role
+- text
+- timestamp
+- delivery state when temporary
+- response-audio local path/status when relevant
+
+Server text remains authoritative after fetch/reconciliation. Temporary Sending/Sent placeholders are device-side state only.
+
+---
+
+# Audio Cache
+
+Butler response audio is cached/stored locally on the device so historical playback does not require repeated server download.
+
+Audio download begins immediately after the completion result is known.
+
+If a user presses an audio action before the download completes:
 
 ```text
-User edits event
+user presses action
       ↓
-Repository
+observe current download
       ↓
-Room updated
+wait briefly if needed
       ↓
-UI updates immediately
-      ↓
-Sync operation queued
-      ↓
-Backend
+play when available
 ```
 
-This applies to operations such as complete, skip, delay, edit, create, cancel, and delete. Server reconciliation may later confirm or modify the local result.
+Do not hide or disable normal playback actions merely because caching is still in progress unless playback cannot reasonably recover.
 
 ---
 
-# Remote API
+# Response Playback Actions
 
-The remote component communicates with:
-
-```text
-/api/auth/...
-/api/butler/talk
-/api/sync/...
-```
-
-It owns request/response DTOs, serialization, HTTP transport, authenticated headers, network error mapping, and streaming where required. It does not own UI presentation.
-
----
-
-# Butler Interaction
-
-All three modes use the same Butler backend capability.
+Use compact icons in the conversation UI:
 
 ```text
-                 Main Screen
-                     │
-          ┌──────────┼──────────┐
-          ▼          ▼          ▼
-        Order       Talk       Text
-          │          │          │
-          └──────────┼──────────┘
-                     ▼
-              Butler Repository
-                     │
-                     ▼
-             /api/butler/talk
+speaker icon → Speak Aloud
+phone icon   → private / receive-as-call listening
 ```
 
-The button describes the expected interaction experience, not semantic intent. The backend result determines what happened; the client determines how it is presented.
+Avoid ambiguous button text such as simply `Speak` or `Call` when the icon communicates the presentation mode more cleanly.
 
-## Order
-
-Optimized for requests where the user may leave immediately.
-
-```text
-Capture → Send → User may leave → Result
-                              ↓
-                    Sync state if changed
-                              ↓
-                 Overlay / notification
-```
-
-The screen need not remain active. Offline requests may be persisted for later delivery.
-
-## Talk
-
-Optimized for active, immediate interaction.
-
-```text
-Capture speech → Send → Immediate/streamed response → Present → TTS
-```
-
-Talk is latency-sensitive and may still produce domain changes.
-
-## Text
-
-Optimized for request accuracy.
-
-```text
-Speech → STT → Editable transcript → User review → Explicit send
-```
-
-After send, it follows normal Butler semantics and configured response presentation.
-
----
-
-# Response Presentation
-
-The backend determines what happened and what Butler should communicate. The client determines how the result is presented.
-
-Possible presentations include:
-
-- temporary overlay
-- persistent visible result
-- spoken response
-- text response
-- notification
-- clarification prompt
-
-Interaction mode, backend result, current app state, and user preferences may influence presentation.
-
----
-
-# Synchronization
-
-Synchronization is independent from Butler conversation. Direct client edits do not require AI.
-
-```text
-User change
-    ↓
-Room
-    ↓
-Pending operation
-    ↓
-Sync Engine
-    ↓
-Backend Sync API
-    ↓
-Reconciliation
-    ↓
-Room
-```
-
-The Sync Engine coordinates local/server convergence: push pending changes, receive server changes, apply server state, handle versions, retry temporary failures, and synchronize deletions/tombstones.
-
-Detailed rules belong in `CLIENT_WORKFLOW.md`.
-
----
-
-# Pending Operations
-
-Operations that cannot reach the backend immediately must survive connectivity loss and process death when necessary.
-
-A pending operation may identify its operation, target entity, local entity ID, expected/base version, requested changes, and retry state.
-
-Exact fields belong in `CLIENT_WORKFLOW.md`.
-
-The implemented Room outbox stores one coalesced pending operation per event:
-operation ID, action, event ID, base server version, serialized desired state,
-creation time, and retry diagnostics. The event write and outbox write share one
-Room transaction. Snapshot pulls do not overwrite events that still have a
-pending operation.
-
-This queue supports reliable offline-first synchronization; it is not an event-sourcing system.
-
----
-
-# Offline Butler Requests
-
-Offline daily execution and offline AI reasoning are different.
-
-```text
-Offline Butler request
-       ↓
-Persist pending request
-       ↓
-Connectivity returns
-       ↓
-Send to backend
-       ↓
-Receive result
-       ↓
-Apply synchronized changes
-       ↓
-Present result
-```
-
-Novel Butler reasoning requires the backend unless a local model is introduced later.
-
----
-
-# Daily Execution
-
-Daily execution is a first-class client responsibility.
-
-> **The backend decides what should happen. The client makes prepared behavior happen locally at the appropriate time.**
-
-```text
-DailyEvent
-    ↓
-Event Scheduler
-    ↓
-Due time
-    ↓
-Execution behavior
-    ├── notification
-    ├── alarm
-    ├── TTS
-    └── no automatic action
-```
-
----
-
-# Event Scheduler
-
-The scheduler translates synchronized Daily Events into local behavior using timing and configuration rather than event type alone.
-
-```text
-Morning Brief
-start_time = 06:05
-speak_aloud = true
-→ local scheduled execution → TTS
-```
-
-```text
-Meeting
-start_time = 15:00
-reminder = 15 minutes
-speak_aloud = false
-→ notification at 14:45
-```
-
-Prefer one flexible execution model. Do not create a separate manager for every event category without a concrete need.
-
-## Initial Prepared-Day Bootstrap
-
-After authentication the Main ViewModel fetches authenticated snapshots for
-today and tomorrow. A successful snapshot is applied transactionally to Room;
-server-synchronized rows for that date are replaced while local-only rows and
-device execution state are preserved. A missing plan or network failure leaves
-the previous local day untouched. The Main Screen continues to observe Room and
-never renders network DTOs directly. The toolbar refresh action repeats this
-bootstrap for immediate development and recovery use.
-
-After Room is updated, `DailyEventScheduler` reconciles local execution. Eligible
-future speech uses an exact alarm when Android grants access. The receiver starts
-`SpeechForegroundService` directly under the exact-alarm exemption. Without
-access, delayed WorkManager work posts a local **Listen** notification; it never
-starts a foreground service. Tapping Listen supplies the user-interaction
-exemption and starts the same service. This fallback requires notifications and
-user action, can be delayed by Android, and does not promise automatic wake-up.
-The Main Screen explains this limit and links to Alarms & reminders access.
-
-Startup, boot, package replacement, clock/timezone changes and exact-alarm access
-grants restore schedules from Room. Past occurrences are not automatically
-replayed. A delivered Listen action rechecks the current Room event, including
-planned status, due time, same local day and playback claim. Updates, skips,
-cancellations and deletions cancel invalid schedules and pending notifications.
-
-The service atomically claims the exact cached version/date/time/content before
-initializing TTS. It uses an installed offline voice, audio focus and a bounded
-partial wake lock. Stop, cancellation and completion release these resources.
-An unavailable offline voice is a playback failure; install local voice data
-before relying on scheduled speech. Merely offering Listen, or a denied service
-start, does not consume the playback claim.
-
----
-
-# WorkManager and AlarmManager
-
-Use **WorkManager** for deferrable, retryable, connectivity-dependent work that should survive process death, such as synchronization retry, pending Butler delivery, non-exact refresh, and maintenance.
-
-Use **AlarmManager** only when genuinely time-sensitive local execution is required, such as wake-up, Morning Brief, or explicitly exact reminders.
-
-Respect Android restrictions and permission requirements. Do not use exact alarms for work that can safely be deferred.
+Private/call-style receive is a playback presentation, not a live call to the backend.
 
 ---
 
 # Notifications
 
-Notifications support non-intrusive local execution, including event reminders, meeting reminders, leave-now reminders, Butler results when the user has left the app, and clarification when appropriate.
-
-Daytime notifications are silent by default unless configured otherwise.
-
-Possible actions include:
+An ordinary Butler message notification shows the canonical response text and exposes:
 
 ```text
-Dismiss
-Done
-Delay
-Listen
+speaker icon
+phone/private-listen icon
+Open in App
 ```
 
-Exact behavior belongs in workflow/UI documentation.
+`Open in App` is always retained for Butler message notifications.
+
+The notification does not need to wait for response-audio caching to finish before showing playback actions. If selected early, playback waits for the active download.
+
+The notification itself should not carry the audio binary.
 
 ---
 
-# Speech
+# Morning Brief / Good Night Summary
 
-## Speech-to-Text
+Morning Brief and Good Night Summary are proactive-speech exceptions.
 
-STT converts speech to text for Order, Talk, and Text. Text mode exposes the transcript for review before send.
-
-STT is an input mechanism and does not determine semantic intent.
-
-## Text-to-Speech
-
-TTS may speak Morning wake-up, Morning Brief, Talk responses, optional confirmations, configured reminders, and Good Night Summary.
-
-Speech should remain intentional rather than accompany every notification.
-
-Scheduled proactive speech runs in a short-lived media-playback foreground
-service. It loads cached content from Room, claims the occurrence once, owns
-audio focus and Android TTS, exposes Stop in its ongoing notification and the
-Main Screen, and removes foreground state after completion or failure.
-
----
-
-# Authentication
-
-The client supports two account entry paths:
+At their scheduled notification/execution time:
 
 ```text
-Email + password
-├── Register
-└── Login
-
-Google
-└── Sign in with Google
+content becomes due
+      ↓
+show/maintain notification surface
+      ↓
+automatically start Speak Aloud
+      ↓
+provide Stop immediately
+      ↓
+retain Open in App
 ```
 
-For Google sign-in, Android obtains the Google credential using the supported
-Google identity flow and sends the resulting ID token to the Butler backend. The
-backend, not the client, establishes the Butler user identity.
+The user can stop automatic playback at any time.
 
-Successful authentication returns a short-lived access token and rotating
-refresh token.
+Ordinary Butler responses remain silent by default.
+
+---
+
+# Text Interaction
+
+Text also records audio but returns editable prepared text.
 
 ```text
-Login / Google sign-in
-        ↓
-access token + refresh token
-        ↓
-secure local session storage
-        ↓
-Authorization: Bearer <access token>
-        ↓
-Butler API / Sync API
+hold Text
+  ↓
+record
+  ↓
+upload
+  ↓
+backend prepares context-aware text
+  ↓
+client editor
 ```
 
-Authentication secrets must not be stored in Room or ordinary DataStore. Store
-refresh tokens and other long-lived session secrets using Android-protected
-credential storage backed by the platform keystore where practical. Access
-tokens may be kept in memory and replaced through refresh.
-
-When an authenticated API request encounters an expired access token, the
-network/session layer performs one coordinated refresh and retries the request.
-Concurrent requests must not independently rotate the same refresh token.
-
-Authentication success and session restoration explicitly enqueue registration
-of the current FCM token. Token refresh and authenticated process startup also
-request registration; the Main Screen is not responsible for it. Builds without
-Firebase configuration safely skip registration. Transient restoration failures
-retain the saved session and cached execution data; rejected refresh credentials
-return to authentication.
-
-Logout serializes device unregistration with registration, attempts authenticated
-unregistration before revoking the refresh session, clears local credentials,
-stops speech, then drains in-flight sync and clears Room/schedules. Network
-failure cannot prevent local logout. An offline logout may leave a server token
-until invalid-token cleanup or the next registration reassigns that token; a
-signed-out device ignores sync work. No credentials are retained just to retry
-unregistration.
-
-Normal local execution should not require an online authentication round-trip. If
-today's plan is synchronized and connectivity disappears, local execution
-continues. Network work that requires authentication waits until connectivity and
-a valid session are available.
-
-The client does not implement roles or a general authorization system and does
-not treat a locally stored `user_id` as authority over backend data.
+Text mode should not use local STT as the authoritative normal pipeline.
 
 ---
 
-# Preferences
+# Offline Voice Capture
 
-DataStore stores lightweight client configuration such as speech behavior, automatic playback, notification preferences, overlay duration, response presentation, and UI preferences.
-
-Do not use DataStore as a replacement for relational product data.
-
----
-
-# Connectivity
-
-Connectivity awareness guides immediate versus queued network work.
+If connectivity is unavailable after recording:
 
 ```text
-Online  → send / synchronize normally
-Offline → execute locally → queue network work → retry later
+record locally
+  ↓
+queue pending audio request
+  ↓
+show appropriate pending state
+  ↓
+WorkManager retries when connected
 ```
 
-Network calls must still handle real failures; reported connectivity does not guarantee backend reachability.
+Novel Butler reasoning still requires the backend.
 
 ---
 
-# Offline Capability Boundary
+# Direct Event Changes
 
-Offline execution normally supports:
+Direct visible event editing remains local-first and bypasses AI:
 
-- viewing synchronized plans/events
-- direct event editing
-- completion and skipping
-- local event creation/deletion
-- alarms and notifications
-- prepared speech
-- Morning Brief
-- Good Night Summary
-- pending sync operations
-- pending Butler requests
+```text
+edit event
+  ↓
+Room transaction
+  ↓
+immediate UI update
+  ↓
+pending sync operation
+  ↓
+backend reconciliation
+```
 
-Offline mode does not provide novel server-side AI reasoning.
+---
+
+# WorkManager / AlarmManager
+
+Use WorkManager for retryable connectivity-dependent work including:
+
+- pending voice upload
+- completed-result fetch
+- response-audio download retry
+- synchronization
+- maintenance
+
+Use AlarmManager only when genuinely exact local execution is required.
 
 ---
 
 # Data Ownership
 
-Backend authority after synchronization includes authenticated identity, User Context, server conversation history, Daily Plans, Daily Events, generated Butler content, and server versions.
+Backend authority includes server conversation text, User Context, Daily Plans/Events, Butler result text, and temporary server audio metadata.
 
-The client owns immediate local state before synchronization, device execution state, local scheduling, pending operations, pending Butler requests, temporary UI state, and client preferences.
-
-Room is the client's immediate working source of synchronized product state. Synchronization reconciles it with backend authority.
-
----
-
-# Initial Package Direction
-
-```text
-app/
-├── ui/
-├── data/
-│   ├── local/
-│   ├── remote/
-│   └── repository/
-├── sync/
-├── execution/
-├── speech/
-├── auth/
-└── core/
-```
-
-ViewModels may live close to their screens/features when that improves locality.
-
-Do not create empty packages merely to match this document. The structure evolves as code is implemented.
+Client ownership includes local playback audio, local device execution state, temporary Sending/Sent state, pending work, notification state, and UI preferences.
 
 ---
 
@@ -709,28 +416,23 @@ Do not create empty packages merely to match this document. The structure evolve
                       VIEWMODEL
                            │
                            ▼
-                     REPOSITORIES
+                     REPOSITORY
                            │
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-        ROOM          BUTLER API        SYNC ENGINE
-          │                │                │
-          │                └──────┬─────────┘
-          │                       ▼
-          │                    BACKEND
-          │
-          ├──────────────────────────────────┐
-          ▼                                  ▼
-   DAILY EXECUTION                    UI STATE / FLOWS
-          │
-     ┌────┼────┐
-     ▼    ▼    ▼
-   Alarm Notify TTS
-          │
-          ▼
-        USER
+       ┌───────────────────┼───────────────────┐
+       ▼                   ▼                   ▼
+     ROOM            RETROFIT/OKHTTP       AUDIO CACHE
+       ▲                   ▲                   ▲
+       │                   │                   │
+       └──────────────┬────┴────┬──────────────┘
+                      │         │
+                foreground   WorkManager
+                      │         │
+                      └────┬────┘
+                           ▼
+                         FCM
+                           ▲
+                           │
+                        BACKEND
 ```
 
-Keep the client small enough that important actions remain easy to trace from UI to local state, device execution, and synchronization.
-
-The client exists to make the prepared day reliable, immediate, and usable even when the backend is not currently reachable.
+Keep the client simple enough that voice capture, background delivery, persistence, and playback remain easy to trace.

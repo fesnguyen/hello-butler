@@ -2,7 +2,7 @@
 
 # Butler Engineering Guide
 
-**Version:** 1.1  
+**Version:** 1.4  
 **Status:** Engineering Rules
 
 ---

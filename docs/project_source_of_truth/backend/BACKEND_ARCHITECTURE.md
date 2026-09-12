@@ -1,48 +1,36 @@
 # Backend Architecture
 
-**Version:** 1.3
-**Status:** Initial  
+**Version:** 1.4  
+**Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
 ---
 
 # Purpose
 
-This document defines how the Butler backend is built.
+This document defines the backend architecture for Hello Butler.
 
-It owns backend-specific decisions such as project structure, architectural
-pattern, technology stack, major components, dependency boundaries, API
-boundaries, persistence, authentication, AI integration, and synchronization
-architecture.
-
-Global engineering rules belong in `ENGINEERING.md` and are not repeated here.
+The backend owns Butler intelligence, authoritative server state, asynchronous Butler request processing, conversation persistence, response audio generation, authentication, planning, and synchronization.
 
 ---
 
-# Backend Responsibilities
+# Architectural Pattern
 
-The backend owns:
+```text
+API
+ ↓
+Application
+ ↓
+Domain
+ ↑
+Infrastructure
+```
 
-- Butler reasoning
-- User Context
-- conversation history
-- Daily Planning
-- Daily Events
-- Morning Brief generation
-- Good Night Summary generation
-- dynamic replanning
-- authoritative server state
-- authentication
-- AI provider integration
-- synchronization with clients
-
-The client remains responsible for local execution, local notifications, speech,
-offline state, queued synchronization, and deciding how text responses are
-presented or spoken.
+API owns HTTP/authentication boundaries. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, AI providers, push, storage, and other integrations.
 
 ---
 
-# Technology Stack
+# Technology Direction
 
 ```text
 Runtime / Tooling
@@ -61,550 +49,335 @@ Database
 └── PostgreSQL 16+
 
 AI
-├── LangGraph
-└── OpenAI Responses API
+├── LangGraph where useful
+└── OpenAI multimodal/audio-capable APIs
 
 Infrastructure
-├── Docker
-└── Docker Compose
+├── Docker / Compose
+├── FCM push integration
+└── temporary response-audio storage
 ```
 
-Do not add infrastructure until an actual requirement justifies it.
-
----
-
-# Architectural Pattern
-
-The backend uses a layered architecture:
-
-```text
-API
- ↓
-Application
- ↓
-Domain
- ↑
-Infrastructure
-```
-
-## API
-
-Owns HTTP routing, authentication extraction, request validation, and response
-serialization.
-
-## Application
-
-Owns use cases, workflow coordination, transaction boundaries, and orchestration
-between domain and infrastructure.
-
-## Domain
-
-Owns core entities, business rules, planning concepts, state transitions, and
-repository/provider abstractions where needed.
-
-## Infrastructure
-
-Owns PostgreSQL persistence, SQLAlchemy models, repository implementations,
-AI provider implementations, and external integrations.
-
----
-
-# Project Structure
-
-Initial structure:
-
-```text
-hello-butler/
-├── backend/
-│   ├── alembic/
-│   ├── app/
-│   │   ├── api/
-│   │   │   ├── auth.py
-│   │   │   ├── butler.py
-│   │   │   └── sync.py
-│   │   ├── application/
-│   │   │   ├── auth/
-│   │   │   ├── butler/
-│   │   │   ├── planning/
-│   │   │   └── sync/
-│   │   ├── domain/
-│   │   │   ├── user.py
-│   │   │   ├── user_context.py
-│   │   │   ├── conversation.py
-│   │   │   ├── daily_plan.py
-│   │   │   └── daily_event.py
-│   │   ├── infrastructure/
-│   │   │   ├── db/
-│   │   │   ├── repositories/
-│   │   │   └── ai/
-│   │   ├── core/
-│   │   │   ├── config.py
-│   │   │   ├── security.py
-│   │   │   └── database.py
-│   │   └── main.py
-│   ├── Dockerfile
-│   ├── pyproject.toml
-│   ├── uv.lock
-│   └── alembic.ini
-├── client/
-├── docs/
-└── compose.yaml
-```
-
-The structure may evolve as implementation pressure appears.
-
-Do not create additional layers or modules without a concrete reason.
-
----
-
-# Development and Runtime
-
-Local development separates application execution from infrastructure.
-
-```text
-Host
-├── Backend
-│   └── uv → FastAPI
-└── Docker Compose
-    └── PostgreSQL
-```
-
-During normal backend development, run FastAPI directly through `uv`.
-
-Docker Compose runs infrastructure dependencies such as PostgreSQL.
-
-Database migrations are executed explicitly with Alembic and are not coupled to
-application startup.
-
-Typical development flow:
-
-```text
-docker compose up -d
-uv sync
-uv run alembic upgrade head
-uv run fastapi dev app/main.py
-```
+Do not add infrastructure until a concrete requirement justifies it.
 
 ---
 
 # Primary API Boundaries
 
+Conceptually:
+
 ```text
 /api/auth/...
-/api/butler/talk
+/api/butler/requests
+/api/butler/requests/{request_id}
 /api/sync/...
-/api/planning/evening-prepare
+/api/planning/...
 /api/push/device
 ```
 
-`/api/butler/talk` is the single Butler conversational endpoint.
+`/api/butler/requests` is the asynchronous Butler request boundary for recorded audio.
 
-The backend recognizes only two interaction expectations:
+A request should be accepted quickly and return a stable request identifier rather than keeping the client connected while AI processing finishes.
 
-```text
-order
-talk
-```
-
-`Text` is not a backend interaction mode.
-
-On the client, Text is an input-preparation path:
+Conceptual request:
 
 ```text
-speech
-  ↓
-STT
-  ↓
-editable text
-  ↓
-send as order | talk
+POST /api/butler/requests
+Content-Type: multipart/form-data
+
+interaction_mode = order | talk | text
+audio = compressed recording
 ```
 
-By the time a request reaches the backend, it has a final message and one of the
-two interaction modes.
+Conceptual acceptance:
 
-Example:
-
-```json
-{
-  "interaction_mode": "order",
-  "message": "Move my meeting to 4 PM."
-}
+```text
+202 Accepted
+request_id = <stable id>
 ```
+
+Exact route/DTO naming may evolve, but the asynchronous contract should remain.
 
 ---
 
-# Response Contract
-
-The backend returns Butler responses as **textual semantic content**.
-
-The backend decides:
+# Recorded Audio Request Architecture
 
 ```text
-What happened?
-What should Butler say?
+Android
+  ↓ compressed audio
+POST /api/butler/requests
+  ↓
+create Butler request
+  ↓
+return 202 + request_id
+  ↓
+continue processing asynchronously
+  ├── speech understanding / transcription
+  ├── context loading
+  ├── Butler reasoning
+  ├── tools / domain actions
+  ├── response text
+  └── response audio
+  ↓
+save result
+  ↓
+FCM completed
 ```
 
-The client decides:
+The backend must not require a persistent live voice/WebRTC session for the normal Butler interaction.
+
+---
+
+# Request Lifecycle
+
+A request has a durable server identity and clear lifecycle. Initial conceptual states:
 
 ```text
-How should the user receive it?
+accepted
+processing
+completed
+failed
 ```
 
-The backend should not decide whether a normal Butler response is:
+The client may map these to simpler visible states such as `Sending...` and `Sent`.
 
-- spoken aloud
-- played in call-style presentation
-- shown only as text
-- acknowledged silently
+The backend should publish a lightweight handling/accepted signal when useful so the client can transition from `Sending...` to `Sent` without waiting for full AI completion.
 
-Those are client presentation decisions based on user preference and current UI
-state.
+---
+
+# Interaction Semantics
+
+## Order
+
+The user expects Butler to handle the request and may leave immediately.
+
+## Talk
+
+The user expects a conversational answer but processing is still asynchronous at the transport level. Talk does not require a live media connection.
+
+## Text
+
+The backend receives audio, then uses speech, user preference, and relevant conversation context to prepare editable text. Text mode does not automatically execute the prepared content as an Order/Talk action.
+
+Interaction mode describes user expectation; semantic intent still comes from the actual request.
+
+---
+
+# Butler Result Contract
+
+A completed Order/Talk request conceptually produces:
+
+```text
+request_id
+user_transcript
+Butler response text
+Butler response audio asset/reference
+changed entity metadata when relevant
+completion timestamp
+```
+
+A completed Text request produces editable prepared text and any metadata needed by the client editor.
+
+The canonical conversation result is text plus associated Butler audio. The notification is not a second result.
+
+---
+
+# Response Audio
+
+The backend generates response audio after response text is finalized.
+
+Response audio is retained only for a limited period. Retention duration is configuration and may evolve with cost/privacy needs.
+
+User input audio is temporary processing data unless a future product requirement explicitly justifies longer retention.
+
+The backend must not promise permanent historical audio restoration.
+
+---
+
+# Push Boundary
+
+FCM is a wake-up signal, not the canonical payload.
 
 Conceptually:
 
 ```text
-Backend
-→ response text + semantic metadata
-
-Client
-→ text overlay
-→ optional Speak
-→ optional Call-style receive
-→ dismiss / acknowledge
+request completed
+   ↓
+FCM
+   ├── type = butler_request_completed
+   └── request_id
 ```
 
-For ordinary Butler responses, text is the canonical delivery payload.
+The client then fetches the canonical result over authenticated HTTP.
 
-Morning Brief and Good Night Summary are still generated as content by the
-backend, while automatic speech behavior remains a client-side presentation
-choice/configuration.
+The push payload should remain small and must not transport the response audio file.
+
+Routine Daily Plan synchronization may continue using separate silent push hints such as `daily_plan_changed`.
+
+---
+
+# Result Fetch
+
+Conceptually:
+
+```text
+GET /api/butler/requests/{request_id}
+        ↓
+response text
+user transcript
+response audio URL/reference
+semantic/domain result metadata
+```
+
+The audio URL/reference should be suitable for authenticated or short-lived download according to the final storage implementation.
+
+---
+
+# Conversation Persistence
+
+The backend persists durable text conversation history:
+
+```text
+user transcript
+Butler response text
+roles + timestamps
+```
+
+Audio is not the permanent server conversation record.
+
+For Order/Talk, final persistence should produce one user conversation message and one Butler conversation message for the completed interaction.
+
+Temporary client-visible `Sending...` / `Sent` placeholders are client state, not conversation-history content.
+
+---
+
+# Domain Actions
+
+AI may decide what the user intends, but deterministic application/domain code validates and applies important mutations.
+
+Examples:
+
+```text
+create_daily_event
+update_daily_event
+skip_daily_event
+remember_user_context
+answer_today_events
+replan_today
+```
+
+Do not grant the AI provider direct database ownership.
+
+---
+
+# Planning and Daily Lifecycle
+
+The existing Daily Plan / Daily Event lifecycle remains authoritative:
+
+```text
+User Context
+  ↓
+plan tomorrow
+  ↓
+DailyPlan + DailyEvents
+  ↓
+Morning Brief
+  ↓
+day execution / replanning
+  ↓
+Good Night Summary
+  ↓
+prepare tomorrow
+```
+
+Morning Brief and Good Night Summary are generated as Butler content and delivered to the client for scheduled/proactive playback.
+
+---
+
+# Morning Brief / Good Night Summary
+
+These are proactive-speech exceptions.
+
+The backend provides the canonical text/audio content needed by the client. The client automatically starts Speak Aloud at the scheduled delivery time and provides Stop.
+
+Ordinary Butler-response notifications remain silent by default.
 
 ---
 
 # Authentication
 
-Authentication is a small production system, not a temporary development stub.
+Existing authenticated-user boundaries remain unchanged:
 
-The supported user-facing methods are:
-
-```text
-Email + password
-├── Register
-└── Login
-
-Google
-└── Sign in with Google
-```
-
-The backend owns credential verification, token issuance and refresh, session
-revocation, and mapping external/login identities to the internal `User`.
-
-Authentication identity is separate from the Butler `User` entity:
-
-```text
-User
-  │
-  └── AuthIdentity[]
-      ├── password
-      └── google
-```
-
-This keeps Butler-owned user data independent from the mechanism used to sign in.
-An authentication identity stores only provider-specific information required to
-verify or resolve that identity.
-
-## Password Authentication
-
-Passwords are never stored directly.
-
-Use Argon2id for password hashing with a maintained library and safe library
-defaults. Password hashes belong to the password authentication identity, not to
-Butler domain data.
-
-Registration requires a normalized email and password. Login compares the
-submitted password against the stored hash.
-
-## Google Authentication
-
-The client obtains a Google credential through the platform-supported Google
-sign-in flow and sends the resulting Google ID token to the backend.
-
-The backend verifies the token with Google, including issuer, audience,
-signature, expiry, and provider subject. The stable Google `sub` is the external
-identity key; email alone is not an identity key.
-
-Do not automatically link an existing password identity to a Google identity
-solely because the email strings match. Account linking, if introduced, must be
-an explicit authenticated action.
-
-## Access and Refresh Tokens
-
-Successful authentication establishes a Butler session:
-
-```text
-Authentication
-      ↓
-short-lived access token
-      +
-rotating refresh token
-```
-
-Access tokens are signed JWTs containing only the claims required to authenticate
-a request. They are intentionally short-lived.
-
-Refresh tokens are high-entropy opaque secrets. Store only a cryptographic hash
-of each refresh token in PostgreSQL together with its owning user/session,
-expiry, revocation state, and rotation metadata.
-
-A successful refresh rotates the refresh token: the presented token is consumed
-and replaced. Logout revokes the current refresh session. Reuse of an already
-rotated/revoked refresh token invalidates that refresh session.
-
-Exact lifetimes are configuration, with an initial target of roughly 15 minutes
-for access tokens and 30 days for refresh sessions.
-
-## Authenticated Request Boundary
-
-Protected endpoints resolve the internal user from the verified access token.
-
-```text
-Authorization: Bearer <access token>
-              ↓
-verify signature + expiry
-              ↓
-resolve authenticated user
-              ↓
-execute request within that user's data
-```
-
-Every authenticated request operates within the authenticated user's own data.
-Never trust a client-provided `user_id` as proof of identity.
-
-No roles, organizations, RBAC, or general permission framework are required.
-
-Authentication secrets and provider configuration come from environment-backed
-settings and are never committed to source control.
+- email/password and Google sign-in may establish Butler identity
+- protected endpoints derive user identity from verified authentication
+- client-provided `user_id` is never authority
+- access/refresh-token handling remains deterministic application behavior
 
 ---
 
-# Daily Plan and Daily Event Model
+# Persistence
 
-`DailyPlan` represents one day.
+PostgreSQL remains authoritative for server state, including users, authentication identities/sessions, User Context, conversation text history, Daily Plans, Daily Events, request lifecycle/result metadata, devices, and synchronization metadata.
 
-```text
-DailyPlan
-└── DailyEvent[]
-```
-
-`DailyEvent` remains flexible enough to support different purposes.
-
-Examples:
-
-```text
-Morning Brief
-├── long content
-└── speak_aloud = true
-
-Meeting Reminder
-├── scheduled time
-├── notification behavior
-└── speak_aloud = false
-
-Good Night Summary
-├── long content
-└── speak_aloud = true
-```
-
-A single flexible `DailyEvent` model should support these purposes.
-
-Do not create separate domain modules or database tables for each event type
-without a concrete requirement.
-
-Event categories remain string values.
-
----
-
-# AI Architecture
-
-Application and domain logic do not call OpenAI directly.
-
-```text
-Butler / Planner
-      ↓
-AI abstraction
-      ↑
-OpenAI provider
-```
-
-The AI layer may support intent interpretation, planning, contextual answering,
-Morning Brief generation, Good Night Summary generation, and structured decision
-support.
-
-Deterministic operations remain normal code, including authentication,
-persistence, version checking, direct event CRUD, and sync conflict detection.
-
-AI output must be validated before important state changes are applied.
-
----
-
-# Persistence Architecture
-
-PostgreSQL is the authoritative backend database.
-
-SQLAlchemy async is used for runtime access.
-
-Alembic manages schema migration independently from application startup.
-
-Persistence is accessed through repositories or focused abstractions.
-
-The database stores users, authentication identities and refresh sessions, User
-Context, conversation history, Daily Plans, Daily Events, devices, and
-synchronization metadata.
-
-`sync_operations` records processed client operation IDs so a WorkManager retry
-cannot apply one event mutation twice. `push_devices` stores authenticated FCM
-registration tokens; push payloads contain only a change hint.
-
-Types such as event type, context type, interaction mode, status, role, provider,
-and platform are stored as strings.
-
-`interaction_mode` initially allows only:
-
-```text
-order
-talk
-```
-
-Do not create lookup tables solely to represent fixed string categories unless a
-real relational requirement appears later.
-
----
-
-# Synchronization Architecture
-
-The client is local-first.
-
-```text
-Client action
-   ↓
-Local DB
-   ↓
-Sync queue
-   ↓
-Backend sync API
-   ↓
-Authenticate
-   ↓
-Reconcile
-   ↓
-PostgreSQL
-   ↓
-Return server state
-```
-
-For Daily Events, the initial optimistic concurrency mechanism is:
-
-```text
-version INTEGER
-updated_at
-deleted_at nullable
-```
-
-No event-sourcing system is required.
-
-The mutation boundary is `POST /api/sync/events`. A client operation contains a
-stable operation ID, event ID, action, base version, and the desired event state
-when applicable. Applied edits increment the canonical version and become
-`origin=user`; a version mismatch returns canonical state for deterministic
-client reconciliation.
+Temporary audio assets may live outside PostgreSQL, with database metadata referencing them when required.
 
 ---
 
 # Data Ownership
 
-Backend is authoritative for authenticated identity, User Context, server
-conversation history, Daily Plans, Daily Events after synchronization, generated
-Butler content, and server-side versions.
+Backend owns:
 
-Client owns immediate local state before synchronization, device-specific
-execution state, notification/alarm scheduling, local queues, temporary UI state,
-and response presentation behavior.
+- authoritative authenticated identity
+- User Context
+- server conversation text
+- Daily Plans / Daily Events after reconciliation
+- Butler request lifecycle/result metadata
+- response text
+- temporary response audio assets
+- completion push publication
 
----
+Client owns:
 
-# Background Work
-
-Backend background work may be used for:
-
-- nightly planning
-- preparing tomorrow's Daily Plan
-- preparing Morning Brief content
-- preparing Good Night Summary content
-- delayed maintenance tasks
-
-Evening preparation is one serialized application workflow per user. PostgreSQL
-advisory locks prevent overlapping planning requests across server processes.
-AI generation occurs while no write transaction is open; validated results are
-then persisted through focused transactions.
-
-Do not introduce a separate worker platform until the workload requires it.
-
-## Initial Morning Brief Vertical Slice
-
-The first implemented planning trigger is the authenticated
-`POST /api/planning/prepare` use case. It defaults to tomorrow in the configured
-Butler timezone; nightly invocation is intentionally not yet attached to a
-separate worker platform. The same application service can be called by a future
-in-process or external scheduler without changing planning behavior.
-
-Prepared days are delivered through the focused authenticated read contract:
-
-```text
-GET /api/sync/daily-plan/{date}
-```
-
-This is a server-to-client bootstrap snapshot, not the complete future
-bidirectional synchronization protocol.
-
-`DailyEvent.origin` is initially `user` or `planner`. Planner-owned rows also
-carry a stable nullable `planner_key`; `(user_id, event_date, planner_key)` is
-unique. Existing rows migrate to `origin=user`, making them protected inputs to
-planning rather than replaceable generated output.
+- local audio recording before upload
+- immediate local UI state
+- local response-audio cache/history
+- foreground/background fetch execution
+- playback routing and notification presentation
+- offline queues and device execution state
 
 ---
 
 # Guiding Architecture
 
 ```text
-                    CLIENT
+                    ANDROID
                        │
-        ┌──────────────┼──────────────┐
-        │              │              │
-       Auth          Butler          Sync
-        │              │              │
-        └──────────────┼──────────────┘
+             compressed audio request
+                       │
                        ▼
                       API
                        │
                        ▼
-                  APPLICATION
+                 APPLICATION
                        │
-              ┌────────┼────────┐
-              ▼        ▼        ▼
-          Daily Plan  Butler  Authentication
-              │        │
-              └────┬───┘
-                   ▼
-                 DOMAIN
-                   │
-              Abstractions
-                ▲       ▲
-                │       │
-         PostgreSQL     AI
+          ┌────────────┼────────────┐
+          ▼            ▼            ▼
+       Butler       Planning      Sync/Auth
+          │
+          ▼
+        DOMAIN
+          │
+   ┌──────┴────────┐
+   ▼               ▼
+PostgreSQL      AI / Audio
+   │               │
+   └──────┬────────┘
+          ▼
+    saved result
+          ↓
+         FCM
+          ↓
+       ANDROID
 ```
 
-Keep the backend small enough that the important code path remains easy to
-follow.
-
-Add architectural complexity only when the product has earned it.
+Keep the backend request path easy to trace. Add worker/platform complexity only when real production load requires it.
