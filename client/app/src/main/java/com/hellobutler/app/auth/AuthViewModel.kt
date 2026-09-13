@@ -19,13 +19,20 @@ data class AuthUiState(
 )
 
 class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
-    private val _state = MutableStateFlow(AuthUiState())
+    private val _state = MutableStateFlow(
+        AuthUiState(
+            checkingSession = !repository.hasSession(),
+            authenticated = repository.hasSession(),
+        )
+    )
     val state: StateFlow<AuthUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
             val restored = repository.restoreSession()
-            _state.value = AuthUiState(checkingSession = false, authenticated = restored)
+            if (!restored || !_state.value.authenticated) {
+                _state.value = AuthUiState(checkingSession = false, authenticated = restored)
+            }
         }
     }
 

@@ -14,6 +14,7 @@ from app.application.butler.contracts import (
 
 
 class ButlerState(TypedDict):
+    request_id: NotRequired[uuid.UUID]
     user_id: uuid.UUID
     interaction_mode: InteractionMode
     message: str

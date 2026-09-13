@@ -11,10 +11,29 @@ import androidx.work.WorkerParameters
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.hellobutler.app.ButlerApplication
+import com.hellobutler.app.core.AppVisibility
+import kotlinx.coroutines.launch
 
 class ButlerMessagingService : FirebaseMessagingService() {
     override fun onMessageReceived(message: RemoteMessage) {
-        if (message.data["type"] == "daily_plan_changed") DailySyncWorker.enqueue(this)
+        when (message.data["type"]) {
+            "daily_plan_changed" -> DailySyncWorker.enqueue(this)
+            "butler_request_completed", "butler_request_handling" -> {
+                val requestId = message.data["request_id"] ?: return
+                val app = application as ButlerApplication
+                if (AppVisibility.isForeground) {
+                    app.applicationScope.launch {
+                        runCatching {
+                            if (!app.container.butlerRepository.reconcile(requestId)) {
+                                ButlerResultWorker.enqueue(this@ButlerMessagingService, requestId)
+                            }
+                        }.onFailure { ButlerResultWorker.enqueue(this@ButlerMessagingService, requestId) }
+                    }
+                } else {
+                    ButlerResultWorker.enqueue(this, requestId)
+                }
+            }
+        }
     }
 
     override fun onNewToken(token: String) {

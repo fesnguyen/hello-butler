@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -37,13 +37,13 @@ class ButlerContextLoader:
             daily_plan = await self._daily_plan(session, user_id, today)
             events = await self._events_for_day(session, user_id, today)
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         return ButlerContext(
             conversation_history=[
                 ContextMessage(
                     role=row.role,
                     content=row.content,
-                    seconds_ago=max(0, int((now - row.created_at).total_seconds()))
+                    seconds_ago=max(0, int((now - row.created_at).total_seconds())),
                 )
                 for row in history
             ],

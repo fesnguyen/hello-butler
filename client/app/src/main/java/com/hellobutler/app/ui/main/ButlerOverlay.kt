@@ -13,103 +13,48 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.hellobutler.app.data.local.ConversationMessageEntity
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 
 @Composable
 fun ButlerConversationOverlay(
     state: MainUiState,
-    capturing: Boolean,
+    messages: List<ConversationMessageEntity>,
     onDraftChanged: (String) -> Unit,
-    onSendOrder: () -> Unit,
-    onSendTalk: () -> Unit,
+    onSendText: () -> Unit,
+    onPlay: (requestId: String, private: Boolean) -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(
-        modifier.fillMaxWidth().fillMaxHeight(.66f),
-        shape = RoundedCornerShape(28.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
-    ) {
-        Column(
-            Modifier.fillMaxSize().padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+    Card(modifier.fillMaxWidth().fillMaxHeight(.66f), shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)) {
+        Column(Modifier.fillMaxHeight().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
                     Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(9.dp).size(20.dp), tint = MaterialTheme.colorScheme.onPrimary)
                 }
                 Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                     Text("Butler", style = MaterialTheme.typography.titleMedium)
-                    Text(
-                        when {
-                            capturing -> "Listening to you"
-                            state.processing -> "Considering your request"
-                            else -> "Here with your day"
-                        },
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                    Text(if (state.recording) "Recording" else "Here with your day", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, "Close conversation") }
+                IconButton(onClick = onClose, enabled = !state.recording) { Icon(Icons.Outlined.Close, "Close conversation") }
             }
-
-            if (capturing) ListeningIndicator(state.transcript)
-
-            if (state.messages.isNotEmpty()) {
-                LazyColumn(
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                    contentPadding = PaddingValues(bottom = 4.dp),
-                ) {
-                    items(state.messages.takeLast(12)) { ConversationBubble(it) }
-                }
-            } else {
-                Spacer(Modifier.weight(1f))
+            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 4.dp)) {
+                items(messages.takeLast(30), key = { it.id }) { ConversationBubble(it, onPlay) }
+                if (state.recording) item { RecordingBubble() }
             }
-
             state.textDraft?.let { draft ->
-                OutlinedTextField(
-                    draft,
-                    onDraftChanged,
-                    Modifier.fillMaxWidth(),
-                    minLines = 2,
-                    maxLines = 4,
-                    label = { Text("Review transcript") },
-                    shape = RoundedCornerShape(17.dp),
-                    supportingText = { Text("Edit anything speech recognition missed.") },
-                )
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(
-                        onClick = onSendOrder,
-                        enabled = !state.processing && draft.isNotBlank(),
-                        modifier = Modifier.weight(1f),
-                    ) {
-                        Icon(Icons.Outlined.Send, null, Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Send as Order")
-                    }
-                    OutlinedButton(
-                        onClick = onSendTalk,
-                        enabled = !state.processing && draft.isNotBlank(),
-                        modifier = Modifier.weight(1f),
-                    ) { Text("Send as Talk") }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(draft, onDraftChanged, Modifier.weight(1f), minLines = 1, maxLines = 4, placeholder = { Text("Message Butler") }, shape = RoundedCornerShape(17.dp))
+                    Button(onClick = onSendText, enabled = draft.isNotBlank(), contentPadding = PaddingValues(12.dp)) { Icon(Icons.Outlined.Send, "Send text") }
                 }
             }
-
-            if (state.processing) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(10.dp))
-                    Text("Butler is working on it…", style = MaterialTheme.typography.bodyMedium)
-                }
-            }
-
             state.error?.let { message ->
                 Surface(color = MaterialTheme.colorScheme.errorContainer, shape = RoundedCornerShape(14.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Icon(Icons.Outlined.ErrorOutline, null, tint = MaterialTheme.colorScheme.error)
-                        Spacer(Modifier.width(9.dp))
-                        Text(message, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodyMedium)
+                    Row(Modifier.fillMaxWidth().padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.ErrorOutline, null, tint = MaterialTheme.colorScheme.error); Spacer(Modifier.width(8.dp))
+                        Text(message, color = MaterialTheme.colorScheme.onErrorContainer, style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -118,37 +63,39 @@ fun ButlerConversationOverlay(
 }
 
 @Composable
-private fun ListeningIndicator(transcript: String) {
-    Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(18.dp)) {
-        Column(Modifier.fillMaxWidth().padding(15.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.GraphicEq, null, tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(8.dp))
-                Text("Listening…", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+private fun RecordingBubble() {
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Surface(Modifier.widthIn(max = 260.dp), color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(18.dp)) {
+            Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Outlined.GraphicEq, null, tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(8.dp)); Text("Recording…", fontWeight = FontWeight.SemiBold)
             }
-            Spacer(Modifier.height(6.dp))
-            Text(transcript.ifBlank { "Go ahead. I’m listening." }, color = MaterialTheme.colorScheme.onPrimaryContainer)
         }
     }
 }
 
 @Composable
-private fun ConversationBubble(message: ConversationMessage) {
+private fun ConversationBubble(message: ConversationMessageEntity, onPlay: (requestId: String, private: Boolean) -> Unit) {
     val fromUser = message.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start) {
-        Surface(
-            modifier = Modifier.widthIn(max = 290.dp),
-            shape = RoundedCornerShape(18.dp),
-            color = if (fromUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-        ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                Text(
-                    if (fromUser) "You" else "Butler",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (fromUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = .72f) else MaterialTheme.colorScheme.onSurfaceVariant,
+        Surface(Modifier.widthIn(max = 290.dp), shape = RoundedCornerShape(18.dp), color = if (fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (fromUser) "You" else "Butler", style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.SemiBold)
+                    if (!fromUser && message.responseAudioDurationMs != null) Text(" · ${duration(message.responseAudioDurationMs)}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                Text(message.text, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (fromUser && message.deliveryState != "completed") Text(
+                    when (message.deliveryState) { "sending" -> "Sending…"; "sent" -> "Sent • ${messageTime(message.createdAt)}"; "failed" -> "Waiting for connection"; else -> message.deliveryState },
+                    style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f),
                 )
-                Text(message.text, color = if (fromUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant)
+                if (!fromUser && message.responseAudioUrl != null) Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    IconButton(onClick = { onPlay(message.requestId, false) }) { Icon(Icons.Outlined.VolumeUp, "Play Butler response aloud") }
+                    IconButton(onClick = { onPlay(message.requestId, true) }) { Icon(Icons.Outlined.Call, "Listen privately through the earpiece") }
+                }
             }
         }
     }
 }
+
+private fun duration(milliseconds: Int): String { val seconds = (milliseconds / 1000).coerceAtLeast(0); return "%d:%02d".format(seconds / 60, seconds % 60) }
+private fun messageTime(value: String): String = runCatching { Instant.parse(value).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("h:mm a")) }.getOrDefault("")

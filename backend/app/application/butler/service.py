@@ -41,10 +41,14 @@ class ButlerService:
         ).compiled
 
     async def handle(
-        self, *, user_id: uuid.UUID, interaction_mode: InteractionMode, message: str
+        self,
+        *,
+        user_id: uuid.UUID,
+        interaction_mode: InteractionMode,
+        message: str,
+        request_id: uuid.UUID | None = None,
     ) -> ButlerResult:
-        normalized = message.strip()
-        if not normalized:
+        if not message.strip():
             return ButlerResult(
                 response="What would you like me to help with?", requires_follow_up=True
             )
@@ -54,11 +58,13 @@ class ButlerService:
         state: ButlerState = {
             "user_id": user_id,
             "interaction_mode": interaction_mode,
-            "message": normalized,
+            "message": message,
             "now": now,
             "timezone": timezone,
             "today": now.date(),
         }
+        if request_id is not None:
+            state["request_id"] = request_id
         result = cast(ButlerState, await self._graph.ainvoke(state))
         if (butler_result := result.get("result")) is None:
             raise ButlerError("Butler graph completed without a result")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time
+from datetime import date, time
 from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field

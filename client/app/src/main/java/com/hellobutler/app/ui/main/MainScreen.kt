@@ -29,7 +29,9 @@ import androidx.core.content.ContextCompat
 import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.execution.SpeechForegroundService
 import com.hellobutler.app.execution.SpeechPlaybackState
-import com.hellobutler.app.speech.SpeechInputController
+import com.hellobutler.app.execution.ButlerAudioPlaybackService
+import com.hellobutler.app.core.ButlerNavigation
+import com.hellobutler.app.speech.ButlerAudioRecorder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -39,6 +41,7 @@ import java.util.UUID
 fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     val state by viewModel.state.collectAsState()
     val events by viewModel.events.collectAsState()
+    val messages by viewModel.messages.collectAsState()
     val context = LocalContext.current
     val speaking by SpeechPlaybackState.speaking.collectAsState()
     var exactAlarmsAllowed by remember { mutableStateOf(true) }
@@ -48,8 +51,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         ScheduleRestoreWorker.enqueue(context)
         onPauseOrDispose { }
     }
-    val speech = remember { SpeechInputController(context) }
-    var capturing by remember { mutableStateOf(false) }
+    val recorder = remember { ButlerAudioRecorder(context) }
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
     var creatingEvent by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -59,7 +61,14 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         ActivityResultContracts.RequestPermission()
     ) { }
 
-    DisposableEffect(Unit) { onDispose { speech.destroy() } }
+    DisposableEffect(Unit) { onDispose { recorder.cancel() } }
+    val openConversation by ButlerNavigation.openConversation.collectAsState()
+    LaunchedEffect(openConversation) {
+        if (openConversation) {
+            viewModel.openConversation()
+            ButlerNavigation.consumed()
+        }
+    }
     LaunchedEffect(Unit) {
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -71,19 +80,18 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     }
 
     fun startCapture(mode: CaptureMode) {
-        if (capturing || state.processing) return
+        if (state.recording) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        capturing = true
-        viewModel.beginCapture(mode)
-        speech.start(
-            onPartial = viewModel::updateTranscript,
-            onFinal = { text -> capturing = false; viewModel.finishCapture(text) },
-            onError = { error -> capturing = false; viewModel.captureError(error) },
+        runCatching { recorder.start() }.fold(
+            onSuccess = { viewModel.beginRecording(mode) },
+            onFailure = { viewModel.captureError(it.message ?: "Recording could not start") },
         )
     }
+
+    fun finishCapture() { viewModel.finishRecording(recorder.stop()) }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -108,7 +116,14 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
             )
         },
         bottomBar = {
-            ButlerControlBar(!state.processing && !capturing, state.captureMode, capturing, ::startCapture)
+            ButlerControlBar(
+                enabled = !state.recording,
+                activeMode = state.captureMode,
+                recording = state.recording,
+                onVoicePressed = ::startCapture,
+                onVoiceReleased = ::finishCapture,
+                onText = viewModel::openTextComposer,
+            )
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -154,7 +169,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
             }
             Box(Modifier.fillMaxWidth().weight(1f)) {
                 if (events.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyDay { startCapture(CaptureMode.ORDER) } }
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyDay(viewModel::openConversation) }
                 } else {
                     LazyColumn(
                         Modifier.fillMaxSize(),
@@ -173,10 +188,13 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 }
                 if (state.overlayVisible) {
                     ButlerConversationOverlay(
-                        state, capturing, viewModel::editDraft,
-                        { viewModel.sendDraft(CaptureMode.ORDER) }, { viewModel.sendDraft(CaptureMode.TALK) },
-                        viewModel::dismissOverlay,
-                        Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
+                        state = state,
+                        messages = messages,
+                        onDraftChanged = viewModel::editDraft,
+                        onSendText = viewModel::sendText,
+                        onPlay = { requestId, private -> ButlerAudioPlaybackService.play(context, requestId, private) },
+                        onClose = viewModel::dismissOverlay,
+                        modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
                     )
                 }
             }

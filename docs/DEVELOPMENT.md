@@ -282,7 +282,7 @@ Recommended first breakpoint for following the Butler request flow:
 backend/app/api/butler.py
 ```
 
-Then call `POST /api/butler/talk` and step through authentication, application orchestration, LangGraph, AI reasoning, deterministic mutation, persistence, and response construction.
+Then call `POST /api/butler/requests/text` and step through authentication, durable request acceptance, background orchestration, LangGraph, deterministic mutation, result persistence, and completion signaling.
 
 ---
 
@@ -317,14 +317,21 @@ The refresh token is used only with the refresh/logout session flow, not as the 
 Example Butler request:
 
 ```bash
-curl -X POST 'http://127.0.0.1:8000/api/butler/talk' \
+REQUEST_ID="$(python3 -c 'import uuid; print(uuid.uuid4())')"
+
+curl -X POST 'http://127.0.0.1:8000/api/butler/requests/text' \
   -H 'Authorization: Bearer YOUR_ACCESS_TOKEN' \
   -H 'Content-Type: application/json' \
   -d '{
-    "interaction_mode": "talk",
+    "request_id": "'"$REQUEST_ID"'",
     "message": "What do I have today?"
   }'
+
+curl 'http://127.0.0.1:8000/api/butler/requests/'"$REQUEST_ID" \
+  -H 'Authorization: Bearer YOUR_ACCESS_TOKEN'
 ```
+
+Submission returns `202 Accepted`. Poll the request resource until its durable status is `completed` or `failed`; FCM messages are convergence hints, not result payloads.
 
 ---
 

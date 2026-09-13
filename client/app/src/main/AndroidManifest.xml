@@ -56,5 +56,9 @@
             android:name=".execution.SpeechForegroundService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
+        <service
+            android:name=".execution.ButlerAudioPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>
