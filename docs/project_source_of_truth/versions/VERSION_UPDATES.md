@@ -6,6 +6,8 @@ This file records coordinated version updates for documents under `docs/project_
 
 ## Version 1.5 — 2026-09-12
 
+- Corrected the development guide's manual example to use the v1.5 asynchronous request/result endpoints.
+
 ### Scope
 
 Version 1.5 refines the v1.4 async Butler architecture by separating input transport from Butler reasoning.

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.butler.contracts import ButlerResult, ChangedEntity
+from app.application.butler.idempotency import prior_action_result, save_action_result
 from app.application.butler.state import ButlerState, ButlerStateUpdate, decision_from
 from app.application.push.changes import DailyPlanChanges
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
@@ -23,6 +24,8 @@ class DailyEventActions:
 
         event_date = decision.event_date or state["today"]
         async with self._changes.transaction(state["user_id"]) as session:
+            if prior := await prior_action_result(session, state):
+                return {"result": prior}
             plan = await self._get_or_create_plan(session, state["user_id"], event_date)
             event = DailyEventModel(
                 id=uuid.uuid4(),
@@ -45,18 +48,20 @@ class DailyEventActions:
             )
             session.add(event)
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
-
-        when = self._format_time(event_date, decision.start_time)
-        return {
-            "result": ButlerResult(
+            when = self._format_time(event_date, decision.start_time)
+            result = ButlerResult(
                 response=f"Done. I added {decision.title} {when}.",
                 changed_entities=[changed],
             )
-        }
+            save_action_result(session, state, result)
+
+        return {"result": result}
 
     async def update(self, state: ButlerState) -> ButlerStateUpdate:
         decision = decision_from(state)
         async with self._changes.transaction(state["user_id"]) as session:
+            if prior := await prior_action_result(session, state):
+                return {"result": prior}
             event = await self._resolve_event(session, state)
             if event is None:
                 return self._follow_up("Which event should I update?")
@@ -99,9 +104,7 @@ class DailyEventActions:
             event.planner_key = None
             event.version += 1
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
-
-        return {
-            "result": ButlerResult(
+            result = ButlerResult(
                 response=f"Done. I updated {event.title}.",
                 changed_entities=[
                     changed.model_copy(
@@ -109,10 +112,14 @@ class DailyEventActions:
                     )
                 ],
             )
-        }
+            save_action_result(session, state, result)
+
+        return {"result": result}
 
     async def skip(self, state: ButlerState) -> ButlerStateUpdate:
         async with self._changes.transaction(state["user_id"]) as session:
+            if prior := await prior_action_result(session, state):
+                return {"result": prior}
             event = await self._resolve_event(session, state)
             if event is None:
                 return self._follow_up("Which event should I skip?")
@@ -123,12 +130,12 @@ class DailyEventActions:
             event.planner_key = None
             event.version += 1
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
-
-        return {
-            "result": ButlerResult(
+            result = ButlerResult(
                 response=f"Done. I skipped {event.title}.", changed_entities=[changed]
             )
-        }
+            save_action_result(session, state, result)
+
+        return {"result": result}
 
     async def _get_or_create_plan(
         self, session: AsyncSession, user_id: uuid.UUID, plan_date: date

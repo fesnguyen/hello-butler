@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
@@ -11,6 +12,9 @@ from app.api.push import router as push_router
 from app.api.sync import router as sync_router
 from app.application.planning.scheduler import NightlyPlanningScheduler
 from app.core.config import get_settings
+from app.core.lifecycle import butler_request_service
+
+logger = logging.getLogger(__name__)
 
 
 async def health() -> dict[str, str]:
@@ -19,14 +23,31 @@ async def health() -> dict[str, str]:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
-    scheduler = NightlyPlanningScheduler(get_settings())
+    settings = get_settings()
+    scheduler = NightlyPlanningScheduler(settings)
     task = asyncio.create_task(scheduler.run_forever(), name="nightly-planning")
+    request_service = butler_request_service(settings)
+
+    async def maintain_butler_requests() -> None:
+        while True:
+            try:
+                for request_id in await request_service.recover():
+                    asyncio.create_task(request_service.process(request_id))
+                await request_service.cleanup_audio()
+            except Exception:
+                logger.exception("Butler request maintenance failed")
+            await asyncio.sleep(settings.butler_maintenance_interval_seconds)
+
+    maintenance = asyncio.create_task(maintain_butler_requests(), name="butler-request-maintenance")
     try:
         yield
     finally:
         task.cancel()
+        maintenance.cancel()
         with suppress(asyncio.CancelledError):
             await task
+        with suppress(asyncio.CancelledError):
+            await maintenance
 
 
 def create_app() -> FastAPI:

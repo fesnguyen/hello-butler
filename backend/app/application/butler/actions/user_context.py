@@ -5,6 +5,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.butler.contracts import ButlerResult, ChangedEntity
+from app.application.butler.idempotency import prior_action_result, save_action_result
 from app.application.butler.state import ButlerState, ButlerStateUpdate, decision_from
 from app.infrastructure.db.models import UserContextEntryModel
 
@@ -23,6 +24,8 @@ class UserContextActions:
             }
 
         async with self._session_factory() as session, session.begin():
+            if prior := await prior_action_result(session, state):
+                return {"result": prior}
             entry = UserContextEntryModel(
                 id=uuid.uuid4(),
                 user_id=state["user_id"],
@@ -33,9 +36,9 @@ class UserContextActions:
             )
             session.add(entry)
             changed = ChangedEntity(type="user_context", id=entry.id)
-
-        return {
-            "result": ButlerResult(
+            result = ButlerResult(
                 response="Got it. I will remember that.", changed_entities=[changed]
             )
-        }
+            save_action_result(session, state, result)
+
+        return {"result": result}

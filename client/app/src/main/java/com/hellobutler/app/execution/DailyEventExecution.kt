@@ -14,6 +14,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.hellobutler.app.MainActivity
 import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -169,6 +170,13 @@ class SpeechForegroundService : Service() {
             Intent(this, SpeechForegroundService::class.java).setAction(ACTION_STOP_SPEECH),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val open = PendingIntent.getActivity(
+            this, 1,
+            Intent(this, MainActivity::class.java)
+                .putExtra(MainActivity.EXTRA_OPEN_CONVERSATION, true)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
             .setContentTitle("Butler is speaking")
@@ -176,6 +184,7 @@ class SpeechForegroundService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setOngoing(true)
             .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
+            .addAction(android.R.drawable.ic_menu_view, "Open in App", open)
             .build()
     }
 

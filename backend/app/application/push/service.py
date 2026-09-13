@@ -50,25 +50,35 @@ class PushService:
             )
 
     async def daily_plan_changed(self, user_id: uuid.UUID) -> None:
-        async with self._session_factory() as session:
-            tokens = list(
-                (
+        await self._send(user_id, {"type": "daily_plan_changed"})
+
+    async def butler_request_state(
+        self, user_id: uuid.UUID, event_type: str, request_id: uuid.UUID
+    ) -> None:
+        await self._send(user_id, {"type": event_type, "request_id": str(request_id)})
+
+    async def _send(self, user_id: uuid.UUID, data: dict[str, str]) -> None:
+        try:
+            async with self._session_factory() as session:
+                tokens = list(
+                    (
+                        await session.execute(
+                            select(PushDeviceModel.registration_token).where(
+                                PushDeviceModel.user_id == user_id
+                            )
+                        )
+                    ).scalars()
+                )
+            if not tokens:
+                return
+            invalid = await self._provider.send_data(tokens, data)
+            if invalid:
+                async with self._session_factory() as session, session.begin():
                     await session.execute(
-                        select(PushDeviceModel.registration_token).where(
-                            PushDeviceModel.user_id == user_id
+                        delete(PushDeviceModel).where(
+                            PushDeviceModel.registration_token.in_(invalid)
                         )
                     )
-                ).scalars()
-            )
-        if not tokens:
-            return
-        try:
-            invalid = await self._provider.send_data(tokens, {"type": "daily_plan_changed"})
         except Exception:
-            logger.exception("Daily plan push failed for user %s", user_id)
-            return  # Push is only a hint; scheduled/startup sync still converges.
-        if invalid:
-            async with self._session_factory() as session, session.begin():
-                await session.execute(
-                    delete(PushDeviceModel).where(PushDeviceModel.registration_token.in_(invalid))
-                )
+            logger.exception("Push hint failed for user %s", user_id)
+            return

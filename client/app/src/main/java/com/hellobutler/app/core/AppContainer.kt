@@ -42,7 +42,9 @@ class AppContainer(context: Context) {
         beforeLogout = { pushRegistration.unregisterCurrent() },
         afterLogout = {
             context.stopService(android.content.Intent(context, com.hellobutler.app.execution.SpeechForegroundService::class.java))
+            context.stopService(android.content.Intent(context, com.hellobutler.app.execution.ButlerAudioPlaybackService::class.java))
             dailyEventRepository.clear()
+            butlerRepository.clear()
         },
     )
     val pushApi: PushApi = retrofit.create(PushApi::class.java)
@@ -57,6 +59,7 @@ class AppContainer(context: Context) {
         json,
     )
     val butlerRepository = ButlerRepository(
-        retrofit.create(ButlerApi::class.java), authRepository, dailyEventRepository
+        context.applicationContext, database, retrofit.create(ButlerApi::class.java),
+        authRepository, dailyEventRepository,
     )
 }
