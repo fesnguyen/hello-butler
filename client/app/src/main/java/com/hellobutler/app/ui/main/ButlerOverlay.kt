@@ -2,6 +2,8 @@ package com.hellobutler.app.ui.main
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -28,7 +30,18 @@ fun ButlerConversationOverlay(
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Card(modifier.fillMaxWidth().fillMaxHeight(.66f), shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)) {
+    val listState = rememberLazyListState()
+    val visibleMessages = messages.takeLast(30)
+
+    LaunchedEffect(visibleMessages.size, state.recording) {
+        val itemCount = visibleMessages.size + if (state.recording) 1 else 0
+
+        if (itemCount > 0) {
+            listState.animateScrollToItem(itemCount - 1)
+        }
+    }
+
+    Card(modifier.fillMaxWidth().fillMaxHeight(.90f), shape = RoundedCornerShape(28.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)) {
         Column(Modifier.fillMaxHeight().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
@@ -40,9 +53,19 @@ fun ButlerConversationOverlay(
                 }
                 IconButton(onClick = onClose, enabled = !state.recording) { Icon(Icons.Outlined.Close, "Close conversation") }
             }
-            LazyColumn(Modifier.fillMaxWidth().weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp), contentPadding = PaddingValues(bottom = 4.dp)) {
-                items(messages.takeLast(30), key = { it.id }) { ConversationBubble(it, onPlay) }
-                if (state.recording) item { RecordingBubble() }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(bottom = 4.dp),
+            ) {
+                items(visibleMessages, key = { it.id }) {
+                    ConversationBubble(it, onPlay)
+                }
+
+                if (state.recording) {
+                    item { RecordingBubble() }
+                }
             }
             state.textDraft?.let { draft ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
