@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -8,7 +8,7 @@
 
 # Purpose
 
-The backend owns Butler intelligence, authoritative server state, asynchronous request processing, conversation persistence, response audio generation, authentication, planning, and synchronization.
+The backend owns Butler intelligence, authoritative server state, asynchronous request processing, multimodal AI orchestration, conversation persistence, response-audio handling, authentication, planning, and synchronization.
 
 ---
 
@@ -24,13 +24,11 @@ Domain
 Infrastructure
 ```
 
-API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, AI/audio providers, push, storage, and other integrations.
+API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, multimodal AI/audio providers, push, storage, and other integrations.
 
 ---
 
-# Two Ingress APIs, One Butler Workflow
-
-Order/Talk and Text use different input transports but converge before Butler reasoning.
+# Two Ingress APIs, One Butler Product Workflow
 
 ```text
                  API
@@ -41,14 +39,13 @@ Order/Talk and Text use different input transports but converge before Butler re
           │               │
    POST audio API    POST text API
           │               │
-      transcribe           │
           └───────┬───────┘
-                  ↓
-          normalized message
                   ↓
           Butler application
                   ↓
-            Butler graph
+      load text context / state
+                  ↓
+       multimodal AI boundary
                   ↓
        command/query/clarify
                   ↓
@@ -58,7 +55,9 @@ Order/Talk and Text use different input transports but converge before Butler re
           text + audio
 ```
 
-Do not create separate AudioGraph and TextGraph implementations. After normalization, downstream Butler reasoning should consume the same request contract.
+Do not create separate Butler brains for audio and text. The application/domain behavior remains shared.
+
+The important distinction is that an Order/Talk audio request must preserve the original audio through the AI reasoning boundary.
 
 ---
 
@@ -70,9 +69,8 @@ Conceptually:
 POST /api/butler/requests/audio
 POST /api/butler/requests/text
 GET  /api/butler/requests/{request_id}
+GET  /api/butler/requests/{request_id}/audio
 ```
-
-Exact route naming may evolve during implementation, but the architectural separation is required: one audio ingress for Order/Talk and one text ingress for typed Text.
 
 ## Audio request
 
@@ -104,24 +102,77 @@ Both then use the same asynchronous request/result lifecycle.
 
 ---
 
-# Normalized Butler Request
+# Multimodal Butler Input Contract
 
-Transport-specific processing ends at a normalized application contract, conceptually:
+For Order/Talk, the application assembles one AI input that contains:
 
 ```text
-NormalizedButlerRequest
-├── request_id
-├── user_id
-├── message
-├── interaction_mode
-└── input_source = audio | text
+original recorded audio
++
+textual context
+├── Butler instructions
+├── interaction mode
+├── newest relevant conversation
+├── User Context / preferences
+├── current/relevant Daily Plan and Events
+└── now / timezone
 ```
 
-For audio, `message` is the server-produced transcript. For text, `message` is the submitted text.
+The AI/provider boundary must be capable of understanding the original audio together with this textual context.
 
-`input_source` is provenance/operational metadata. It must not cause duplicate reasoning architectures.
+The normal architecture must not be:
 
-Text is an input source, not a semantic intent. Semantic intent remains command, query, or clarify. Typed Text normally uses the conversational/Talk expectation unless a future product requirement introduces an explicit alternative.
+```text
+audio
+ ↓
+standalone STT
+ ↓
+transcript only
+ ↓
+text-only Butler reasoning
+ ↓
+standalone TTS
+```
+
+That design throws away the original audio before semantic reasoning and makes transcription the single point of failure.
+
+A transcript/understood utterance text is still required for history and UI, but it is part of the multimodal result rather than the sole reasoning input.
+
+---
+
+# Text Input Contract
+
+For Text, the AI input contains:
+
+```text
+typed message
++
+same textual Butler context
+```
+
+No microphone/STT step is involved.
+
+Text remains an input method, not a semantic intent. Semantic intent remains command, query, or clarify.
+
+---
+
+# AI Result Contract
+
+The multimodal/provider result must support the application with the information needed to complete the Butler request, conceptually:
+
+```text
+AI result
+├── user_message_text
+│   ├── audio source → transcript / understood utterance text
+│   └── text source  → submitted text
+├── structured decision / action proposal when needed
+├── Butler response text
+└── Butler response audio
+```
+
+If tool/domain actions are required, application/domain code remains authoritative for mutation. The AI may propose intent/actions, but must not write directly to the database.
+
+The provider/orchestration layer may use a tool-capable multimodal interaction internally, but the original audio must remain available to the AI reasoning path until the user's meaning is resolved.
 
 ---
 
@@ -138,8 +189,6 @@ failed
 
 The client may present `Sending...` and `Sent • time` while the server request progresses.
 
-Audio processing includes transcription before normalization. Text skips transcription.
-
 ---
 
 # Shared Processing
@@ -147,28 +196,32 @@ Audio processing includes transcription before normalization. Text skips transcr
 ```text
 accepted request
       ↓
-normalize input
-  ├── audio → transcribe
-  └── text  → submitted text
+load request input
       ↓
-load relevant conversation + User Context + Daily state
+load relevant text context
       ↓
-Butler reasoning
+AI processing
+  ├── audio → original audio + text context
+  └── text  → typed text + text context
       ↓
-validated deterministic actions when needed
+resolve command / query / clarify
       ↓
-finalize response text
+apply validated deterministic actions when needed
       ↓
-generate response audio
+finalize canonical Butler response
+      ├── text
+      └── audio
       ↓
-persist canonical conversation/result
+persist conversation/result metadata
+      ↓
+save response audio temporarily
       ↓
 mark completed
       ↓
 FCM completed(request_id)
 ```
 
-Application/domain code remains authoritative for mutations. AI/provider code must not write directly to the database.
+The architecture should preserve a single canonical request/result even if internal AI orchestration requires more than one provider round trip.
 
 ---
 
@@ -186,17 +239,34 @@ changed entity metadata when relevant
 completion timestamp
 ```
 
-For audio, `user_message_text` is the transcript. For text, it is the exact submitted text.
+For audio, `user_message_text` is the multimodal result transcript/understood utterance text. For text, it is the exact submitted text.
 
 One completed request produces one user conversation message and one Butler conversation message. Notification and in-app presentation are not separate results.
 
 ---
 
-# Response Audio
+# Response Audio Storage and Delivery
 
-Response audio is generated after Butler response text is finalized for both audio and text requests.
+The AI/provider result includes Butler response audio as part of the completed interaction.
 
-Backend response audio has limited retention. Uploaded user audio is temporary processing data and should be removed sooner after successful processing. The backend does not promise permanent historical audio restoration.
+The backend stores that audio temporarily and exposes an authenticated download endpoint/reference. It does not embed the audio bytes in FCM.
+
+```text
+AI returns response text + audio
+      ↓
+backend persists canonical text/result
+backend writes response audio asset
+      ↓
+FCM completed(request_id)
+      ↓
+client GETs canonical result text/metadata
+      ↓
+client immediately downloads response audio
+      ↓
+local cache
+```
+
+The text result must remain available even if audio download is delayed. Backend response audio is retention-limited.
 
 ---
 
@@ -211,7 +281,9 @@ FCM: butler_request_completed + request_id
    ↓
 GET /api/butler/requests/{request_id}
    ↓
-canonical result + response audio reference
+canonical text result + response audio reference
+   ↓
+GET authenticated response audio
 ```
 
 Push failure must not roll back a completed request. Result fetch must be idempotent and retryable.
@@ -223,7 +295,7 @@ Push failure must not roll back a completed request. Result fetch must be idempo
 Backend conversation text is durable:
 
 ```text
-role=user   → transcript OR submitted typed text
+role=user   → transcript/understood utterance OR submitted typed text
 role=butler → canonical response text
 ```
 
@@ -253,12 +325,12 @@ PostgreSQL remains authoritative for users, User Context, conversation text, Dai
 
 # Guiding Rule
 
-Keep transport normalization at the edge:
+Preserve the richest user input through the reasoning boundary:
 
 ```text
-AUDIO ──transcribe──┐
-                    ├── normalized message ── Butler workflow
-TEXT ───────────────┘
+AUDIO + TEXT CONTEXT ──┐
+                       ├── Butler reasoning/application ── text + audio result
+TEXT + TEXT CONTEXT ───┘
 ```
 
-Everything after that boundary should be shared unless a concrete product requirement proves otherwise.
+A standalone transcript may be stored and displayed, but it must not be the only semantic representation of an Order/Talk request before Butler reasoning.
