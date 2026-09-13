@@ -70,14 +70,19 @@ class ButlerGraph:
         return {"context": await self._context_loader.load(state["user_id"], state["today"])}
 
     async def _understand_request(self, state: ButlerState) -> ButlerStateUpdate:
-        decision = await self._ai_provider.understand(
-            message=state["message"],
+        understanding = await self._ai_provider.understand(
+            message=state["message"] or None,
+            audio_path=state["audio_path"],
+            audio_mime_type=state["audio_mime_type"],
             interaction_mode=state["interaction_mode"],
             now=state["now"].isoformat(),
             timezone=state["timezone"],
             context=context_from(state),
         )
-        return {"decision": decision}
+        return {
+            "message": understanding.user_message_text,
+            "decision": understanding.decision,
+        }
 
     @staticmethod
     def _route(state: ButlerState) -> Intent:
@@ -105,7 +110,7 @@ class ButlerGraph:
         return {"result": ButlerResult(response=answer)}
 
     async def _build_clarification(self, state: ButlerState) -> ButlerStateUpdate:
-        question = decision_from(state).clarification_question or "What detail should I use?"
+        question = decision_from(state).clarification_question or "Sorry, what did you mean?"
         return {"result": ButlerResult(response=question, requires_follow_up=True)}
 
     async def _save_history(self, state: ButlerState) -> ButlerStateUpdate:

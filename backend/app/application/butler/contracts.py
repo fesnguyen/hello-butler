@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, time
+from pathlib import Path
 from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field
@@ -79,6 +80,11 @@ class ButlerDecision(BaseModel):
     answer: str | None = None
 
 
+class ButlerUnderstanding(BaseModel):
+    user_message_text: str = Field(min_length=1)
+    decision: ButlerDecision
+
+
 class ChangedEntity(BaseModel):
     type: str
     id: uuid.UUID
@@ -87,6 +93,7 @@ class ChangedEntity(BaseModel):
 
 class ButlerResult(BaseModel):
     response: str
+    user_message_text: str = ""
     changed_entities: list[ChangedEntity] = Field(default_factory=list[ChangedEntity])
     requires_follow_up: bool = False
 
@@ -95,12 +102,14 @@ class ButlerAIProvider(Protocol):
     async def understand(
         self,
         *,
-        message: str,
+        message: str | None,
+        audio_path: Path | None,
+        audio_mime_type: str | None,
         interaction_mode: str,
         now: str,
         timezone: str,
         context: ButlerContext,
-    ) -> ButlerDecision: ...
+    ) -> ButlerUnderstanding: ...
 
 
 class ButlerError(RuntimeError):

@@ -5,6 +5,7 @@ from app.application.butler.contracts import (
     ButlerDecision,
     ButlerError,
     ButlerResult,
+    ButlerUnderstanding,
 )
 from app.application.butler.service import ButlerService
 
@@ -16,4 +17,5 @@ __all__ = [
     "ButlerError",
     "ButlerResult",
     "ButlerService",
+    "ButlerUnderstanding",
 ]

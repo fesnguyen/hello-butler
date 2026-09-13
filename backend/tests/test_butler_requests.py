@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from app.application.butler.contracts import ButlerDecision
+from app.application.butler.contracts import ButlerDecision, ButlerUnderstanding
 from app.application.butler.requests import ButlerRequestService
 from app.application.butler.service import ButlerService
 from app.application.push.changes import DailyPlanChanges
@@ -30,9 +30,6 @@ def sqlite_jsonb(type_, compiler, **kwargs):
 
 
 class FakeAudio:
-    async def transcribe(self, path: Path) -> str:
-        return "unused"
-
     async def synthesize(self, text: str, path: Path) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"audio")
@@ -74,10 +71,13 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         push = PushService(self.sessions, push_provider)
         await push.register(self.user_id, "phone-token")
         ai = AsyncMock()
-        ai.understand.return_value = ButlerDecision(
-            intent="command",
-            requested_action="create_daily_event",
-            title="Exercise",
+        ai.understand.return_value = ButlerUnderstanding(
+            user_message_text="  Add exercise.  ",
+            decision=ButlerDecision(
+                intent="command",
+                requested_action="create_daily_event",
+                title="Exercise",
+            ),
         )
         butler = ButlerService(
             settings=settings,

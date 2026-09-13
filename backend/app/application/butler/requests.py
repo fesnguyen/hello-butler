@@ -5,12 +5,13 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.application.butler.audio import ButlerAudioProvider
+from app.application.butler.audio import ButlerResponseAudioProvider
 from app.application.butler.contracts import ButlerResult, ChangedEntity, InteractionMode
 from app.application.butler.service import ButlerService
 from app.application.push.service import PushService
@@ -53,7 +54,7 @@ class ButlerRequestService:
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
         butler: ButlerService,
-        audio: ButlerAudioProvider,
+        audio: ButlerResponseAudioProvider,
         push: PushService,
     ) -> None:
         self._settings = settings
@@ -139,24 +140,29 @@ class ButlerRequestService:
             request = await self._claim(request_id)
             if request is None:
                 return
+            logger.info(
+                "Processing Butler request request_id=%s mode=%s source=%s audio_type=%s",
+                request.id,
+                request.interaction_mode,
+                request.input_source,
+                request.input_audio_mime_type,
+            )
             await self._push.butler_request_state(
                 request.user_id, "butler_request_handling", request.id
             )
-            message = request.submitted_text
-            if request.input_source == "audio":
-                if not request.input_audio_path:
-                    raise RuntimeError("Accepted audio request has no input asset")
-                message = await self._audio.transcribe(Path(request.input_audio_path))
-            if not message:
-                raise RuntimeError("Request normalization produced no message")
+            audio_path = Path(request.input_audio_path) if request.input_audio_path else None
+            if request.input_source == "audio" and audio_path is None:
+                raise RuntimeError("Accepted audio request has no input asset")
             result = await self._butler.handle(
                 request_id=request.id,
                 user_id=request.user_id,
-                interaction_mode=request.interaction_mode,
-                message=message,
-            )  # type: ignore[arg-type]
-            audio_path, audio_type = await self._response_audio(request.id, result)
-            await self._complete(request.id, message, result, audio_path, audio_type)
+                interaction_mode=cast(InteractionMode, request.interaction_mode),
+                message=request.submitted_text,
+                audio_path=audio_path,
+                audio_mime_type=request.input_audio_mime_type,
+            )
+            response_audio_path, audio_type = await self._response_audio(request.id, result)
+            await self._complete(request.id, result, response_audio_path, audio_type)
             try:
                 await self._delete_file(request.input_audio_path)
                 await self._clear_input_path(request.id)
@@ -193,9 +199,11 @@ class ButlerRequestService:
     async def _response_audio(
         self, request_id: uuid.UUID, result: ButlerResult
     ) -> tuple[Path | None, str | None]:
-        path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.mp3"
+        path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.wav"
         try:
-            return path, await self._audio.synthesize(result.response, path)
+            audio_type = await self._audio.synthesize(result.response, path)
+            logger.info("Response audio stored request_id=%s type=%s", request_id, audio_type)
+            return path, audio_type
         except Exception:
             logger.exception("Response audio generation failed for request %s", request_id)
             return None, None
@@ -203,7 +211,6 @@ class ButlerRequestService:
     async def _complete(
         self,
         request_id: uuid.UUID,
-        message: str,
         result: ButlerResult,
         audio_path: Path | None,
         audio_type: str | None,
@@ -213,7 +220,7 @@ class ButlerRequestService:
             request = await session.get(ButlerRequestModel, request_id, with_for_update=True)
             if request is None or request.status == "completed":
                 return
-            request.user_message_text = message
+            request.user_message_text = result.user_message_text
             request.response_text = result.response
             request.response_audio_path = str(audio_path) if audio_path else None
             request.response_audio_mime_type = audio_type
@@ -244,11 +251,14 @@ class ButlerRequestService:
                     hours=self._settings.butler_input_audio_failure_retention_hours
                 )
 
-    async def result(self, user_id: uuid.UUID, request_id: uuid.UUID) -> ButlerRequestResult | None:
+    async def result(
+        self, user_id: uuid.UUID, request_id: uuid.UUID
+    ) -> ButlerRequestResult | None:
         async with self._sessions() as session:
             request = await session.scalar(
                 select(ButlerRequestModel).where(
-                    ButlerRequestModel.id == request_id, ButlerRequestModel.user_id == user_id
+                    ButlerRequestModel.id == request_id,
+                    ButlerRequestModel.user_id == user_id,
                 )
             )
         if request is None:
