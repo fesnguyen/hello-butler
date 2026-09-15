@@ -1,5 +1,6 @@
 from datetime import time
 from functools import lru_cache
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
@@ -9,6 +10,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "Hello Butler Backend"
     app_env: str = "development"
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO"
     database_url: str = Field(
         default="postgresql+asyncpg://hello_butler:hello_butler@localhost:5433/hello_butler"
     )

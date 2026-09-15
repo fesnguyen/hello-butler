@@ -78,6 +78,7 @@ class ButlerGraph:
             now=state["now"].isoformat(),
             timezone=state["timezone"],
             context=context_from(state),
+            request_id=state.get("request_id"),
         )
         return {
             "message": understanding.user_message_text,

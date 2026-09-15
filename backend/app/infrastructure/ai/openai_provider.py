@@ -6,6 +6,8 @@ import binascii
 import json
 import logging
 import re
+import time
+import uuid
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -63,6 +65,7 @@ class OpenAIButlerProvider:
         now: str,
         timezone: str,
         context: ButlerContext,
+        request_id: uuid.UUID | None = None,
     ) -> ButlerUnderstanding:
         payload: dict[str, object] = {
             "interaction_mode": interaction_mode,
@@ -71,7 +74,7 @@ class OpenAIButlerProvider:
             "context": context.model_dump(mode="json"),
         }
         if audio_path is not None:
-            return await self._understand_audio(audio_path, audio_mime_type, payload)
+            return await self._understand_audio(audio_path, audio_mime_type, payload, request_id)
         if message is None:
             raise ButlerAIUnavailableError("Butler provider received no input")
         decision = await self._parse(
@@ -86,15 +89,20 @@ class OpenAIButlerProvider:
         path: Path,
         mime_type: str | None,
         payload: dict[str, object],
+        request_id: uuid.UUID | None,
     ) -> ButlerUnderstanding:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
-        audio = await self._wav_audio(path)
+        audio = await self._wav_audio(path, request_id)
+        started = time.perf_counter()
         logger.info(
-            "Calling multimodal Butler model=%s input_type=%s input_bytes=%d",
+            "Multimodal audio request started request_id=%s model=%s input_type=%s "
+            "encoded_bytes=%d decoded_bytes=%d",
+            request_id,
             self._audio_model,
             mime_type or "unknown",
             path.stat().st_size,
+            len(audio),
         )
         tool = {
             "type": "function",
@@ -142,8 +150,7 @@ class OpenAIButlerProvider:
                 (
                     item
                     for item in calls
-                    if item.type == "function"
-                    and item.function.name == _UNDERSTANDING_TOOL
+                    if item.type == "function" and item.function.name == _UNDERSTANDING_TOOL
                 ),
                 None,
             )
@@ -151,13 +158,35 @@ class OpenAIButlerProvider:
                 raise ButlerAIUnavailableError(
                     "Multimodal AI provider returned no Butler understanding"
                 )
-            return ButlerUnderstanding.model_validate_json(call.function.arguments)
+            understanding = ButlerUnderstanding.model_validate_json(call.function.arguments)
+            logger.info(
+                "Multimodal audio request completed request_id=%s model=%s elapsed_ms=%d",
+                request_id,
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+            )
+            return understanding
         except (APIError, IndexError, OSError, ValidationError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Multimodal audio request failed request_id=%s model=%s elapsed_ms=%d "
+                "error_type=%s",
+                request_id,
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
             raise ButlerAIUnavailableError("Multimodal AI provider request failed") from exc
 
     async def synthesize(self, text: str, path: Path) -> str:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
+        started = time.perf_counter()
+        logger.info(
+            "Response audio generation started model=%s voice=%s text_chars=%d",
+            self._audio_model,
+            self._audio_voice,
+            len(text),
+        )
         try:
             completion = await self._client.chat.completions.create(
                 model=self._audio_model,
@@ -185,7 +214,20 @@ class OpenAIButlerProvider:
             await asyncio.to_thread(path.write_bytes, data)
         except (APIError, IndexError, OSError, binascii.Error) as exc:
             path.unlink(missing_ok=True)
+            logger.warning(
+                "Response audio generation failed model=%s elapsed_ms=%d error_type=%s",
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
             raise ButlerAIUnavailableError("Response audio generation failed") from exc
+        logger.info(
+            "Response audio generation completed model=%s mime_type=audio/wav "
+            "bytes=%d elapsed_ms=%d",
+            self._audio_model,
+            len(data),
+            round((time.perf_counter() - started) * 1000),
+        )
         return "audio/wav"
 
     @staticmethod
@@ -194,7 +236,15 @@ class OpenAIButlerProvider:
         canonical_words = re.sub(r"[^\w]+", " ", canonical.casefold()).strip()
         return spoken_words == canonical_words
 
-    async def _wav_audio(self, path: Path) -> bytes:
+    async def _wav_audio(self, path: Path, request_id: uuid.UUID | None = None) -> bytes:
+        started = time.perf_counter()
+        input_bytes = path.stat().st_size
+        logger.info(
+            "Audio decode started request_id=%s input_bytes=%d target_codec=pcm_s16le "
+            "channels=1 sample_rate_hz=16000",
+            request_id,
+            input_bytes,
+        )
         try:
             process = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -214,10 +264,32 @@ class OpenAIButlerProvider:
             )
             stdout, _stderr = await process.communicate()
         except OSError as exc:
+            logger.warning(
+                "Audio decode unavailable request_id=%s input_bytes=%d elapsed_ms=%d error_type=%s",
+                request_id,
+                input_bytes,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
             raise ButlerAIUnavailableError("Audio format conversion is unavailable") from exc
         if process.returncode != 0 or not stdout:
-            logger.warning("Audio format conversion failed exit_code=%s", process.returncode)
+            logger.warning(
+                "Audio decode failed request_id=%s input_bytes=%d elapsed_ms=%d exit_code=%s",
+                request_id,
+                input_bytes,
+                round((time.perf_counter() - started) * 1000),
+                process.returncode,
+            )
             raise ButlerAIUnavailableError("Uploaded audio could not be decoded")
+        logger.info(
+            "Audio decode completed request_id=%s input_bytes=%d output_bytes=%d "
+            "expansion_ratio=%.2f elapsed_ms=%d",
+            request_id,
+            input_bytes,
+            len(stdout),
+            len(stdout) / input_bytes if input_bytes else 0,
+            round((time.perf_counter() - started) * 1000),
+        )
         return stdout
 
     async def plan_day(self, planning_input: DayPlanningInput) -> PlannedDayProposal:

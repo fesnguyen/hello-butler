@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -132,20 +133,29 @@ class ButlerRequestService:
         return status
 
     async def process(self, request_id: uuid.UUID) -> None:
+        started = time.perf_counter()
         async with self._lock:
             if request_id in self._processing:
+                logger.info("Butler request already processing request_id=%s", request_id)
                 return
             self._processing.add(request_id)
         try:
             request = await self._claim(request_id)
             if request is None:
                 return
+            input_bytes = (
+                Path(request.input_audio_path).stat().st_size
+                if request.input_audio_path and Path(request.input_audio_path).is_file()
+                else None
+            )
             logger.info(
-                "Processing Butler request request_id=%s mode=%s source=%s audio_type=%s",
+                "Butler request processing started request_id=%s mode=%s source=%s "
+                "audio_type=%s input_bytes=%s",
                 request.id,
                 request.interaction_mode,
                 request.input_source,
                 request.input_audio_mime_type,
+                input_bytes,
             )
             await self._push.butler_request_state(
                 request.user_id, "butler_request_handling", request.id
@@ -161,6 +171,14 @@ class ButlerRequestService:
                 audio_path=audio_path,
                 audio_mime_type=request.input_audio_mime_type,
             )
+            logger.info(
+                "Butler reasoning completed request_id=%s elapsed_ms=%d "
+                "changed_entities=%d follow_up=%s",
+                request.id,
+                round((time.perf_counter() - started) * 1000),
+                len(result.changed_entities),
+                result.requires_follow_up,
+            )
             response_audio_path, audio_type = await self._response_audio(request.id, result)
             await self._complete(request.id, result, response_audio_path, audio_type)
             try:
@@ -171,10 +189,21 @@ class ButlerRequestService:
             await self._push.butler_request_state(
                 request.user_id, "butler_request_completed", request.id
             )
+            logger.info(
+                "Butler request completed request_id=%s elapsed_ms=%d response_audio=%s",
+                request.id,
+                round((time.perf_counter() - started) * 1000),
+                response_audio_path is not None,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            logger.exception("Butler request %s failed", request_id)
+            logger.exception(
+                "Butler request failed request_id=%s elapsed_ms=%d error_type=%s",
+                request_id,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
             await self._fail(request_id, exc)
         finally:
             async with self._lock:
@@ -200,12 +229,24 @@ class ButlerRequestService:
         self, request_id: uuid.UUID, result: ButlerResult
     ) -> tuple[Path | None, str | None]:
         path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.wav"
+        started = time.perf_counter()
         try:
             audio_type = await self._audio.synthesize(result.response, path)
-            logger.info("Response audio stored request_id=%s type=%s", request_id, audio_type)
+            logger.info(
+                "Response audio stored request_id=%s mime_type=%s bytes=%d elapsed_ms=%d",
+                request_id,
+                audio_type,
+                path.stat().st_size,
+                round((time.perf_counter() - started) * 1000),
+            )
             return path, audio_type
-        except Exception:
-            logger.exception("Response audio generation failed for request %s", request_id)
+        except Exception as exc:
+            logger.exception(
+                "Response audio generation failed request_id=%s elapsed_ms=%d error_type=%s",
+                request_id,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
             return None, None
 
     async def _complete(
@@ -251,9 +292,7 @@ class ButlerRequestService:
                     hours=self._settings.butler_input_audio_failure_retention_hours
                 )
 
-    async def result(
-        self, user_id: uuid.UUID, request_id: uuid.UUID
-    ) -> ButlerRequestResult | None:
+    async def result(self, user_id: uuid.UUID, request_id: uuid.UUID) -> ButlerRequestResult | None:
         async with self._sessions() as session:
             request = await session.scalar(
                 select(ButlerRequestModel).where(

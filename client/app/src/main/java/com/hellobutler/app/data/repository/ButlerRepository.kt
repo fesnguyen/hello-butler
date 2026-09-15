@@ -2,6 +2,8 @@ package com.hellobutler.app.data.repository
 
 import android.content.Context
 import android.media.MediaMetadataRetriever
+import android.os.SystemClock
+import android.util.Log
 import androidx.room.withTransaction
 import com.hellobutler.app.auth.ApiException
 import com.hellobutler.app.auth.AuthRepository
@@ -62,6 +64,7 @@ class ButlerRepository(
             recording.copyTo(durable, overwrite = true)
             recording.delete()
         }
+        Log.i(TAG, "Audio queued request_id=$requestId mode=$mode mime_type=audio/mp4 bytes=${durable.length()}")
         val now = Instant.now().toString()
         database.withTransaction {
             dao.upsertRequest(ButlerRequestEntity(requestId, "audio", mode, null, durable.absolutePath, "sending", now))
@@ -75,10 +78,12 @@ class ButlerRepository(
         val request = dao.request(requestId) ?: return
         if (request.status !in setOf("sending", "failed")) return
         events.flushPending()
+        val started = SystemClock.elapsedRealtime()
         try {
             val accepted = if (request.inputSource == "audio") {
                 val file = request.localAudioPath?.let(::File)?.takeIf(File::isFile)
                     ?: throw ApiException("Voice recording is unavailable")
+                Log.i(TAG, "Audio upload started request_id=$requestId mode=${request.interactionMode} mime_type=audio/mp4 bytes=${file.length()}")
                 authorized { token ->
                     api.audio(
                         token,
@@ -92,12 +97,14 @@ class ButlerRepository(
             }
             dao.updateRequest(requestId, "sent", Instant.now().toString(), null)
             dao.updateDelivery(requestId, "sent")
+            Log.i(TAG, "Request upload accepted request_id=$requestId source=${request.inputSource} elapsed_ms=${SystemClock.elapsedRealtime() - started}")
             ButlerResultWorker.enqueue(context, accepted.requestId)
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
             dao.updateRequest(requestId, "failed", null, error.message)
             dao.updateDelivery(requestId, "failed")
+            Log.e(TAG, "Request upload failed request_id=$requestId source=${request.inputSource} elapsed_ms=${SystemClock.elapsedRealtime() - started} error_type=${error.javaClass.simpleName}", error)
             throw error
         }
     }
@@ -105,6 +112,7 @@ class ButlerRepository(
     suspend fun reconcile(requestId: String): Boolean {
         val request = dao.request(requestId) ?: return true
         val result = authorized { token -> api.result(token, requestId) }
+        Log.i(TAG, "Request state received request_id=$requestId status=${result.status}")
         if (result.status in setOf("accepted", "processing")) {
             dao.updateRequest(requestId, result.status, request.acceptedAt, null)
             dao.updateDelivery(requestId, "sent")
@@ -113,9 +121,11 @@ class ButlerRepository(
         if (result.status == "failed") {
             dao.updateRequest(requestId, "failed", request.acceptedAt, result.failureReason)
             dao.updateDelivery(requestId, "failed")
+            Log.w(TAG, "Request processing failed request_id=$requestId failure_category=${result.failureReason ?: "unknown"}")
             return true
         }
         persistCompleted(request, result)
+        Log.i(TAG, "Request completed request_id=$requestId response_audio=${result.responseAudioUrl != null} audio_mime_type=${result.responseAudioMimeType ?: "none"} audio_duration_ms=${result.responseAudioDurationMs ?: -1}")
         ButlerNotification.showCompleted(context, result)
         request.localAudioPath?.let { File(it).delete() }
         if (result.responseAudioUrl != null) {
@@ -151,15 +161,20 @@ class ButlerRepository(
 
     suspend fun ensureAudio(requestId: String): File? = audioLocks.getOrPut(requestId) { Mutex() }.withLock {
         val message = dao.message(requestId, "butler") ?: return@withLock null
-        message.localAudioPath?.let(::File)?.takeIf(File::isFile)?.let { return@withLock it }
+        message.localAudioPath?.let(::File)?.takeIf(File::isFile)?.let {
+            Log.d(TAG, "Response audio cache hit request_id=$requestId bytes=${it.length()}")
+            return@withLock it
+        }
         if (message.responseAudioUrl == null) return@withLock null
         dao.updateAudio(requestId, "downloading", null)
+        val started = SystemClock.elapsedRealtime()
+        Log.i(TAG, "Response audio download started request_id=$requestId expected_mime_type=${message.responseAudioMimeType ?: "unknown"}")
         try {
             val body = authorized { token -> api.responseAudio(token, requestId) }
             val directory = File(context.filesDir, "butler_audio").apply { mkdirs() }
             val temporary = File(directory, "$requestId.part")
             val target = File(directory, "$requestId.mp3")
-            body.byteStream().use { input -> temporary.outputStream().use { output -> input.copyTo(output) } }
+            val bytes = body.byteStream().use { input -> temporary.outputStream().use { output -> input.copyTo(output) } }
             if (!temporary.renameTo(target)) {
                 temporary.copyTo(target, overwrite = true)
                 temporary.delete()
@@ -172,9 +187,11 @@ class ButlerRepository(
                     ?.let { dao.updateAudioDuration(requestId, it) }
             }
             metadata.release()
+            Log.i(TAG, "Response audio download completed request_id=$requestId mime_type=${body.contentType() ?: "unknown"} bytes=$bytes elapsed_ms=${SystemClock.elapsedRealtime() - started}")
             target
         } catch (error: Exception) {
             dao.updateAudio(requestId, "failed", null)
+            Log.e(TAG, "Response audio download failed request_id=$requestId elapsed_ms=${SystemClock.elapsedRealtime() - started} error_type=${error.javaClass.simpleName}", error)
             throw error
         }
     }
@@ -231,4 +248,6 @@ class ButlerRepository(
         if (!response.isSuccessful) throw ApiException("Butler request failed (${response.code()})", response.code())
         return response.body() ?: throw ApiException("Butler returned an empty response")
     }
+
+    companion object { private const val TAG = "ButlerAudio" }
 }

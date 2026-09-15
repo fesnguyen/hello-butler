@@ -109,6 +109,7 @@ class ButlerAIProvider(Protocol):
         now: str,
         timezone: str,
         context: ButlerContext,
+        request_id: uuid.UUID | None = None,
     ) -> ButlerUnderstanding: ...
 
 

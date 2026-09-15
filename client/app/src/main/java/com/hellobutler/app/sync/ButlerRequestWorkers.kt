@@ -1,6 +1,7 @@
 package com.hellobutler.app.sync
 
 import android.content.Context
+import android.util.Log
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -20,7 +21,11 @@ class ButlerRequestWorker(appContext: Context, params: WorkerParameters) : Corou
         val requestId = inputData.getString(REQUEST_ID) ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
-        return runCatching { container.butlerRepository.upload(requestId); Result.success() }.getOrElse { Result.retry() }
+        Log.i(TAG, "Upload worker started request_id=$requestId attempt=$runAttemptCount")
+        return runCatching { container.butlerRepository.upload(requestId); Result.success() }.getOrElse {
+            Log.w(TAG, "Upload worker retrying request_id=$requestId attempt=$runAttemptCount error_type=${it.javaClass.simpleName}")
+            Result.retry()
+        }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {
@@ -34,7 +39,10 @@ class ButlerResultWorker(appContext: Context, params: WorkerParameters) : Corout
         val requestId = inputData.getString(REQUEST_ID) ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
-        return runCatching { if (container.butlerRepository.reconcile(requestId)) Result.success() else Result.retry() }.getOrElse { Result.retry() }
+        return runCatching { if (container.butlerRepository.reconcile(requestId)) Result.success() else Result.retry() }.getOrElse {
+            Log.w(TAG, "Result worker retrying request_id=$requestId attempt=$runAttemptCount error_type=${it.javaClass.simpleName}")
+            Result.retry()
+        }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {
@@ -48,7 +56,11 @@ class ButlerAudioWorker(appContext: Context, params: WorkerParameters) : Corouti
         val requestId = inputData.getString(REQUEST_ID) ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
-        return runCatching { container.butlerRepository.ensureAudio(requestId); Result.success() }.getOrElse { Result.retry() }
+        Log.i(TAG, "Audio download worker started request_id=$requestId attempt=$runAttemptCount")
+        return runCatching { container.butlerRepository.ensureAudio(requestId); Result.success() }.getOrElse {
+            Log.w(TAG, "Audio download worker retrying request_id=$requestId attempt=$runAttemptCount error_type=${it.javaClass.simpleName}")
+            Result.retry()
+        }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {
@@ -63,3 +75,5 @@ private inline fun <reified T : androidx.work.ListenableWorker> request(requestI
         .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
         .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, 10, TimeUnit.SECONDS)
         .build()
+
+private const val TAG = "ButlerWork"

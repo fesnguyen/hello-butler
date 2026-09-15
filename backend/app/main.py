@@ -52,6 +52,7 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    logging.getLogger("app").setLevel(settings.log_level)
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     app.add_api_route("/health", health, methods=["GET"])
     app.include_router(auth_router)

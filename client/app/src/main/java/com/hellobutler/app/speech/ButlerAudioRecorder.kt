@@ -3,12 +3,15 @@ package com.hellobutler.app.speech
 import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
+import android.os.SystemClock
+import android.util.Log
 import java.io.File
 import java.util.UUID
 
 class ButlerAudioRecorder(private val context: Context) {
     private var recorder: MediaRecorder? = null
     private var output: File? = null
+    private var startedAt = 0L
 
     fun start(): File {
         check(recorder == null) { "Recording is already active" }
@@ -26,7 +29,10 @@ class ButlerAudioRecorder(private val context: Context) {
             active.setOutputFile(file.absolutePath)
             active.prepare()
             active.start()
+            startedAt = SystemClock.elapsedRealtime()
+            Log.i(TAG, "Recording started codec=aac container=m4a bitrate_bps=48000 sample_rate_hz=16000 channels=1")
         } catch (error: Exception) {
+            Log.e(TAG, "Recording start failed error_type=${error.javaClass.simpleName}", error)
             active.release()
             file.delete()
             throw error
@@ -43,11 +49,20 @@ class ButlerAudioRecorder(private val context: Context) {
         output = null
         return try {
             active.stop()
-            file?.takeIf { it.length() > 0L }
-        } catch (_: RuntimeException) {
+            val elapsedMs = SystemClock.elapsedRealtime() - startedAt
+            val bytes = file?.length() ?: 0L
+            val estimatedRawBytes = elapsedMs * 16_000L * 2L / 1_000L
+            Log.i(
+                TAG,
+                "Recording compressed codec=aac bytes=$bytes duration_ms=$elapsedMs estimated_ratio=${ratio(bytes, estimatedRawBytes)}",
+            )
+            file?.takeIf { bytes > 0L }
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Recording stop failed error_type=${error.javaClass.simpleName}", error)
             file?.delete()
             null
         } finally {
+            startedAt = 0L
             active.release()
         }
     }
@@ -57,7 +72,13 @@ class ButlerAudioRecorder(private val context: Context) {
         recorder = null
         runCatching { active?.stop() }
         active?.release()
-        output?.delete()
+        val deleted = output?.delete() ?: false
+        Log.i(TAG, "Recording cancelled temporary_file_deleted=$deleted")
         output = null
+        startedAt = 0L
     }
+
+    private fun ratio(compressed: Long, raw: Long) = if (raw > 0L) "%.3f".format(compressed.toDouble() / raw) else "unknown"
+
+    companion object { private const val TAG = "ButlerAudio" }
 }
