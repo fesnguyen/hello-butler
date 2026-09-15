@@ -123,4 +123,4 @@ async def get_response_audio(
     path = await butler_request_service(settings).audio_path(user.id, request_id)
     if path is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Response audio is unavailable")
-    return FileResponse(path, media_type="audio/mpeg", filename=f"butler-{request_id}.mp3")
+    return FileResponse(path, media_type="audio/wav", filename=f"butler-{request_id}.wav")

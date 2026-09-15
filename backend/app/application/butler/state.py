@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
+from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from app.application.butler.contracts import (
@@ -18,6 +19,8 @@ class ButlerState(TypedDict):
     user_id: uuid.UUID
     interaction_mode: InteractionMode
     message: str
+    audio_path: Path | None
+    audio_mime_type: str | None
     now: datetime
     timezone: str
     today: date
@@ -27,6 +30,7 @@ class ButlerState(TypedDict):
 
 
 class ButlerStateUpdate(TypedDict, total=False):
+    message: str
     context: ButlerContext
     decision: ButlerDecision
     result: ButlerResult

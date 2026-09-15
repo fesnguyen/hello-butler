@@ -1,4 +1,3 @@
-from app.application.butler.audio import OpenAIButlerAudioProvider
 from app.application.butler.requests import ButlerRequestService
 from app.application.butler.service import ButlerService
 from app.application.push import PushService
@@ -34,24 +33,22 @@ def push_service(settings: Settings) -> PushService:
 
 
 def butler_request_service(settings: Settings) -> ButlerRequestService:
+    provider = OpenAIButlerProvider(
+        api_key=settings.openai_api_key,
+        model=settings.openai_model,
+        audio_model=settings.butler_audio_model,
+        audio_voice=settings.butler_audio_voice,
+    )
     butler = ButlerService(
         settings=settings,
         session_factory=AsyncSessionLocal,
-        ai_provider=OpenAIButlerProvider(
-            api_key=settings.openai_api_key,
-            model=settings.openai_model,
-        ),
+        ai_provider=provider,
         changes=daily_plan_changes(settings),
     )
     return ButlerRequestService(
         settings=settings,
         session_factory=AsyncSessionLocal,
         butler=butler,
-        audio=OpenAIButlerAudioProvider(
-            api_key=settings.openai_api_key,
-            transcription_model=settings.butler_transcription_model,
-            tts_model=settings.butler_tts_model,
-            voice=settings.butler_tts_voice,
-        ),
+        audio=provider,
         push=push_service(settings),
     )

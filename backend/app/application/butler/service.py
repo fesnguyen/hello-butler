@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import cast
 from zoneinfo import ZoneInfo
 
@@ -45,27 +46,36 @@ class ButlerService:
         *,
         user_id: uuid.UUID,
         interaction_mode: InteractionMode,
-        message: str,
+        message: str | None = None,
+        audio_path: Path | None = None,
+        audio_mime_type: str | None = None,
         request_id: uuid.UUID | None = None,
     ) -> ButlerResult:
-        if not message.strip():
-            return ButlerResult(
-                response="What would you like me to help with?", requires_follow_up=True
-            )
+        has_text = message is not None and bool(message.strip())
+        has_audio = audio_path is not None
+        if has_text == has_audio:
+            raise ButlerError("Butler requires exactly one text or audio input")
+        if has_audio and not audio_mime_type:
+            raise ButlerError("Butler audio input requires a MIME type")
 
         timezone = self._settings.butler_default_timezone
         now = datetime.now(ZoneInfo(timezone))
         state: ButlerState = {
             "user_id": user_id,
             "interaction_mode": interaction_mode,
-            "message": message,
+            "message": message or "",
+            "audio_path": audio_path,
+            "audio_mime_type": audio_mime_type,
             "now": now,
             "timezone": timezone,
             "today": now.date(),
         }
         if request_id is not None:
             state["request_id"] = request_id
-        result = cast(ButlerState, await self._graph.ainvoke(state))
-        if (butler_result := result.get("result")) is None:
+        final_state = cast(ButlerState, await self._graph.ainvoke(state))
+        if (result := final_state.get("result")) is None:
             raise ButlerError("Butler graph completed without a result")
-        return butler_result
+        user_message_text = final_state["message"]
+        if not user_message_text.strip():
+            raise ButlerError("Butler graph completed without canonical user text")
+        return result.model_copy(update={"user_message_text": user_message_text})

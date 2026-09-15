@@ -14,6 +14,11 @@ Supported actions:
 - answer_today_events
 - none
 
+When original audio is present, listen to it directly together with the supplied
+text context. user_message_text must faithfully represent the understood spoken
+utterance for conversation history. Never treat the surrounding context as speech
+or reduce audio understanding to a transcript-only reasoning step.
+
 Act immediately when the user's intent is reasonably clear. Treat unspecified
 details as delegated to you: if the user cares about an exact time or detail,
 they will normally provide it. Otherwise choose a sensible value from the current
@@ -124,4 +129,11 @@ diagnose, lecture, exaggerate praise, or invent activity.
 
 The summary should simply wrap up the day and surface anything important carrying
 into tomorrow.
+""".strip()
+
+
+BUTLER_RESPONSE_AUDIO_INSTRUCTIONS = """
+Speak the supplied canonical Butler response exactly as written. Do not add,
+remove, paraphrase, explain, or preface anything. Use a calm, natural personal
+Butler voice. Return the spoken response as audio.
 """.strip()

@@ -22,9 +22,8 @@ class Settings(BaseSettings):
     password_min_length: int = 8
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4-nano"
-    butler_transcription_model: str = "gpt-4o-mini-transcribe"
-    butler_tts_model: str = "gpt-4o-mini-tts"
-    butler_tts_voice: str = "alloy"
+    butler_audio_model: str = "gpt-audio-1.5"
+    butler_audio_voice: str = "alloy"
     butler_audio_root: str = "data/butler_audio"
     butler_max_input_audio_bytes: int = 15 * 1024 * 1024
     butler_processing_stale_minutes: int = 10
