@@ -6,6 +6,8 @@ import binascii
 import json
 import logging
 import re
+from collections import Counter
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
@@ -176,11 +178,16 @@ class OpenAIButlerProvider:
             if output is None:
                 raise ButlerAIUnavailableError("Audio model returned no response audio")
             if not self._same_message(output.transcript, text):
-                logger.warning("Audio model transcript did not match canonical response")
-                raise ButlerAIUnavailableError("Response audio did not match canonical text")
+                logger.warning(
+                    "Audio model transcript differs from canonical response similarity=%.2f; "
+                    "accepting generated audio",
+                    self._message_similarity(output.transcript, text),
+                )
             data = base64.b64decode(output.data, validate=True)
             if not data:
                 raise ButlerAIUnavailableError("Audio model returned empty response audio")
+            if not self._is_wav(data):
+                raise ButlerAIUnavailableError("Audio model returned invalid WAV audio")
             path.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(path.write_bytes, data)
         except (APIError, IndexError, OSError, binascii.Error) as exc:
@@ -190,9 +197,24 @@ class OpenAIButlerProvider:
 
     @staticmethod
     def _same_message(spoken: str, canonical: str) -> bool:
-        spoken_words = re.sub(r"[^\w]+", " ", spoken.casefold()).strip()
-        canonical_words = re.sub(r"[^\w]+", " ", canonical.casefold()).strip()
-        return spoken_words == canonical_words
+        return OpenAIButlerProvider._message_similarity(spoken, canonical) >= 0.72
+
+    @staticmethod
+    def _message_similarity(spoken: str, canonical: str) -> float:
+        spoken_words = re.findall(r"\w+", spoken.casefold())
+        canonical_words = re.findall(r"\w+", canonical.casefold())
+        if not spoken_words or not canonical_words:
+            return 0.0
+        spoken_text = " ".join(spoken_words)
+        canonical_text = " ".join(canonical_words)
+        sequence_score = SequenceMatcher(None, spoken_text, canonical_text).ratio()
+        overlap = sum((Counter(spoken_words) & Counter(canonical_words)).values())
+        token_score = (2 * overlap) / (len(spoken_words) + len(canonical_words))
+        return max(sequence_score, token_score)
+
+    @staticmethod
+    def _is_wav(data: bytes) -> bool:
+        return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
     async def _wav_audio(self, path: Path) -> bytes:
         try:

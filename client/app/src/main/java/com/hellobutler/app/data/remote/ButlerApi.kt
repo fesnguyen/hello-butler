@@ -44,6 +44,7 @@ data class ButlerResultDto(
     @SerialName("requires_follow_up") val requiresFollowUp: Boolean = false,
     @SerialName("completed_at") val completedAt: String? = null,
     @SerialName("failure_reason") val failureReason: String? = null,
+    val warnings: List<String> = emptyList(),
 )
 
 interface ButlerApi {

@@ -41,6 +41,7 @@ class ButlerRequestResult(BaseModel):
     created_at: datetime
     completed_at: datetime | None = None
     failure_reason: str | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 class ButlerRequestConflict(RuntimeError):
@@ -282,6 +283,13 @@ class ButlerRequestService:
             created_at=request.created_at,
             completed_at=request.completed_at,
             failure_reason=request.failure_reason,
+            warnings=(
+                ["Response audio is unavailable; the text response is still complete."]
+                if request.status == "completed"
+                and request.response_text
+                and not request.response_audio_path
+                else []
+            ),
         )
 
     async def recent_results(
