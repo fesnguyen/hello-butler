@@ -16,6 +16,10 @@ import com.hellobutler.app.sync.ButlerNotification
 import com.hellobutler.app.sync.ButlerRequestWorker
 import com.hellobutler.app.sync.ButlerResultWorker
 import java.io.File
+import android.util.Log
+import java.io.DataInputStream
+import java.io.EOFException
+import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -41,6 +45,10 @@ class ButlerRepository(
     private val audioLocks = ConcurrentHashMap<String, Mutex>()
 
     fun observeMessages(): Flow<List<ConversationMessageEntity>> = dao.observeMessages()
+
+    companion object {
+        private const val TAG = "ButlerRepository"
+    }
 
     suspend fun queueText(message: String): String {
         require(message.isNotBlank())
@@ -116,6 +124,7 @@ class ButlerRepository(
             return true
         }
         persistCompleted(request, result)
+        result.warnings.forEach { warning -> Log.w(TAG, "Butler request warning request_id=$requestId warning=$warning") }
         ButlerNotification.showCompleted(context, result)
         request.localAudioPath?.let { File(it).delete() }
         if (result.responseAudioUrl != null) {
@@ -151,18 +160,34 @@ class ButlerRepository(
 
     suspend fun ensureAudio(requestId: String): File? = audioLocks.getOrPut(requestId) { Mutex() }.withLock {
         val message = dao.message(requestId, "butler") ?: return@withLock null
-        message.localAudioPath?.let(::File)?.takeIf(File::isFile)?.let { return@withLock it }
         if (message.responseAudioUrl == null) return@withLock null
+        val expectedExtension = responseAudioExtension(message.responseAudioMimeType)
+        message.localAudioPath?.let(::File)?.takeIf(File::isFile)?.let { cached ->
+            if (cached.extension.equals(expectedExtension, ignoreCase = true) && cached.hasExpectedSignature(expectedExtension)) {
+                return@withLock cached
+            }
+            cached.delete()
+            dao.updateAudio(requestId, "pending", null)
+        }
         dao.updateAudio(requestId, "downloading", null)
+        var temporary: File? = null
         try {
             val body = authorized { token -> api.responseAudio(token, requestId) }
+            val responseMimeType = body.contentType()?.let { "${it.type}/${it.subtype}" }
+                ?: message.responseAudioMimeType
+            val extension = responseAudioExtension(responseMimeType)
             val directory = File(context.filesDir, "butler_audio").apply { mkdirs() }
-            val temporary = File(directory, "$requestId.part")
-            val target = File(directory, "$requestId.mp3")
-            body.byteStream().use { input -> temporary.outputStream().use { output -> input.copyTo(output) } }
-            if (!temporary.renameTo(target)) {
-                temporary.copyTo(target, overwrite = true)
-                temporary.delete()
+            directory.listFiles { file -> file.name.startsWith("$requestId.") }?.forEach(File::delete)
+            val downloaded = File(directory, "$requestId.$extension.part")
+            temporary = downloaded
+            val target = File(directory, "$requestId.$extension")
+            body.byteStream().use { input -> downloaded.outputStream().use { output -> input.copyTo(output) } }
+            if (!downloaded.hasExpectedSignature(extension)) {
+                throw IOException("Butler returned invalid $responseMimeType audio")
+            }
+            if (!downloaded.renameTo(target)) {
+                downloaded.copyTo(target, overwrite = true)
+                downloaded.delete()
             }
             dao.updateAudio(requestId, "cached", target.absolutePath)
             val metadata = MediaMetadataRetriever()
@@ -174,8 +199,38 @@ class ButlerRepository(
             metadata.release()
             target
         } catch (error: Exception) {
+            temporary?.delete()
             dao.updateAudio(requestId, "failed", null)
             throw error
+        }
+    }
+
+    private fun responseAudioExtension(mimeType: String?): String = when (mimeType?.substringBefore(';')?.lowercase()) {
+        "audio/wav", "audio/x-wav", "audio/wave" -> "wav"
+        "audio/mpeg" -> "mp3"
+        "audio/mp4", "audio/x-m4a" -> "m4a"
+        "audio/ogg" -> "ogg"
+        else -> throw IOException("Unsupported Butler audio type: ${mimeType ?: "unknown"}")
+    }
+
+    private fun File.hasExpectedSignature(extension: String): Boolean {
+        if (length() < 12) return false
+
+        val header = ByteArray(12)
+        try {
+            DataInputStream(inputStream()).use { it.readFully(header) }
+        } catch (_: EOFException) {
+            return false
+        }
+
+        return when (extension) {
+            "wav" -> header.copyOfRange(0, 4).contentEquals("RIFF".encodeToByteArray()) &&
+                    header.copyOfRange(8, 12).contentEquals("WAVE".encodeToByteArray())
+            "mp3" -> header.copyOfRange(0, 3).contentEquals("ID3".encodeToByteArray()) ||
+                    (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xE0) == 0xE0
+            "m4a" -> header.copyOfRange(4, 8).contentEquals("ftyp".encodeToByteArray())
+            "ogg" -> header.copyOfRange(0, 4).contentEquals("OggS".encodeToByteArray())
+            else -> false
         }
     }
 
