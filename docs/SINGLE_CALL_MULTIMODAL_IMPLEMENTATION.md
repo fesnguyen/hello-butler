@@ -73,7 +73,7 @@ the canonical response transcript before local WAV normalization.
 
 ## Verification
 
-- Backend unit suite: 21 tests passed.
+- Backend unit suite: 22 tests passed.
 - Ruff: passed for application and tests.
 - Tests cover the one-call invariant, original audio/context input, text input,
   event create/update/skip, User Context update, query/clarification no-op,
