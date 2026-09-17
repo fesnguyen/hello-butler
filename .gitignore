@@ -231,6 +231,7 @@ local.properties
 
 # Gradle local/cache files
 .gradle/
+**/gradle/
 
 # Build outputs
 build/
