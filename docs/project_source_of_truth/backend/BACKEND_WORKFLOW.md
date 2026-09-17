@@ -1,6 +1,6 @@
 # Backend Workflow
 
-**Version:** 1.6  
+**Version:** 1.7  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `backend/BACKEND_ARCHITECTURE.md`
 
@@ -8,7 +8,7 @@
 
 # Purpose
 
-This document defines backend execution flows for Butler requests, planning, persistence, multimodal AI processing, and synchronization.
+This document defines backend execution flows for Butler requests, planning, persistence, single-call multimodal AI processing, and synchronization.
 
 ---
 
@@ -31,12 +31,12 @@ continue asynchronously
         ↓
 load original recorded audio
         ↓
-load textual Butler context
+load complete relevant Butler context
         ↓
-multimodal AI processing with audio + text context
+ONE multimodal AI API call
 ```
 
-The original audio must remain part of the AI reasoning input. Do not reduce the request to a standalone STT transcript before Butler understands the user's meaning.
+The original audio remains part of the model input. Do not reduce it to standalone STT before Butler reasoning.
 
 ## Text — text ingress
 
@@ -53,85 +53,122 @@ return 202 + request_id
         ↓
 continue asynchronously
         ↓
-load typed text + textual Butler context
+load typed text + complete relevant Butler context
         ↓
-shared Butler reasoning/application behavior
+ONE multimodal/provider API call
 ```
 
-Text does not use audio capture or STT.
+Text does not use microphone capture or STT.
 
 ---
 
 # Context Loading
 
-Before AI reasoning, load bounded relevant textual context:
+Before the single AI call, load enough authoritative context for the model to understand the request, propose any required state changes, and produce the final Butler response without a second AI round trip:
 
 - Butler instructions
 - interaction mode
 - newest relevant conversation messages
 - User Context / preferences
-- target/current Daily Plan
-- relevant Daily Events
+- current/target Daily Plan
+- relevant Daily Events, including identifiers and current values needed for mutation
 - current date/time/timezone
+- supported mutation/result contract
 
-For Order/Talk, this text context is sent together with the original recorded audio.
-
-Recent conversation resolves references and continues the immediate exchange. Older conversation must not override a newer explicit request.
+Context should be bounded and relevant. Newer explicit user intent overrides unrelated or superseded history.
 
 ---
 
-# Multimodal Order / Talk Workflow
+# Single-Call Multimodal Workflow
 
 ```text
-original audio
+original audio OR typed text
 +
-text context
+complete relevant Butler context
         ↓
-audio-capable multimodal Butler model
-        ↓
-understand speech + meaning together
-        ↓
-produce/resolve
-   ├── user transcript / understood utterance text
-   ├── semantic intent
-   ├── structured action proposal when needed
-   ├── response text
-   └── response audio
-        ↓
-validate/apply deterministic domain actions when needed
-        ↓
-finalize canonical result
+┌──────────────────────────────────────────┐
+│       ONE multimodal provider call       │
+│                                          │
+│ understand input                         │
+│ resolve intent                           │
+│ decide proposed state changes            │
+│ compose final Butler response text       │
+│ generate matching response audio         │
+└──────────────────┬───────────────────────┘
+                   ↓
+AI result
+├── user_message_text
+├── proposed_updates
+├── response_text
+└── response_audio matching response_text
+                   ↓
+validate proposed updates
+                   ↓
+apply supported mutations
+                   ↓
+normalize/store returned audio if needed
+                   ↓
+persist one canonical result
 ```
 
 The normal path is **not**:
 
 ```text
-audio → STT → transcript-only reasoning → separate TTS
+audio → STT → reasoning → domain execution → second AI/TTS call
 ```
 
-A transcript is required for conversation history, but it is an output/artifact of multimodal understanding rather than the sole semantic input.
+and is also not:
 
-If the provider/tool loop needs multiple internal turns, preserve the original audio or equivalent multimodal context until the user's meaning is resolved.
+```text
+multimodal understanding → domain execution → second AI audio-generation call
+```
+
+There must normally be one OpenAI/multimodal provider API request for one Butler interaction.
 
 ---
 
-# Text Workflow
+# AI Output
+
+The provider result must carry all information required after the call:
 
 ```text
-typed text
-+
-text context
-      ↓
-Butler reasoning
-      ↓
-command / query / clarify
-      ↓
-domain action when needed
-      ↓
-canonical response text + audio
+user_message_text
+proposed_updates
+response_text
+response_audio
 ```
 
-Text remains an input method, not a semantic intent. It normally uses the conversational/Talk expectation while semantic intent is inferred from the message itself.
+`proposed_updates` may contain supported changes such as:
+
+- Daily Event add/create
+- Daily Event update/move
+- Daily Event remove
+- Daily Event skip
+- other supported Daily Event mutations
+- User Context / preference changes
+- no changes for a query or conversational response
+
+Response audio must speak the same canonical content as `response_text`. It must not independently elaborate, contradict, or replace the returned text.
+
+---
+
+# Validation and Mutation
+
+AI proposes changes; application/domain code validates and applies them.
+
+```text
+proposed update
+      ↓
+validate target + values + supported operation
+      ↓
+valid?
+  ├── yes → apply/persist idempotently
+  └── no  → fail/reconcile through deterministic software behavior
+```
+
+The backend does not make a second AI call merely to rewrite the response after mutation. The design intentionally relies on complete pre-call context and the model's single result.
+
+The model never writes directly to PostgreSQL.
 
 ---
 
@@ -139,59 +176,27 @@ Text remains an input method, not a semantic intent. It normally uses the conver
 
 ## Command
 
-```text
-understand requested change
-      ↓
-resolve target
-      ↓
-enough information?
-  ├── no → clarify
-  └── yes
-        ↓
-structured mutation proposal
-        ↓
-validate deterministically
-        ↓
-apply / persist
-        ↓
-confirmation response
-```
+Load the relevant target state before the AI call. The model returns the understood utterance, proposed mutation, response text, and matching audio together. The backend validates and applies the mutation.
 
-## Query
+## Query / conversation
 
-Understand the information need, load relevant state, answer, and persist the conversation.
+Load relevant state before the AI call. The model returns `proposed_updates = none` together with the response text/audio.
 
 ## Clarify
 
-Clarification should be concise and natural. Ask only when important information cannot reasonably be inferred from the newest input, relevant recent conversation, current time/timezone, events, or User Context.
+When intent genuinely cannot be resolved, the same single call returns no mutation plus a concise natural clarification in both text and matching audio.
 
 ---
 
 # Request State and Client Presentation
 
-Server lifecycle:
+Server lifecycle remains:
 
 ```text
 accepted → processing → completed | failed
 ```
 
-For audio requests, the client initially shows:
-
-```text
-Sending...
-   ↓
-accepted / handling signal
-   ↓
-Sent • time
-   ↓
-completion
-   ↓
-replace placeholder with multimodal transcript / understood utterance text
-```
-
-For text requests, the exact submitted text remains visible while only delivery state changes.
-
-The backend does not persist Sending/Sent as conversation text.
+For audio requests, the client initially shows Sending/Sent state and replaces the temporary user content with `user_message_text` on completion. For text requests, the exact submitted text remains visible.
 
 ---
 
@@ -207,25 +212,27 @@ ConversationHistory
 └── role=butler → canonical response text
 ```
 
-The request result also references Butler response audio and changed domain entities where relevant. Do not create separate records for notification versus in-app delivery.
+The request result references response audio and changed entities where relevant.
 
 ---
 
-# Response Text + Audio Completion
-
-The completed AI/application result includes response text and response audio.
+# Response Audio Completion
 
 ```text
-canonical response text + audio
+response audio from the same AI call
       ↓
-persist text/result metadata
+normalize/finalize media container if required
       ↓
-save response audio temporarily on backend
+store temporarily on backend
+      ↓
+persist canonical text/result metadata
       ↓
 commit completed request
       ↓
 FCM butler_request_completed(request_id)
 ```
+
+FFmpeg/container normalization is allowed after the AI call because it only makes returned media reliably playable; it must not regenerate or alter the spoken message.
 
 The response audio is not sent through FCM.
 
@@ -248,23 +255,13 @@ client immediately GETs response audio
 Room / local audio cache
 ```
 
-Fetch is idempotent and safe to retry from foreground or WorkManager.
-
-The backend keeps response audio long enough for normal download/recovery, then retention cleanup removes it.
+Fetch remains idempotent and safe to retry from foreground or WorkManager. Backend response audio remains retention-limited.
 
 ---
 
 # Order / Talk Semantics
 
-Order prioritizes unattended execution; the user may leave after upload. Talk prioritizes conversational response but still uses asynchronous transport. Neither requires a realtime media/WebRTC session.
-
-Realtime streaming is not required for the product behavior; recorded audio is uploaded after release and processed asynchronously.
-
----
-
-# Morning Brief / Good Night Summary
-
-These remain proactive-speech exceptions. Prepared canonical content becomes due, the client automatically starts Speak Aloud, and the user can Stop immediately. Ordinary Butler messages remain silent unless the user selects a playback action.
+Order prioritizes unattended execution; Talk prioritizes conversational response. Both remain recorded asynchronous interactions rather than realtime media/WebRTC sessions.
 
 ---
 
@@ -278,15 +275,16 @@ Direct visible event edits bypass AI and remain local-first: Room updates immedi
 
 - request creation must tolerate retries
 - domain mutations must be idempotent
+- AI-proposed mutations must be validated before persistence
 - result fetch must be retryable
 - FCM is a hint, never the only canonical copy
 - background work may be delayed or repeated
 - push/audio-storage failure must not corrupt domain state
 - AI never directly owns database mutation
 - conversation text is durable; server audio is retention-limited
-- input transport must not duplicate Butler product logic
-- Order/Talk original audio must remain available through the semantic reasoning boundary
-- transcript quality must not be allowed to become the sole determinant of user meaning
+- Order/Talk original audio must reach the semantic reasoning boundary
+- normal Butler processing uses one multimodal provider API call per interaction
+- response text and response audio from that call represent the same Butler message
 
 ---
 
@@ -295,13 +293,13 @@ Direct visible event edits bypass AI and remain local-first: Room updates immedi
 ```text
 What input arrived?
       ↓
-Load the original input + relevant Butler context
+Load enough authoritative context before AI
       ↓
-Understand meaning using the richest available modality
+ONE multimodal call
       ↓
-What state should change?
+Transcript + proposed changes + response text + matching audio
       ↓
-What should Butler say?
+Validate/apply changes
       ↓
-Return one canonical text + audio result
+Persist and deliver one canonical result
 ```
