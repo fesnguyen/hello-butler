@@ -12,13 +12,13 @@ from app.application.butler.actions import DailyEventActions, UserContextActions
 from app.application.butler.context import ButlerContextLoader
 from app.application.butler.contracts import (
     ButlerAIProvider,
+    ButlerCompletedInteraction,
     ButlerError,
-    ButlerResult,
     InteractionMode,
 )
 from app.application.butler.graph import ButlerGraph
 from app.application.butler.history import ButlerHistoryWriter
-from app.application.butler.state import ButlerState
+from app.application.butler.state import ButlerState, interaction_from
 from app.application.push.changes import DailyPlanChanges
 from app.core.config import Settings
 
@@ -50,7 +50,7 @@ class ButlerService:
         audio_path: Path | None = None,
         audio_mime_type: str | None = None,
         request_id: uuid.UUID | None = None,
-    ) -> ButlerResult:
+    ) -> ButlerCompletedInteraction:
         has_text = message is not None and bool(message.strip())
         has_audio = audio_path is not None
         if has_text == has_audio:
@@ -78,4 +78,9 @@ class ButlerService:
         user_message_text = final_state["message"]
         if not user_message_text.strip():
             raise ButlerError("Butler graph completed without canonical user text")
-        return result.model_copy(update={"user_message_text": user_message_text})
+        interaction = interaction_from(final_state)
+        return ButlerCompletedInteraction(
+            result=result.model_copy(update={"user_message_text": user_message_text}),
+            response_audio=interaction.response_audio,
+            response_audio_mime_type=interaction.response_audio_mime_type,
+        )

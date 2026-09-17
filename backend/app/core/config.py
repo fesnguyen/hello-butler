@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     butler_input_audio_failure_retention_hours: int = 24
     butler_default_timezone: str = "UTC"
     butler_history_limit: int = 6
+    butler_history_window_minutes: int = Field(default=30, ge=1, le=1440)
     butler_user_context_limit: int = 20
     butler_event_limit: int = 30
     nightly_planning_time: time = time(23, 0)

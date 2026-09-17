@@ -5,7 +5,10 @@ import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from app.application.butler.contracts import ButlerDecision, ButlerUnderstanding
+from app.application.butler.contracts import (
+    ButlerAIInteraction,
+    ButlerInteractionProposal,
+)
 from app.application.butler.requests import ButlerRequestService
 from app.application.butler.service import ButlerService
 from app.application.push.changes import DailyPlanChanges
@@ -27,13 +30,6 @@ from sqlalchemy.ext.compiler import compiles
 @compiles(JSONB, "sqlite")
 def sqlite_jsonb(type_, compiler, **kwargs):
     return "JSON"
-
-
-class FakeAudio:
-    async def synthesize(self, text: str, path: Path) -> str:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"audio")
-        return "audio/mpeg"
 
 
 class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
@@ -71,13 +67,18 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         push = PushService(self.sessions, push_provider)
         await push.register(self.user_id, "phone-token")
         ai = AsyncMock()
-        ai.understand.return_value = ButlerUnderstanding(
-            user_message_text="  Add exercise.  ",
-            decision=ButlerDecision(
-                intent="command",
-                requested_action="create_daily_event",
-                title="Exercise",
+        ai.interact.return_value = ButlerAIInteraction(
+            proposal=ButlerInteractionProposal(
+                user_message_text="  Add exercise.  ",
+                response_text="Done. I added Exercise today.",
+                decision={
+                    "intent": "command",
+                    "requested_action": "create_daily_event",
+                    "title": "Exercise",
+                },
             ),
+            response_audio=b"RIFF0000WAVEaudio",
+            response_audio_mime_type="audio/wav",
         )
         butler = ButlerService(
             settings=settings,
@@ -89,7 +90,6 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
             settings=settings,
             session_factory=self.sessions,
             butler=butler,
-            audio=FakeAudio(),
             push=push,
         )
         request_id = uuid.uuid4()
@@ -112,6 +112,9 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
             messages = list((await session.scalars(select(ConversationMessageModel))).all())
         self.assertEqual(request.status, "completed")
         self.assertEqual(request.user_message_text, exact)
+        self.assertEqual(request.response_text, "Done. I added Exercise today.")
+        self.assertEqual(request.response_audio_mime_type, "audio/wav")
+        self.assertTrue(Path(request.response_audio_path).is_file())
         self.assertEqual(event_count, 1)
         self.assertEqual(len(messages), 2)
         self.assertEqual({item.role for item in messages}, {"user", "butler"})

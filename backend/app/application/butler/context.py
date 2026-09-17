@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -35,7 +35,7 @@ class ButlerContextLoader:
             history = await self._latest_messages(session, user_id)
             user_context = await self._active_context(session, user_id, today)
             daily_plan = await self._daily_plan(session, user_id, today)
-            events = await self._events_for_day(session, user_id, today)
+            events = await self._relevant_events(session, user_id, today)
 
         now = datetime.now(UTC)
         return ButlerContext(
@@ -43,7 +43,7 @@ class ButlerContextLoader:
                 ContextMessage(
                     role=row.role,
                     content=row.content,
-                    seconds_ago=max(0, int((now - row.created_at).total_seconds())),
+                    seconds_ago=self._seconds_ago(now, row.created_at),
                 )
                 for row in history
             ],
@@ -67,34 +67,29 @@ class ButlerContextLoader:
             relevant_events=[self._event(row) for row in events],
         )
 
+    @staticmethod
+    def _seconds_ago(now: datetime, created_at: datetime) -> int:
+        timestamp = created_at if created_at.tzinfo else created_at.replace(tzinfo=UTC)
+        return max(0, int((now - timestamp).total_seconds()))
+
     async def _latest_messages(
         self,
         session: AsyncSession,
         user_id: uuid.UUID,
     ) -> Sequence[ConversationMessageModel]:
-        """Load the latest conversation messages for the user, limited by the history setting."""
-        user_message_cutoff = (
-            select(ConversationMessageModel.created_at)
-            .where(
-                ConversationMessageModel.user_id == user_id,
-                ConversationMessageModel.role == "user",
-            )
-            .order_by(ConversationMessageModel.created_at.desc())
-            .offset(self._settings.butler_history_limit - 1)
-            .limit(1)
-            .scalar_subquery()
+        cutoff = datetime.now(UTC) - timedelta(
+            minutes=self._settings.butler_history_window_minutes
         )
-
         result = await session.execute(
             select(ConversationMessageModel)
             .where(
                 ConversationMessageModel.user_id == user_id,
-                ConversationMessageModel.created_at >= user_message_cutoff,
+                ConversationMessageModel.created_at >= cutoff,
             )
-            .order_by(ConversationMessageModel.created_at.asc())
+            .order_by(ConversationMessageModel.created_at.desc())
+            .limit(self._settings.butler_history_limit * 2)
         )
-
-        return result.scalars().all()
+        return list(reversed(result.scalars().all()))
 
     async def _active_context(
         self, session: AsyncSession, user_id: uuid.UUID, today: date
@@ -130,14 +125,15 @@ class ButlerContextLoader:
         )
         return result.scalar_one_or_none()
 
-    async def _events_for_day(
+    async def _relevant_events(
         self, session: AsyncSession, user_id: uuid.UUID, event_date: date
     ) -> Sequence[DailyEventModel]:
         result = await session.execute(
             select(DailyEventModel)
             .where(
                 DailyEventModel.user_id == user_id,
-                DailyEventModel.event_date == event_date,
+                DailyEventModel.event_date >= event_date,
+                DailyEventModel.event_date <= event_date + timedelta(days=7),
                 DailyEventModel.deleted_at.is_(None),
             )
             .order_by(

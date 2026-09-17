@@ -49,6 +49,5 @@ def butler_request_service(settings: Settings) -> ButlerRequestService:
         settings=settings,
         session_factory=AsyncSessionLocal,
         butler=butler,
-        audio=provider,
         push=push_service(settings),
     )

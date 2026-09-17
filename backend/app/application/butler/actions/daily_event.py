@@ -1,14 +1,23 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, time
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.butler.contracts import ButlerResult, ChangedEntity
+from app.application.butler.contracts import (
+    ButlerMutationRejectedError,
+    ButlerResult,
+    ChangedEntity,
+)
 from app.application.butler.idempotency import prior_action_result, save_action_result
-from app.application.butler.state import ButlerState, ButlerStateUpdate, decision_from
+from app.application.butler.state import (
+    ButlerState,
+    ButlerStateUpdate,
+    canonical_response_from,
+    decision_from,
+)
 from app.application.push.changes import DailyPlanChanges
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
 
@@ -20,7 +29,7 @@ class DailyEventActions:
     async def create(self, state: ButlerState) -> ButlerStateUpdate:
         decision = decision_from(state)
         if not decision.title:
-            return self._follow_up("What should I call this event?")
+            raise ButlerMutationRejectedError("Event creation requires a title")
 
         event_date = decision.event_date or state["today"]
         async with self._changes.transaction(state["user_id"]) as session:
@@ -48,9 +57,8 @@ class DailyEventActions:
             )
             session.add(event)
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
-            when = self._format_time(event_date, decision.start_time)
             result = ButlerResult(
-                response=f"Done. I added {decision.title} {when}.",
+                response=canonical_response_from(state),
                 changed_entities=[changed],
             )
             save_action_result(session, state, result)
@@ -64,7 +72,7 @@ class DailyEventActions:
                 return {"result": prior}
             event = await self._resolve_event(session, state)
             if event is None:
-                return self._follow_up("Which event should I update?")
+                raise ButlerMutationRejectedError("Event update target could not be resolved")
 
             previous_date = event.event_date
             changed_fields = False
@@ -98,14 +106,14 @@ class DailyEventActions:
                 event.daily_plan_id = plan.id
                 changed_fields = True
             if not changed_fields:
-                return self._follow_up("What should I change about it?")
+                raise ButlerMutationRejectedError("Event update contains no changes")
 
             event.origin = "user"  # An explicit user change becomes protected planning input.
             event.planner_key = None
             event.version += 1
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
             result = ButlerResult(
-                response=f"Done. I updated {event.title}.",
+                response=canonical_response_from(state),
                 changed_entities=[
                     changed.model_copy(
                         update={"plan_dates": sorted({previous_date, event.event_date})}
@@ -122,16 +130,35 @@ class DailyEventActions:
                 return {"result": prior}
             event = await self._resolve_event(session, state)
             if event is None:
-                return self._follow_up("Which event should I skip?")
+                raise ButlerMutationRejectedError("Event skip target could not be resolved")
             if event.status == "skipped":
-                return {"result": ButlerResult(response=f"{event.title} is already skipped.")}
+                return {"result": ButlerResult(response=canonical_response_from(state))}
             event.status = "skipped"
             event.origin = "user"
             event.planner_key = None
             event.version += 1
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
             result = ButlerResult(
-                response=f"Done. I skipped {event.title}.", changed_entities=[changed]
+                response=canonical_response_from(state), changed_entities=[changed]
+            )
+            save_action_result(session, state, result)
+
+        return {"result": result}
+
+    async def delete(self, state: ButlerState) -> ButlerStateUpdate:
+        async with self._changes.transaction(state["user_id"]) as session:
+            if prior := await prior_action_result(session, state):
+                return {"result": prior}
+            event = await self._resolve_event(session, state)
+            if event is None:
+                raise ButlerMutationRejectedError("Event removal target could not be resolved")
+            event.deleted_at = datetime.now(UTC)
+            event.origin = "user"
+            event.planner_key = None
+            event.version += 1
+            changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
+            result = ButlerResult(
+                response=canonical_response_from(state), changed_entities=[changed]
             )
             save_action_result(session, state, result)
 
@@ -191,13 +218,3 @@ class DailyEventActions:
         )
         matches = list(result.scalars())
         return matches[0] if len(matches) == 1 else None
-
-    @staticmethod
-    def _follow_up(question: str) -> ButlerStateUpdate:
-        return {"result": ButlerResult(response=question, requires_follow_up=True)}
-
-    @staticmethod
-    def _format_time(event_date: date, start_time: time | None) -> str:
-        if start_time is None:
-            return f"on {event_date.isoformat()}"
-        return f"on {event_date.isoformat()} at {start_time.strftime('%H:%M')}"

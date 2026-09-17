@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
 from typing import Annotated, Literal, Protocol
@@ -13,7 +14,9 @@ RequestedAction = Literal[
     "create_daily_event",
     "update_daily_event",
     "skip_daily_event",
+    "delete_daily_event",
     "remember_user_context",
+    "update_user_context",
     "answer_today_events",
     "none",
 ]
@@ -63,6 +66,7 @@ class ButlerDecision(BaseModel):
     requested_action: RequestedAction = "none"
     target_event_id: uuid.UUID | None = None
     target_event_title: str | None = None
+    target_context_id: uuid.UUID | None = None
     title: str | None = None
     description: str | None = None
     event_date: date | None = None
@@ -80,9 +84,17 @@ class ButlerDecision(BaseModel):
     answer: str | None = None
 
 
-class ButlerUnderstanding(BaseModel):
+class ButlerInteractionProposal(BaseModel):
     user_message_text: str = Field(min_length=1)
     decision: ButlerDecision
+    response_text: str = Field(min_length=1)
+
+
+@dataclass(frozen=True, slots=True)
+class ButlerAIInteraction:
+    proposal: ButlerInteractionProposal
+    response_audio: bytes
+    response_audio_mime_type: str
 
 
 class ChangedEntity(BaseModel):
@@ -98,8 +110,15 @@ class ButlerResult(BaseModel):
     requires_follow_up: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class ButlerCompletedInteraction:
+    result: ButlerResult
+    response_audio: bytes
+    response_audio_mime_type: str
+
+
 class ButlerAIProvider(Protocol):
-    async def understand(
+    async def interact(
         self,
         *,
         message: str | None,
@@ -109,7 +128,7 @@ class ButlerAIProvider(Protocol):
         now: str,
         timezone: str,
         context: ButlerContext,
-    ) -> ButlerUnderstanding: ...
+    ) -> ButlerAIInteraction: ...
 
 
 class ButlerError(RuntimeError):
@@ -117,4 +136,8 @@ class ButlerError(RuntimeError):
 
 
 class ButlerAIUnavailableError(ButlerError):
+    pass
+
+
+class ButlerMutationRejectedError(ButlerError):
     pass

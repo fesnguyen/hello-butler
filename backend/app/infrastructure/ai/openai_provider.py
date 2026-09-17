@@ -6,20 +6,21 @@ import binascii
 import json
 import logging
 import re
+import tempfile
+import time
 from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
-import tempfile
 from typing import Any, TypeVar, cast
 
 from openai import APIError, AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.application.butler import (
+    ButlerAIInteraction,
     ButlerAIUnavailableError,
     ButlerContext,
-    ButlerDecision,
-    ButlerUnderstanding,
+    ButlerInteractionProposal,
 )
 from app.application.planning.contracts import (
     DayPlanningInput,
@@ -30,8 +31,7 @@ from app.application.planning.contracts import (
 )
 
 from .prompts import (
-    BUTLER_DECISION_INSTRUCTIONS,
-    BUTLER_RESPONSE_AUDIO_INSTRUCTIONS,
+    BUTLER_INTERACTION_INSTRUCTIONS,
     DAY_PLANNING_INSTRUCTIONS,
     GOOD_NIGHT_SUMMARY_INSTRUCTIONS,
     MORNING_BRIEF_INSTRUCTIONS,
@@ -39,7 +39,7 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
-_UNDERSTANDING_TOOL = "submit_butler_understanding"
+_INTERACTION_TOOL = "submit_butler_interaction"
 
 
 class OpenAIButlerProvider:
@@ -56,7 +56,7 @@ class OpenAIButlerProvider:
         self._audio_voice = audio_voice
         self._client = AsyncOpenAI(api_key=api_key) if api_key else None
 
-    async def understand(
+    async def interact(
         self,
         *,
         message: str | None,
@@ -66,96 +66,146 @@ class OpenAIButlerProvider:
         now: str,
         timezone: str,
         context: ButlerContext,
-    ) -> ButlerUnderstanding:
+    ) -> ButlerAIInteraction:
+        if self._client is None:
+            raise ButlerAIUnavailableError("OpenAI API key is not configured")
         payload: dict[str, object] = {
             "interaction_mode": interaction_mode,
             "now": now,
             "timezone": timezone,
             "context": context.model_dump(mode="json"),
         }
-        if audio_path is not None:
-            return await self._understand_audio(audio_path, audio_mime_type, payload)
-        if message is None:
+        if audio_path is None and message is None:
             raise ButlerAIUnavailableError("Butler provider received no input")
-        decision = await self._parse(
-            instructions=BUTLER_DECISION_INSTRUCTIONS,
-            payload={"message": message, **payload},
-            text_format=ButlerDecision,
-        )
-        return ButlerUnderstanding(user_message_text=message, decision=decision)
 
-    async def _understand_audio(
-        self,
-        path: Path,
-        mime_type: str | None,
-        payload: dict[str, object],
-    ) -> ButlerUnderstanding:
-        if self._client is None:
-            raise ButlerAIUnavailableError("OpenAI API key is not configured")
-        audio = await self._wav_audio(path)
+        content: list[dict[str, object]] = [
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {"message": message, **payload}, ensure_ascii=True
+                ),
+            }
+        ]
+        input_bytes = 0
+        if audio_path is not None:
+            audio = await self._wav_audio(audio_path)
+            input_bytes = audio_path.stat().st_size
+            content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": base64.b64encode(audio).decode("ascii"),
+                        "format": "wav",
+                    },
+                }
+            )
+
+        started = time.perf_counter()
         logger.info(
-            "Calling multimodal Butler model=%s input_type=%s input_bytes=%d",
+            "Single-call Butler interaction started model=%s input_type=%s input_bytes=%d",
             self._audio_model,
-            mime_type or "unknown",
-            path.stat().st_size,
+            audio_mime_type or "text/plain",
+            input_bytes,
         )
         tool = {
             "type": "function",
             "function": {
-                "name": _UNDERSTANDING_TOOL,
+                "name": _INTERACTION_TOOL,
                 "description": (
-                    "Return the understood user utterance and Butler decision. "
-                    "Application code validates and applies all mutations."
+                    "Return the complete proposed Butler interaction. Application code "
+                    "validates and applies all proposed mutations."
                 ),
-                "parameters": ButlerUnderstanding.model_json_schema(),
+                "parameters": ButlerInteractionProposal.model_json_schema(),
             },
         }
         messages = [
-            {"role": "system", "content": BUTLER_DECISION_INSTRUCTIONS},
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(payload, ensure_ascii=True),
-                    },
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": base64.b64encode(audio).decode("ascii"),
-                            "format": "wav",
-                        },
-                    },
-                ],
-            },
+            {"role": "system", "content": BUTLER_INTERACTION_INSTRUCTIONS},
+            {"role": "user", "content": content},
         ]
         try:
             completion = await self._client.chat.completions.create(
                 model=self._audio_model,
+                modalities=["text", "audio"],
+                audio=cast(Any, {"voice": self._audio_voice, "format": "wav"}),
                 messages=cast(Any, messages),
                 tools=cast(Any, [tool]),
                 tool_choice=cast(
                     Any,
-                    {"type": "function", "function": {"name": _UNDERSTANDING_TOOL}},
+                    {"type": "function", "function": {"name": _INTERACTION_TOOL}},
                 ),
                 store=False,
             )
-            calls = completion.choices[0].message.tool_calls or []
+            assistant = completion.choices[0].message
+            calls = assistant.tool_calls or []
             call = next(
                 (
                     item
                     for item in calls
                     if item.type == "function"
-                    and item.function.name == _UNDERSTANDING_TOOL
+                    and item.function.name == _INTERACTION_TOOL
                 ),
                 None,
             )
             if call is None:
                 raise ButlerAIUnavailableError(
-                    "Multimodal AI provider returned no Butler understanding"
+                    "Multimodal AI provider returned no Butler interaction"
                 )
-            return ButlerUnderstanding.model_validate_json(call.function.arguments)
-        except (APIError, IndexError, OSError, ValidationError, json.JSONDecodeError) as exc:
+            proposal = ButlerInteractionProposal.model_validate_json(call.function.arguments)
+            output = assistant.audio
+            if output is None:
+                logger.warning(
+                    "Single-call Butler interaction returned no audio; using text-only fallback"
+                )
+                response_audio = b""
+            else:
+                if not self._same_message(output.transcript, proposal.response_text):
+                    logger.warning(
+                        "Single-call response audio transcript differs from canonical response "
+                        "similarity=%.2f; using text-only fallback",
+                        self._message_similarity(output.transcript, proposal.response_text),
+                    )
+                    response_audio = b""
+                else:
+                    try:
+                        response_audio = base64.b64decode(output.data, validate=True)
+                        if not response_audio:
+                            raise ButlerAIUnavailableError(
+                                "Multimodal AI provider returned empty audio"
+                            )
+                        response_audio = await self._normalize_response_wav(response_audio)
+                    except (binascii.Error, ButlerAIUnavailableError):
+                        logger.exception(
+                            "Single-call response audio invalid; using text-only fallback"
+                        )
+                        response_audio = b""
+            logger.info(
+                "Single-call Butler interaction completed model=%s elapsed_ms=%d "
+                "response_audio_bytes=%d action=%s intent=%s",
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+                len(response_audio),
+                proposal.decision.requested_action,
+                proposal.decision.intent,
+            )
+            return ButlerAIInteraction(
+                proposal=proposal,
+                response_audio=response_audio,
+                response_audio_mime_type="audio/wav",
+            )
+        except (
+            APIError,
+            IndexError,
+            OSError,
+            ValidationError,
+            json.JSONDecodeError,
+            binascii.Error,
+        ) as exc:
+            logger.warning(
+                "Single-call Butler interaction failed model=%s elapsed_ms=%d error_type=%s",
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
             raise ButlerAIUnavailableError("Multimodal AI provider request failed") from exc
 
     async def _normalize_response_wav(self, data: bytes) -> bytes:
@@ -232,45 +282,6 @@ class OpenAIButlerProvider:
                 input_path.unlink(missing_ok=True)
             if output_path is not None:
                 output_path.unlink(missing_ok=True)
-
-    async def synthesize(self, text: str, path: Path) -> str:
-        if self._client is None:
-            raise ButlerAIUnavailableError("OpenAI API key is not configured")
-        try:
-            completion = await self._client.chat.completions.create(
-                model=self._audio_model,
-                modalities=["text", "audio"],
-                audio=cast(Any, {"voice": self._audio_voice, "format": "wav"}),
-                messages=cast(
-                    Any,
-                    [
-                        {"role": "system", "content": BUTLER_RESPONSE_AUDIO_INSTRUCTIONS},
-                        {"role": "user", "content": text},
-                    ],
-                ),
-                store=False,
-            )
-            output = completion.choices[0].message.audio
-            if output is None:
-                raise ButlerAIUnavailableError("Audio model returned no response audio")
-            if not self._same_message(output.transcript, text):
-                logger.warning(
-                    "Audio model transcript differs from canonical response similarity=%.2f; "
-                    "accepting generated audio",
-                    self._message_similarity(output.transcript, text),
-                )
-            data = base64.b64decode(output.data, validate=True)
-            if not data:
-                raise ButlerAIUnavailableError("Audio model returned empty response audio")
-            
-            data = await self._normalize_response_wav(data)  # normalize the response audio to ensure it is a valid WAV file
-
-            path.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(path.write_bytes, data)
-        except (APIError, IndexError, OSError, binascii.Error) as exc:
-            path.unlink(missing_ok=True)
-            raise ButlerAIUnavailableError("Response audio generation failed") from exc
-        return "audio/wav"
 
     @staticmethod
     def _same_message(spoken: str, canonical: str) -> bool:

@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.application.butler.audio import ButlerResponseAudioProvider
 from app.application.butler.contracts import ButlerResult, ChangedEntity, InteractionMode
 from app.application.butler.service import ButlerService
 from app.application.push.service import PushService
@@ -55,13 +54,11 @@ class ButlerRequestService:
         settings: Settings,
         session_factory: async_sessionmaker[AsyncSession],
         butler: ButlerService,
-        audio: ButlerResponseAudioProvider,
         push: PushService,
     ) -> None:
         self._settings = settings
         self._sessions = session_factory
         self._butler = butler
-        self._audio = audio
         self._push = push
         self._processing: set[uuid.UUID] = set()
         self._lock = asyncio.Lock()
@@ -154,7 +151,7 @@ class ButlerRequestService:
             audio_path = Path(request.input_audio_path) if request.input_audio_path else None
             if request.input_source == "audio" and audio_path is None:
                 raise RuntimeError("Accepted audio request has no input asset")
-            result = await self._butler.handle(
+            interaction = await self._butler.handle(
                 request_id=request.id,
                 user_id=request.user_id,
                 interaction_mode=cast(InteractionMode, request.interaction_mode),
@@ -162,8 +159,14 @@ class ButlerRequestService:
                 audio_path=audio_path,
                 audio_mime_type=request.input_audio_mime_type,
             )
-            response_audio_path, audio_type = await self._response_audio(request.id, result)
-            await self._complete(request.id, result, response_audio_path, audio_type)
+            response_audio_path, audio_type = await self._response_audio(
+                request.id,
+                interaction.response_audio,
+                interaction.response_audio_mime_type,
+            )
+            await self._complete(
+                request.id, interaction.result, response_audio_path, audio_type
+            )
             try:
                 await self._delete_file(request.input_audio_path)
                 await self._clear_input_path(request.id)
@@ -198,15 +201,26 @@ class ButlerRequestService:
             return request
 
     async def _response_audio(
-        self, request_id: uuid.UUID, result: ButlerResult
+        self, request_id: uuid.UUID, audio: bytes, mime_type: str
     ) -> tuple[Path | None, str | None]:
         path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.wav"
         try:
-            audio_type = await self._audio.synthesize(result.response, path)
-            logger.info("Response audio stored request_id=%s type=%s", request_id, audio_type)
-            return path, audio_type
+            if mime_type != "audio/wav":
+                raise ValueError(f"Unsupported response audio type: {mime_type}")
+            if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+                raise ValueError("Response audio is not a valid WAV container")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(path.write_bytes, audio)
+            logger.info(
+                "Single-call response audio stored request_id=%s type=%s bytes=%d",
+                request_id,
+                mime_type,
+                len(audio),
+            )
+            return path, mime_type
         except Exception:
-            logger.exception("Response audio generation failed for request %s", request_id)
+            path.unlink(missing_ok=True)
+            logger.exception("Single-call response audio storage failed for request %s", request_id)
             return None, None
 
     async def _complete(
