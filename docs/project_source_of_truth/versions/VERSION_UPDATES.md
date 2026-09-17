@@ -4,11 +4,92 @@ This file records coordinated version updates for documents under `docs/project_
 
 ---
 
+## Version 1.7 — 2026-09-17
+
+### Scope
+
+Version 1.7 establishes a true single-call multimodal provider workflow for normal Butler interactions.
+
+Updated to `1.7`:
+
+- `backend/BACKEND_ARCHITECTURE.md`
+- `backend/BACKEND_WORKFLOW.md`
+
+`PROJECT.md` v1.6 already defines the complete multimodal result contract—transcript/understood utterance, structured action information, Butler response text, and response audio—and remains authoritative for product behavior. Version 1.7 makes the provider-call constraint explicit in backend technical documentation.
+
+### Single-call determination
+
+Before invoking the model, the backend gathers enough relevant authoritative information for one multimodal request to resolve the interaction:
+
+```text
+original audio OR typed text
++
+relevant conversation
++
+User Context / preferences
++
+relevant Daily Plan / Events
++
+now / timezone
++
+Butler instructions and supported mutations
+        ↓
+ONE multimodal provider API call
+        ↓
+user_message_text
+proposed_updates
+Butler response text
+matching Butler response audio
+```
+
+`proposed_updates` may represent supported Daily Event add/update/remove/skip operations, User Context/preference changes, other supported mutations, or no state change for a query/conversation.
+
+Application/domain code remains authoritative: AI output is validated before mutation and the model never writes directly to PostgreSQL.
+
+### Removed normal second-call behavior
+
+The normal backend workflow must not perform a second AI request after understanding/domain processing solely to synthesize response audio.
+
+```text
+OLD IMPLEMENTATION SHAPE
+multimodal understanding call
+        ↓
+domain processing
+        ↓
+second AI response-audio call
+
+V1.7 TARGET
+complete context
+        ↓
+ONE multimodal call
+        ↓
+transcript + proposed changes + response text + matching audio
+        ↓
+validate/apply + persist + deliver
+```
+
+This intentionally relies more heavily on the multimodal model so normal interactions use fewer provider round trips, reducing latency and provider-call overhead/cost while keeping response text and spoken audio in the same model result.
+
+Media normalization such as FFmpeg WAV finalization may still run after the call. It is deterministic media processing, not another AI generation request, and must not change spoken content.
+
+### Unchanged behavior
+
+- Order/Talk preserve original recorded audio through the AI reasoning boundary.
+- Order/Talk remain recorded asynchronous interactions, not realtime streaming.
+- Text remains direct typed/editable input with no STT.
+- Audio and text share one Butler product/domain behavior and async lifecycle.
+- AI-proposed state changes are validated by deterministic application/domain code.
+- One canonical Butler message is used for in-app and notification presentation.
+- FCM remains a completion/wake-up signal rather than canonical content or audio transport.
+- Response audio is temporarily stored on the backend and cached locally by Android.
+
+---
+
 ## Version 1.6 — 2026-09-13
 
 ### Scope
 
-Version 1.6 corrects the backend AI-processing contract for Order/Talk.
+Version 1.6 corrected the backend AI-processing contract for Order/Talk by preserving original recorded audio through multimodal semantic reasoning instead of using standalone transcription as the sole reasoning input.
 
 Updated to `1.6`:
 
@@ -16,89 +97,13 @@ Updated to `1.6`:
 - `backend/BACKEND_ARCHITECTURE.md`
 - `backend/BACKEND_WORKFLOW.md`
 
-Client transport, Room, WorkManager, FCM, notification, and UI behavior from v1.5 remain unchanged.
+Client transport, Room, WorkManager, FCM, notification, and UI behavior from v1.5 remained unchanged.
 
-### Corrected backend behavior
-
-The v1.5 docs incorrectly described the normal Order/Talk AI path as effectively:
-
-```text
-recorded audio
-   ↓
-standalone transcription
-   ↓
-transcript-only Butler reasoning
-   ↓
-response text
-   ↓
-separate response-audio generation
-```
-
-Version 1.6 replaces that with the intended multimodal contract:
-
-```text
-original Order/Talk audio
-+
-textual Butler context
-├── instructions
-├── interaction mode
-├── recent conversation
-├── User Context / preferences
-├── relevant plan/events
-└── now / timezone
-        ↓
-audio-capable multimodal Butler model / provider boundary
-        ↓
-canonical result
-├── transcript / understood utterance text
-├── structured intent/action information when needed
-├── Butler response text
-└── Butler response audio
-```
-
-The original audio must remain available through the semantic reasoning boundary. A transcript is still required for history/UI, but it must not be the sole semantic input to a text-only Butler model.
-
-### Response delivery
-
-The asynchronous lifecycle remains:
-
-```text
-202 + request_id
-   ↓
-backend processing
-   ↓
-persist canonical text/result metadata
-   ↓
-save response audio temporarily on backend
-   ↓
-FCM completed(request_id)
-   ↓
-client fetches result text/metadata
-   ↓
-client immediately downloads response audio
-   ↓
-Room / local audio cache
-```
-
-FCM remains a wake-up signal, not the audio transport. Backend audio remains retention-limited; client local cache remains the normal long-lived audio copy.
-
-### Unchanged behavior
-
-- Order/Talk are recorded, not realtime-streamed, interactions.
-- Text is direct typed/editable input with no STT.
-- Audio and text share one Butler product/domain behavior and one async request/result lifecycle.
-- Deterministic application/domain code remains authoritative for mutations.
-- One canonical Butler message is used for both in-app and notification presentation.
-- Foreground Coroutine/Repository and background WorkManager converge through the same result-fetch path.
-- Morning Brief and Good Night Summary keep automatic Speak Aloud + Stop + Open in App behavior.
+Version 1.7 supersedes v1.6 where v1.6 allowed more than one internal provider round trip for a normal interaction.
 
 ---
 
 ## Version 1.5 — 2026-09-12
-
-- Corrected the development guide's manual example to use the v1.5 asynchronous request/result endpoints.
-
-### Scope
 
 Version 1.5 refined the v1.4 async Butler architecture by separating input transport from Butler reasoning and changing Text to direct typed/editable input.
 
@@ -112,16 +117,6 @@ Updated to `1.5`:
 - `client/CLIENT_SYNC_FLOW.md`
 
 `ENGINEERING.md` remained `1.4` because no engineering rule changed.
-
-The v1.5 client/input model remains valid:
-
-```text
-Order → recorded audio
-Talk  → recorded audio
-Text  → direct typed/editable text
-```
-
-Version 1.6 supersedes only v1.5's transcript-first backend AI-processing description.
 
 ---
 
