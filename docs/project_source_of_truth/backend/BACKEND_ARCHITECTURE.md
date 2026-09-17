@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.6  
+**Version:** 1.7  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -24,7 +24,7 @@ Domain
 Infrastructure
 ```
 
-API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, multimodal AI/audio providers, push, storage, and other integrations.
+API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, the multimodal AI provider, push, audio storage, and other integrations.
 
 ---
 
@@ -43,21 +43,19 @@ API owns transport/authentication. Application owns orchestration and transactio
                   ↓
           Butler application
                   ↓
-      load text context / state
+       load complete context
                   ↓
-       multimodal AI boundary
+     ONE multimodal AI call
                   ↓
-       command/query/clarify
+       complete AI result
                   ↓
-        tools / domain / DB
+       validate/apply changes
                   ↓
        canonical result
           text + audio
 ```
 
-Do not create separate Butler brains for audio and text. The application/domain behavior remains shared.
-
-The important distinction is that an Order/Talk audio request must preserve the original audio through the AI reasoning boundary.
+Do not create separate Butler brains for audio and text. Order/Talk preserves the original recorded audio through the single multimodal call. Text uses the same product behavior with typed text as input.
 
 ---
 
@@ -72,107 +70,57 @@ GET  /api/butler/requests/{request_id}
 GET  /api/butler/requests/{request_id}/audio
 ```
 
-## Audio request
-
-```text
-POST /api/butler/requests/audio
-Content-Type: multipart/form-data
-
-interaction_mode = order | talk
-audio = compressed recording
-```
-
-## Text request
-
-```text
-POST /api/butler/requests/text
-Content-Type: application/json
-
-message = <typed text>
-```
-
-Both return quickly:
-
-```text
-202 Accepted
-request_id = <stable id>
-```
-
-Both then use the same asynchronous request/result lifecycle.
+Both input endpoints return quickly with `202 Accepted` and a stable `request_id`, then continue through the same asynchronous request/result lifecycle.
 
 ---
 
-# Multimodal Butler Input Contract
+# Single-Call Multimodal Contract
 
-For Order/Talk, the application assembles one AI input that contains:
+For every normal Butler interaction, the backend must gather enough authoritative context before invoking the AI provider so that one multimodal API request can produce the complete proposed interaction result.
+
+For Order/Talk the request contains:
 
 ```text
 original recorded audio
 +
-textual context
+complete relevant textual context
 ├── Butler instructions
 ├── interaction mode
 ├── newest relevant conversation
 ├── User Context / preferences
 ├── current/relevant Daily Plan and Events
+├── identifiers/details required to propose mutations
 └── now / timezone
 ```
 
-The AI/provider boundary must be capable of understanding the original audio together with this textual context.
+For Text, typed text replaces the recorded audio while the same relevant Butler context is supplied.
 
-The normal architecture must not be:
-
-```text
-audio
- ↓
-standalone STT
- ↓
-transcript only
- ↓
-text-only Butler reasoning
- ↓
-standalone TTS
-```
-
-That design throws away the original audio before semantic reasoning and makes transcription the single point of failure.
-
-A transcript/understood utterance text is still required for history and UI, but it is part of the multimodal result rather than the sole reasoning input.
-
----
-
-# Text Input Contract
-
-For Text, the AI input contains:
-
-```text
-typed message
-+
-same textual Butler context
-```
-
-No microphone/STT step is involved.
-
-Text remains an input method, not a semantic intent. Semantic intent remains command, query, or clarify.
+The normal request path must make **one OpenAI/multimodal provider API call per Butler interaction**. Do not split normal processing into separate transcription, reasoning, and response-audio generation calls.
 
 ---
 
 # AI Result Contract
 
-The multimodal/provider result must support the application with the information needed to complete the Butler request, conceptually:
+The single multimodal call returns one complete proposed result:
 
 ```text
 AI result
 ├── user_message_text
 │   ├── audio source → transcript / understood utterance text
 │   └── text source  → submitted text
-├── structured decision / action proposal when needed
+├── proposed_updates
+│   ├── Daily Event add / update / remove / skip / other supported mutation
+│   ├── User Context / preference change
+│   └── none when no state change is required
 ├── Butler response text
-└── Butler response audio
+└── Butler response audio matching that response text
 ```
 
-If tool/domain actions are required, application/domain code remains authoritative for mutation. The AI may propose intent/actions, but must not write directly to the database.
+Response text and response audio are two representations of the same Butler message. The provider contract must require the spoken audio to match the returned canonical response text rather than independently elaborating or changing the answer.
 
-The provider/orchestration layer may use a tool-capable multimodal interaction internally, but the original audio must remain available to the AI reasoning path until the user's meaning is resolved.
+The model is trusted to understand the supplied context and propose the complete interaction in one call. Application/domain code remains authoritative for state: it validates supported updates and performs persistence. The AI must not write directly to PostgreSQL.
+
+This design deliberately accepts greater reliance on the multimodal model in exchange for lower latency, lower provider-call overhead/cost, and removal of semantic drift between a separately generated response and response audio.
 
 ---
 
@@ -187,41 +135,43 @@ completed
 failed
 ```
 
-The client may present `Sending...` and `Sent • time` while the server request progresses.
-
----
-
-# Shared Processing
+Normal processing is:
 
 ```text
 accepted request
       ↓
-load request input
+load original input
       ↓
-load relevant text context
+load complete relevant Butler context
       ↓
-AI processing
-  ├── audio → original audio + text context
-  └── text  → typed text + text context
+ONE multimodal API call
       ↓
-resolve command / query / clarify
+receive transcript + proposed updates + response text + matching audio
       ↓
-apply validated deterministic actions when needed
+validate proposed updates
       ↓
-finalize canonical Butler response
-      ├── text
-      └── audio
+apply/persist supported state changes
       ↓
-persist conversation/result metadata
+normalize/store returned response audio when required by its transport format
       ↓
-save response audio temporarily
+persist canonical conversation/result metadata
       ↓
 mark completed
       ↓
 FCM completed(request_id)
 ```
 
-The architecture should preserve a single canonical request/result even if internal AI orchestration requires more than one provider round trip.
+There is no second AI call after domain mutation to rewrite or synthesize the response.
+
+---
+
+# Mutation Semantics
+
+The single AI call must have enough preloaded state to propose the intended mutation without requiring an AI round trip after execution.
+
+The backend validates the proposal before applying it. If a proposed mutation is invalid or cannot safely be applied, normal software error/reconciliation behavior handles that condition; the backend must not silently invent a different AI response through a second provider call.
+
+Important mutations remain idempotent where retry is possible.
 
 ---
 
@@ -239,23 +189,19 @@ changed entity metadata when relevant
 completion timestamp
 ```
 
-For audio, `user_message_text` is the multimodal result transcript/understood utterance text. For text, it is the exact submitted text.
-
-One completed request produces one user conversation message and one Butler conversation message. Notification and in-app presentation are not separate results.
+One completed request produces one user conversation message and one Butler conversation message. Notification and in-app presentation are surfaces for that same result.
 
 ---
 
 # Response Audio Storage and Delivery
 
-The AI/provider result includes Butler response audio as part of the completed interaction.
-
-The backend stores that audio temporarily and exposes an authenticated download endpoint/reference. It does not embed the audio bytes in FCM.
+Response audio comes from the same multimodal API call as the canonical response text.
 
 ```text
-AI returns response text + audio
+ONE AI call returns response text + matching audio
       ↓
-backend persists canonical text/result
-backend writes response audio asset
+backend validates/persists result
+backend normalizes/stores response audio asset
       ↓
 FCM completed(request_id)
       ↓
@@ -266,27 +212,9 @@ client immediately downloads response audio
 local cache
 ```
 
+The backend may normalize/finalize the returned audio container for reliable playback. Audio normalization is media processing, not another AI generation call, and must not alter spoken content.
+
 The text result must remain available even if audio download is delayed. Backend response audio is retention-limited.
-
----
-
-# Push and Result Fetch
-
-FCM is a wake-up signal, not canonical content.
-
-```text
-request completed
-   ↓
-FCM: butler_request_completed + request_id
-   ↓
-GET /api/butler/requests/{request_id}
-   ↓
-canonical text result + response audio reference
-   ↓
-GET authenticated response audio
-```
-
-Push failure must not roll back a completed request. Result fetch must be idempotent and retryable.
 
 ---
 
@@ -299,19 +227,19 @@ role=user   → transcript/understood utterance OR submitted typed text
 role=butler → canonical response text
 ```
 
-Audio is not the permanent server conversation record. Temporary client Sending/Sent placeholders are not backend conversation content.
+Audio is not the permanent server conversation record.
 
 ---
 
-# Domain Actions
+# Push and Result Fetch
 
-AI may decide what the user intends, but deterministic application/domain code validates and applies important mutations, including event creation/update/skip, User Context changes, queries, and replanning.
+FCM is a wake-up signal, not canonical content. Result fetch and authenticated audio download remain idempotent/retryable. Push failure must not roll back a completed request.
 
 ---
 
 # Planning and Proactive Speech
 
-The existing Daily Plan / Daily Event lifecycle remains authoritative. Morning Brief and Good Night Summary are proactive-speech exceptions: backend provides canonical content/audio; client automatically starts Speak Aloud when due and always allows Stop. Ordinary Butler responses remain silent by default.
+The Daily Plan / Daily Event lifecycle remains authoritative. Morning Brief and Good Night Summary remain proactive-speech exceptions at the client presentation layer. Ordinary Butler responses remain silent by default until the user selects playback.
 
 ---
 
@@ -325,12 +253,16 @@ PostgreSQL remains authoritative for users, User Context, conversation text, Dai
 
 # Guiding Rule
 
-Preserve the richest user input through the reasoning boundary:
-
 ```text
-AUDIO + TEXT CONTEXT ──┐
-                       ├── Butler reasoning/application ── text + audio result
-TEXT + TEXT CONTEXT ───┘
+Rich input + complete relevant context
+              ↓
+      ONE multimodal AI call
+              ↓
+ transcript + proposed updates
+ + canonical response text
+ + matching response audio
+              ↓
+ validate/apply → persist → deliver
 ```
 
-A standalone transcript may be stored and displayed, but it must not be the only semantic representation of an Order/Talk request before Butler reasoning.
+One Butler interaction should normally require one multimodal provider call.
