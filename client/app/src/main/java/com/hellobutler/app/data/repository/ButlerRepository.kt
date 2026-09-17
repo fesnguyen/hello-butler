@@ -16,6 +16,9 @@ import com.hellobutler.app.sync.ButlerNotification
 import com.hellobutler.app.sync.ButlerRequestWorker
 import com.hellobutler.app.sync.ButlerResultWorker
 import java.io.File
+import android.util.Log
+import java.io.DataInputStream
+import java.io.EOFException
 import java.io.IOException
 import java.time.Instant
 import java.time.LocalDate
@@ -42,6 +45,10 @@ class ButlerRepository(
     private val audioLocks = ConcurrentHashMap<String, Mutex>()
 
     fun observeMessages(): Flow<List<ConversationMessageEntity>> = dao.observeMessages()
+
+    companion object {
+        private const val TAG = "ButlerRepository"
+    }
 
     suspend fun queueText(message: String): String {
         require(message.isNotBlank())
@@ -208,12 +215,19 @@ class ButlerRepository(
 
     private fun File.hasExpectedSignature(extension: String): Boolean {
         if (length() < 12) return false
-        val header = inputStream().use { input -> input.readNBytes(12) }
+
+        val header = ByteArray(12)
+        try {
+            DataInputStream(inputStream()).use { it.readFully(header) }
+        } catch (_: EOFException) {
+            return false
+        }
+
         return when (extension) {
             "wav" -> header.copyOfRange(0, 4).contentEquals("RIFF".encodeToByteArray()) &&
-                header.copyOfRange(8, 12).contentEquals("WAVE".encodeToByteArray())
+                    header.copyOfRange(8, 12).contentEquals("WAVE".encodeToByteArray())
             "mp3" -> header.copyOfRange(0, 3).contentEquals("ID3".encodeToByteArray()) ||
-                (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xE0) == 0xE0
+                    (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xE0) == 0xE0
             "m4a" -> header.copyOfRange(4, 8).contentEquals("ftyp".encodeToByteArray())
             "ogg" -> header.copyOfRange(0, 4).contentEquals("OggS".encodeToByteArray())
             else -> false

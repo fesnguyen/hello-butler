@@ -9,6 +9,7 @@ import re
 from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
+import tempfile
 from typing import Any, TypeVar, cast
 
 from openai import APIError, AsyncOpenAI
@@ -157,6 +158,81 @@ class OpenAIButlerProvider:
         except (APIError, IndexError, OSError, ValidationError, json.JSONDecodeError) as exc:
             raise ButlerAIUnavailableError("Multimodal AI provider request failed") from exc
 
+    async def _normalize_response_wav(self, data: bytes) -> bytes:
+        input_path: Path | None = None
+        output_path: Path | None = None
+
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as input_file:
+                input_file.write(data)
+                input_path = Path(input_file.name)
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as output_file:
+                output_path = Path(output_file.name)
+
+            # Let FFmpeg create the output file itself.
+            output_path.unlink()
+
+            process = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-v",
+                "error",
+                "-y",
+                "-i",
+                str(input_path),
+                "-map_metadata",
+                "-1",
+                "-c:a",
+                "pcm_s16le",
+                "-ac",
+                "1",
+                "-ar",
+                "24000",
+                "-f",
+                "wav",
+                str(output_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            _, stderr = await process.communicate()
+
+            if process.returncode != 0 or not output_path.is_file():
+                logger.warning(
+                    "Response audio normalization failed exit_code=%s error=%s",
+                    process.returncode,
+                    stderr.decode(errors="replace"),
+                )
+                raise ButlerAIUnavailableError(
+                    "Generated response audio could not be normalized"
+                )
+
+            normalized = await asyncio.to_thread(output_path.read_bytes)
+
+            if not self._is_wav(normalized):
+                raise ButlerAIUnavailableError(
+                    "Normalized response audio is not WAV"
+                )
+
+            logger.info(
+                "Response audio normalized input_bytes=%d output_bytes=%d",
+                len(data),
+                len(normalized),
+            )
+
+            return normalized
+
+        except OSError as exc:
+            raise ButlerAIUnavailableError(
+                "Response audio normalization is unavailable"
+            ) from exc
+
+        finally:
+            if input_path is not None:
+                input_path.unlink(missing_ok=True)
+            if output_path is not None:
+                output_path.unlink(missing_ok=True)
+
     async def synthesize(self, text: str, path: Path) -> str:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
@@ -186,8 +262,9 @@ class OpenAIButlerProvider:
             data = base64.b64decode(output.data, validate=True)
             if not data:
                 raise ButlerAIUnavailableError("Audio model returned empty response audio")
-            if not self._is_wav(data):
-                raise ButlerAIUnavailableError("Audio model returned invalid WAV audio")
+            
+            data = await self._normalize_response_wav(data)  # normalize the response audio to ensure it is a valid WAV file
+
             path.parent.mkdir(parents=True, exist_ok=True)
             await asyncio.to_thread(path.write_bytes, data)
         except (APIError, IndexError, OSError, binascii.Error) as exc:
