@@ -96,12 +96,11 @@ the canonical response transcript before backend normalization and Opus encoding
   failure, materially unrelated speech, invalid WAV, Opus encoding failure, or
   storage failure preserves the canonical text/action, completes the request,
   returns `response_audio_url = null`, and emits a warning plus a cause-specific log.
-- The transcript check is deliberately permissive. A similarity score of at least
-  `0.30`, or two shared meaningful normalized tokens, accepts the audio; punctuation,
-  capitalization, filler, contractions, formatting, spoken numbers/times, and
-  moderate paraphrases therefore survive. Audio is dropped only when the transcript
-  has strong evidence of being materially unrelated. `proposal.response_text`
-  remains canonical regardless of the decision.
+- The transcript check is deliberately permissive and acts only as a strong-mismatch
+  sanity guard. Valid decoded and normalized audio is preserved by default, including
+  short semantic paraphrases with little or no lexical overlap. Audio is dropped only
+  when the transcript provides strong evidence of being materially unrelated.
+  `proposal.response_text` remains canonical regardless of the decision.
 - Idempotency receipts and asynchronous recovery remain active for retried durable
   requests.
 

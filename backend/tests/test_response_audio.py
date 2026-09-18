@@ -154,13 +154,15 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         proposal = ButlerInteractionProposal(
             user_message_text="Move my meeting",
             decision={"intent": "query", "requested_action": "none"},
-            response_text="Your meeting is at 3 PM.",
+            response_text=(
+                "The quarterly planning appointment has been moved into tomorrow's "
+                "afternoon calendar slot with the design leadership group."
+            ),
         )
         result = completion(proposal, b"model-wav")
-        result.choices[
-            0
-        ].message.audio.transcript = (
-            "A tropical storm is approaching another continent next weekend."
+        result.choices[0].message.audio.transcript = (
+            "Severe tropical rainfall will reach remote coastal villages overnight "
+            "while emergency crews prepare evacuation shelters nearby."
         )
         provider, create = self.provider(result)
 
@@ -195,8 +197,10 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(
             OpenAIButlerProvider._same_message(
-                "A tropical storm is approaching another continent.",
-                "Your meeting is at three PM tomorrow.",
+                "Severe tropical rainfall will reach remote coastal villages overnight "
+                "while emergency crews prepare evacuation shelters nearby.",
+                "The quarterly planning appointment has been moved into tomorrow's "
+                "afternoon calendar slot with the design leadership group.",
             )
         )
 
@@ -207,6 +211,18 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
                 "Got it. Your meeting is now scheduled for 3:00 PM tomorrow.",
             )
         )
+
+    def test_message_matching_preserves_short_semantic_paraphrase_without_overlap(self):
+        spoken = "Sure, I've moved it."
+        canonical = "Done. Your meeting is now at 3 PM."
+        spoken_words = OpenAIButlerProvider._meaningful_words(
+            OpenAIButlerProvider._message_words(spoken)
+        )
+        canonical_words = OpenAIButlerProvider._meaningful_words(
+            OpenAIButlerProvider._message_words(canonical)
+        )
+        self.assertFalse(spoken_words & canonical_words)
+        self.assertTrue(OpenAIButlerProvider._same_message(spoken, canonical))
 
     async def test_invalid_ogg_input_fails_before_openai(self):
         provider, create = self.provider(SimpleNamespace())

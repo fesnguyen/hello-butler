@@ -323,27 +323,16 @@ class OpenAIButlerProvider:
         canonical_words = OpenAIButlerProvider._message_words(canonical)
         if not spoken_words or not canonical_words:
             return False
-        stop_words = {
-            "a",
-            "an",
-            "and",
-            "at",
-            "for",
-            "i",
-            "in",
-            "is",
-            "it",
-            "of",
-            "on",
-            "the",
-            "to",
-            "was",
-            "your",
-        }
-        shared = (set(spoken_words) & set(canonical_words)) - stop_words
-        return (
-            OpenAIButlerProvider._message_similarity(spoken, canonical) >= 0.30 or len(shared) >= 2
-        )
+        spoken_meaningful = OpenAIButlerProvider._meaningful_words(spoken_words)
+        canonical_meaningful = OpenAIButlerProvider._meaningful_words(canonical_words)
+        shared = spoken_meaningful & canonical_meaningful
+        if shared:
+            return True
+
+        # The transcript comes from the same multimodal response as the audio, so
+        # lexical difference alone is not evidence of bad audio. Only two long,
+        # disjoint messages provide enough evidence to discard otherwise valid audio.
+        return not (len(spoken_meaningful) >= 8 and len(canonical_meaningful) >= 8)
 
     @staticmethod
     def _message_similarity(spoken: str, canonical: str) -> float:
@@ -361,6 +350,27 @@ class OpenAIButlerProvider:
     @staticmethod
     def _message_words(value: str) -> list[str]:
         return re.findall(r"\w+", value.casefold())
+
+    @staticmethod
+    def _meaningful_words(words: list[str]) -> set[str]:
+        stop_words = {
+            "a",
+            "an",
+            "and",
+            "at",
+            "for",
+            "i",
+            "in",
+            "is",
+            "it",
+            "of",
+            "on",
+            "the",
+            "to",
+            "was",
+            "your",
+        }
+        return set(words) - stop_words
 
     @staticmethod
     def _is_wav(data: bytes) -> bool:
