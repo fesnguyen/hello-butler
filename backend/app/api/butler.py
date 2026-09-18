@@ -141,7 +141,17 @@ async def get_response_audio(
     path = await butler_request_service(settings).audio_path(user.id, request_id)
     if path is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Response audio is unavailable")
-    return FileResponse(path, media_type="audio/ogg", filename=f"butler-{request_id}.ogg")
+    if path.suffix.lower() == ".ogg":
+        media_type, extension = "audio/ogg", "ogg"
+    elif path.suffix.lower() == ".wav":
+        media_type, extension = "audio/wav", "wav"
+    else:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Response audio format is unavailable")
+    return FileResponse(
+        path,
+        media_type=media_type,
+        filename=f"butler-{request_id}.{extension}",
+    )
 
 
 def _read_prefix(path: Path, size: int) -> bytes:

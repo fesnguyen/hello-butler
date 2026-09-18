@@ -175,9 +175,6 @@ class ButlerRepository(
             val body = authorized { token -> api.responseAudio(token, requestId) }
             val responseMimeType = body.contentType()?.let { "${it.type}/${it.subtype}" }
                 ?: message.responseAudioMimeType
-            if (responseMimeType?.substringBefore(';')?.lowercase() != "audio/ogg") {
-                throw IOException("Butler returned unsupported response audio type: ${responseMimeType ?: "unknown"}")
-            }
             val extension = responseAudioExtension(responseMimeType)
             val directory = File(context.filesDir, "butler_audio").apply { mkdirs() }
             directory.listFiles { file -> file.name.startsWith("$requestId.") }?.forEach(File::delete)
