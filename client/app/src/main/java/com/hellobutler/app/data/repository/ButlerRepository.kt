@@ -2,6 +2,7 @@ package com.hellobutler.app.data.repository
 
 import android.content.Context
 import android.media.MediaMetadataRetriever
+import android.util.Log
 import androidx.room.withTransaction
 import com.hellobutler.app.auth.ApiException
 import com.hellobutler.app.auth.AuthRepository
@@ -15,11 +16,9 @@ import com.hellobutler.app.sync.ButlerAudioWorker
 import com.hellobutler.app.sync.ButlerNotification
 import com.hellobutler.app.sync.ButlerRequestWorker
 import com.hellobutler.app.sync.ButlerResultWorker
-import java.io.File
-import android.util.Log
-import java.io.DataInputStream
-import java.io.EOFException
+import com.hellobutler.app.speech.isOggOpusContainer
 import java.io.IOException
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
@@ -65,7 +64,8 @@ class ButlerRepository(
     suspend fun queueAudio(mode: String, recording: File): String {
         require(mode == "order" || mode == "talk")
         val requestId = UUID.randomUUID().toString()
-        val durable = File(File(context.filesDir, "butler_pending").apply { mkdirs() }, "$requestId.m4a")
+        require(recording.isOggOpusContainer()) { "Voice recording is not valid Ogg/Opus" }
+        val durable = File(File(context.filesDir, "butler_pending").apply { mkdirs() }, "$requestId.ogg")
         if (!recording.renameTo(durable)) {
             recording.copyTo(durable, overwrite = true)
             recording.delete()
@@ -92,7 +92,7 @@ class ButlerRepository(
                         token,
                         requestId.toRequestBody("text/plain".toMediaType()),
                         request.interactionMode.toRequestBody("text/plain".toMediaType()),
-                        MultipartBody.Part.createFormData("audio", file.name, file.asRequestBody("audio/mp4".toMediaType())),
+                        MultipartBody.Part.createFormData("audio", file.name, file.asRequestBody("audio/ogg".toMediaType())),
                     )
                 }
             } else {
@@ -175,6 +175,9 @@ class ButlerRepository(
             val body = authorized { token -> api.responseAudio(token, requestId) }
             val responseMimeType = body.contentType()?.let { "${it.type}/${it.subtype}" }
                 ?: message.responseAudioMimeType
+            if (responseMimeType?.substringBefore(';')?.lowercase() != "audio/ogg") {
+                throw IOException("Butler returned unsupported response audio type: ${responseMimeType ?: "unknown"}")
+            }
             val extension = responseAudioExtension(responseMimeType)
             val directory = File(context.filesDir, "butler_audio").apply { mkdirs() }
             directory.listFiles { file -> file.name.startsWith("$requestId.") }?.forEach(File::delete)
@@ -213,23 +216,19 @@ class ButlerRepository(
         else -> throw IOException("Unsupported Butler audio type: ${mimeType ?: "unknown"}")
     }
 
-    private fun File.hasExpectedSignature(extension: String): Boolean {
+    internal fun File.hasExpectedSignature(extension: String): Boolean {
         if (length() < 12) return false
 
-        val header = ByteArray(12)
-        try {
-            DataInputStream(inputStream()).use { it.readFully(header) }
-        } catch (_: EOFException) {
-            return false
-        }
-
+        val header = ByteArray(256)
+        val count = runCatching { inputStream().use { it.read(header) } }.getOrElse { return false }
+        if (count < 12) return false
         return when (extension) {
             "wav" -> header.copyOfRange(0, 4).contentEquals("RIFF".encodeToByteArray()) &&
                     header.copyOfRange(8, 12).contentEquals("WAVE".encodeToByteArray())
             "mp3" -> header.copyOfRange(0, 3).contentEquals("ID3".encodeToByteArray()) ||
                     (header[0].toInt() and 0xFF) == 0xFF && (header[1].toInt() and 0xE0) == 0xE0
             "m4a" -> header.copyOfRange(4, 8).contentEquals("ftyp".encodeToByteArray())
-            "ogg" -> header.copyOfRange(0, 4).contentEquals("OggS".encodeToByteArray())
+            "ogg" -> isOggOpusContainer()
             else -> false
         }
     }

@@ -61,8 +61,8 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         )
         provider, create = self.provider(completion(proposal, b"model-wav"))
         with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "input.m4a"
-            source.write_bytes(b"original-recording")
+            source = Path(directory) / "input.ogg"
+            source.write_bytes(b"OggS" + b"0" * 24 + b"OpusHead")
             with (
                 patch.object(provider, "_wav_audio", AsyncMock(return_value=b"input-wav")),
                 patch.object(
@@ -74,7 +74,7 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
                 result = await provider.interact(
                     message=None,
                     audio_path=source,
-                    audio_mime_type="audio/mp4",
+                    audio_mime_type="audio/ogg",
                     interaction_mode="order",
                     now="2026-09-17T18:00:00+07:00",
                     timezone="Asia/Ho_Chi_Minh",
@@ -135,9 +135,7 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         result.choices[0].message.audio.data = "not-valid-base64"
         provider, create = self.provider(result)
 
-        with self.assertLogs(
-            "app.infrastructure.ai.openai_provider", "ERROR"
-        ) as logs:
+        with self.assertLogs("app.infrastructure.ai.openai_provider", "WARNING") as logs:
             interaction = await provider.interact(
                 message="Hello",
                 audio_path=None,
@@ -150,7 +148,7 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
 
         create.assert_awaited_once()
         self.assertEqual(interaction.response_audio, b"")
-        self.assertIn("text-only fallback", " ".join(logs.output))
+        self.assertIn("base64_decode_failed", " ".join(logs.output))
 
     async def test_mismatched_audio_is_not_returned_to_the_client(self):
         proposal = ButlerInteractionProposal(
@@ -159,12 +157,21 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
             response_text="Your meeting is at 3 PM.",
         )
         result = completion(proposal, b"model-wav")
-        result.choices[0].message.audio.transcript = "Your meeting was cancelled."
+        result.choices[
+            0
+        ].message.audio.transcript = (
+            "A tropical storm is approaching another continent next weekend."
+        )
         provider, create = self.provider(result)
 
-        with self.assertLogs(
-            "app.infrastructure.ai.openai_provider", "WARNING"
-        ) as logs:
+        with (
+            self.assertLogs("app.infrastructure.ai.openai_provider", "WARNING") as logs,
+            patch.object(
+                provider,
+                "_normalize_response_wav",
+                AsyncMock(return_value=b"RIFF0000WAVEvalid"),
+            ),
+        ):
             interaction = await provider.interact(
                 message="Move my meeting",
                 audio_path=None,
@@ -177,7 +184,7 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
 
         create.assert_awaited_once()
         self.assertEqual(interaction.response_audio, b"")
-        self.assertIn("text-only fallback", " ".join(logs.output))
+        self.assertIn("materially_unrelated", " ".join(logs.output))
 
     def test_message_matching_allows_small_spoken_variations(self):
         self.assertTrue(
@@ -188,10 +195,38 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(
             OpenAIButlerProvider._same_message(
-                "Your meeting was cancelled.",
+                "A tropical storm is approaching another continent.",
                 "Your meeting is at three PM tomorrow.",
             )
         )
+
+    def test_message_matching_preserves_moderate_paraphrase(self):
+        self.assertTrue(
+            OpenAIButlerProvider._same_message(
+                "Okay, I've shifted tomorrow's appointment to the afternoon.",
+                "Got it. Your meeting is now scheduled for 3:00 PM tomorrow.",
+            )
+        )
+
+    async def test_invalid_ogg_input_fails_before_openai(self):
+        provider, create = self.provider(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "input.ogg"
+            source.write_bytes(b"not-ogg")
+            with self.assertRaisesRegex(Exception, "valid Ogg"):
+                await provider._wav_audio(source, "audio/ogg")
+        create.assert_not_awaited()
+
+    async def test_ffmpeg_unavailable_is_distinct_input_failure(self):
+        provider, _ = self.provider(SimpleNamespace())
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "input.ogg"
+            source.write_bytes(b"OggS" + b"0" * 24 + b"OpusHead")
+            with (
+                patch("asyncio.create_subprocess_exec", side_effect=FileNotFoundError),
+                self.assertRaisesRegex(Exception, "FFmpeg is unavailable"),
+            ):
+                await provider._wav_audio(source, "audio/ogg")
 
 
 if __name__ == "__main__":

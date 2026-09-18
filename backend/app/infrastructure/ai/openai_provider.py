@@ -8,6 +8,7 @@ import logging
 import re
 import tempfile
 import time
+import uuid
 from collections import Counter
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -66,6 +67,7 @@ class OpenAIButlerProvider:
         now: str,
         timezone: str,
         context: ButlerContext,
+        request_id: uuid.UUID | None = None,
     ) -> ButlerAIInteraction:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
@@ -81,14 +83,12 @@ class OpenAIButlerProvider:
         content: list[dict[str, object]] = [
             {
                 "type": "text",
-                "text": json.dumps(
-                    {"message": message, **payload}, ensure_ascii=True
-                ),
+                "text": json.dumps({"message": message, **payload}, ensure_ascii=True),
             }
         ]
         input_bytes = 0
         if audio_path is not None:
-            audio = await self._wav_audio(audio_path)
+            audio = await self._wav_audio(audio_path, audio_mime_type, request_id)
             input_bytes = audio_path.stat().st_size
             content.append(
                 {
@@ -102,7 +102,9 @@ class OpenAIButlerProvider:
 
         started = time.perf_counter()
         logger.info(
-            "Single-call Butler interaction started model=%s input_type=%s input_bytes=%d",
+            "Single-call Butler interaction started request_id=%s model=%s "
+            "input_type=%s input_bytes=%d",
+            request_id,
             self._audio_model,
             audio_mime_type or "text/plain",
             input_bytes,
@@ -141,8 +143,7 @@ class OpenAIButlerProvider:
                 (
                     item
                     for item in calls
-                    if item.type == "function"
-                    and item.function.name == _INTERACTION_TOOL
+                    if item.type == "function" and item.function.name == _INTERACTION_TOOL
                 ),
                 None,
             )
@@ -154,33 +155,60 @@ class OpenAIButlerProvider:
             output = assistant.audio
             if output is None:
                 logger.warning(
-                    "Single-call Butler interaction returned no audio; using text-only fallback"
+                    "Response audio unavailable request_id=%s cause=openai_no_audio; "
+                    "using text-only fallback",
+                    request_id,
                 )
                 response_audio = b""
             else:
-                if not self._same_message(output.transcript, proposal.response_text):
+                try:
+                    response_audio = base64.b64decode(output.data, validate=True)
+                    logger.info(
+                        "OpenAI response audio returned request_id=%s returned=true "
+                        "decoded_bytes=%d",
+                        request_id,
+                        len(response_audio),
+                    )
+                except binascii.Error:
                     logger.warning(
-                        "Single-call response audio transcript differs from canonical response "
-                        "similarity=%.2f; using text-only fallback",
-                        self._message_similarity(output.transcript, proposal.response_text),
+                        "Response audio unavailable request_id=%s cause=base64_decode_failed",
+                        request_id,
+                        exc_info=True,
                     )
                     response_audio = b""
-                else:
+                if response_audio:
                     try:
-                        response_audio = base64.b64decode(output.data, validate=True)
-                        if not response_audio:
-                            raise ButlerAIUnavailableError(
-                                "Multimodal AI provider returned empty audio"
-                            )
                         response_audio = await self._normalize_response_wav(response_audio)
-                    except (binascii.Error, ButlerAIUnavailableError):
-                        logger.exception(
-                            "Single-call response audio invalid; using text-only fallback"
+                    except ButlerAIUnavailableError as exc:
+                        logger.warning(
+                            "Response audio unavailable request_id=%s "
+                            "cause=wav_normalization_failed detail=%s",
+                            request_id,
+                            exc,
+                            exc_info=True,
                         )
                         response_audio = b""
+                score = self._message_similarity(output.transcript, proposal.response_text)
+                if response_audio and not self._same_message(
+                    output.transcript, proposal.response_text
+                ):
+                    logger.warning(
+                        "Response audio unavailable request_id=%s cause=materially_unrelated "
+                        "similarity=%.2f; canonical text/action preserved",
+                        request_id,
+                        score,
+                    )
+                    response_audio = b""
+                elif response_audio:
+                    logger.info(
+                        "Response audio consistency accepted request_id=%s similarity=%.2f",
+                        request_id,
+                        score,
+                    )
             logger.info(
-                "Single-call Butler interaction completed model=%s elapsed_ms=%d "
+                "Single-call Butler interaction completed request_id=%s model=%s elapsed_ms=%d "
                 "response_audio_bytes=%d action=%s intent=%s",
+                request_id,
                 self._audio_model,
                 round((time.perf_counter() - started) * 1000),
                 len(response_audio),
@@ -201,7 +229,9 @@ class OpenAIButlerProvider:
             binascii.Error,
         ) as exc:
             logger.warning(
-                "Single-call Butler interaction failed model=%s elapsed_ms=%d error_type=%s",
+                "Single-call Butler interaction failed request_id=%s model=%s "
+                "elapsed_ms=%d error_type=%s",
+                request_id,
                 self._audio_model,
                 round((time.perf_counter() - started) * 1000),
                 type(exc).__name__,
@@ -253,16 +283,12 @@ class OpenAIButlerProvider:
                     process.returncode,
                     stderr.decode(errors="replace"),
                 )
-                raise ButlerAIUnavailableError(
-                    "Generated response audio could not be normalized"
-                )
+                raise ButlerAIUnavailableError("Generated response audio could not be normalized")
 
             normalized = await asyncio.to_thread(output_path.read_bytes)
 
             if not self._is_wav(normalized):
-                raise ButlerAIUnavailableError(
-                    "Normalized response audio is not WAV"
-                )
+                raise ButlerAIUnavailableError("Normalized response audio is not WAV")
 
             logger.info(
                 "Response audio normalized input_bytes=%d output_bytes=%d",
@@ -272,10 +298,18 @@ class OpenAIButlerProvider:
 
             return normalized
 
-        except OSError as exc:
+        except FileNotFoundError as exc:
+            logger.error("Response WAV normalization failed cause=ffmpeg_unavailable")
             raise ButlerAIUnavailableError(
-                "Response audio normalization is unavailable"
+                "Response audio normalization failed because FFmpeg is unavailable"
             ) from exc
+
+        except OSError as exc:
+            logger.error(
+                "Response WAV normalization failed cause=ffmpeg_start_failed error_type=%s",
+                type(exc).__name__,
+            )
+            raise ButlerAIUnavailableError("Response audio normalization is unavailable") from exc
 
         finally:
             if input_path is not None:
@@ -285,12 +319,36 @@ class OpenAIButlerProvider:
 
     @staticmethod
     def _same_message(spoken: str, canonical: str) -> bool:
-        return OpenAIButlerProvider._message_similarity(spoken, canonical) >= 0.72
+        spoken_words = OpenAIButlerProvider._message_words(spoken)
+        canonical_words = OpenAIButlerProvider._message_words(canonical)
+        if not spoken_words or not canonical_words:
+            return False
+        stop_words = {
+            "a",
+            "an",
+            "and",
+            "at",
+            "for",
+            "i",
+            "in",
+            "is",
+            "it",
+            "of",
+            "on",
+            "the",
+            "to",
+            "was",
+            "your",
+        }
+        shared = (set(spoken_words) & set(canonical_words)) - stop_words
+        return (
+            OpenAIButlerProvider._message_similarity(spoken, canonical) >= 0.30 or len(shared) >= 2
+        )
 
     @staticmethod
     def _message_similarity(spoken: str, canonical: str) -> float:
-        spoken_words = re.findall(r"\w+", spoken.casefold())
-        canonical_words = re.findall(r"\w+", canonical.casefold())
+        spoken_words = OpenAIButlerProvider._message_words(spoken)
+        canonical_words = OpenAIButlerProvider._message_words(canonical)
         if not spoken_words or not canonical_words:
             return 0.0
         spoken_text = " ".join(spoken_words)
@@ -301,10 +359,36 @@ class OpenAIButlerProvider:
         return max(sequence_score, token_score)
 
     @staticmethod
+    def _message_words(value: str) -> list[str]:
+        return re.findall(r"\w+", value.casefold())
+
+    @staticmethod
     def _is_wav(data: bytes) -> bool:
         return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
-    async def _wav_audio(self, path: Path) -> bytes:
+    async def _wav_audio(
+        self,
+        path: Path,
+        mime_type: str | None,
+        request_id: uuid.UUID | None = None,
+    ) -> bytes:
+        input_bytes = path.stat().st_size
+        if mime_type != "audio/ogg":
+            logger.warning(
+                "Input audio rejected request_id=%s cause=unsupported_mime mime=%s bytes=%d",
+                request_id,
+                mime_type,
+                input_bytes,
+            )
+            raise ButlerAIUnavailableError("Uploaded audio must use audio/ogg")
+        header = await asyncio.to_thread(self._read_prefix, path, 256)
+        if not header.startswith(b"OggS") or b"OpusHead" not in header:
+            logger.warning(
+                "Input audio rejected request_id=%s cause=invalid_ogg bytes=%d",
+                request_id,
+                input_bytes,
+            )
+            raise ButlerAIUnavailableError("Uploaded audio is not valid Ogg/Opus")
         try:
             process = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -322,13 +406,53 @@ class OpenAIButlerProvider:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _stderr = await process.communicate()
+            stdout, stderr = await process.communicate()
+        except FileNotFoundError as exc:
+            logger.error(
+                "Input audio conversion failed request_id=%s cause=ffmpeg_unavailable bytes=%d",
+                request_id,
+                input_bytes,
+            )
+            raise ButlerAIUnavailableError("FFmpeg is unavailable for audio conversion") from exc
         except OSError as exc:
+            logger.error(
+                "Input audio conversion failed request_id=%s "
+                "cause=ffmpeg_start_failed error_type=%s",
+                request_id,
+                type(exc).__name__,
+            )
             raise ButlerAIUnavailableError("Audio format conversion is unavailable") from exc
         if process.returncode != 0 or not stdout:
-            logger.warning("Audio format conversion failed exit_code=%s", process.returncode)
+            logger.warning(
+                "Input audio conversion failed request_id=%s cause=opus_to_wav_failed "
+                "input_bytes=%d exit_code=%s stderr=%s",
+                request_id,
+                input_bytes,
+                process.returncode,
+                stderr.decode(errors="replace")[:500],
+            )
             raise ButlerAIUnavailableError("Uploaded audio could not be decoded")
+        if not self._is_wav(stdout):
+            logger.warning(
+                "Input audio conversion failed request_id=%s "
+                "cause=invalid_converted_wav output_bytes=%d",
+                request_id,
+                len(stdout),
+            )
+            raise ButlerAIUnavailableError("Uploaded audio conversion produced invalid WAV")
+        logger.info(
+            "Input audio converted request_id=%s format=ogg/opus_to_wav "
+            "input_bytes=%d output_bytes=%d",
+            request_id,
+            input_bytes,
+            len(stdout),
+        )
         return stdout
+
+    @staticmethod
+    def _read_prefix(path: Path, size: int) -> bytes:
+        with path.open("rb") as source:
+            return source.read(size)
 
     async def plan_day(self, planning_input: DayPlanningInput) -> PlannedDayProposal:
         return await self._parse(

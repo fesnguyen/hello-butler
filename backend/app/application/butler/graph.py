@@ -70,6 +70,7 @@ class ButlerGraph:
 
     async def _multimodal_interaction(self, state: ButlerState) -> ButlerStateUpdate:
         interaction = await self._ai_provider.interact(
+            request_id=state.get("request_id"),
             message=state["message"] or None,
             audio_path=state["audio_path"],
             audio_mime_type=state["audio_mime_type"],

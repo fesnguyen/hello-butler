@@ -104,7 +104,12 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
             failed = await session.get(ButlerRequestModel, request_id)
             self.assertEqual(failed.status, "failed")
 
-        await asyncio.gather(service.process(request_id), service.process(request_id))
+        with patch.object(
+            service,
+            "_encode_response_ogg",
+            AsyncMock(return_value=b"OggS" + b"0" * 24 + b"OpusHead"),
+        ):
+            await asyncio.gather(service.process(request_id), service.process(request_id))
 
         async with self.sessions() as session:
             request = await session.get(ButlerRequestModel, request_id)
@@ -113,7 +118,8 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.status, "completed")
         self.assertEqual(request.user_message_text, exact)
         self.assertEqual(request.response_text, "Done. I added Exercise today.")
-        self.assertEqual(request.response_audio_mime_type, "audio/wav")
+        self.assertEqual(request.response_audio_mime_type, "audio/ogg")
+        self.assertTrue(request.response_audio_path.endswith(".ogg"))
         self.assertTrue(Path(request.response_audio_path).is_file())
         self.assertEqual(event_count, 1)
         self.assertEqual(len(messages), 2)
@@ -122,6 +128,59 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         sent_types = [call.args[1]["type"] for call in push_provider.send_data.await_args_list]
         self.assertIn("butler_request_handling", sent_types)
         self.assertIn("butler_request_completed", sent_types)
+
+    async def test_response_audio_failure_keeps_completed_text_result(self):
+        settings = Settings(
+            jwt_secret="test-only-secret-32-characters-long",
+            butler_audio_root=str(Path(self.directory.name) / "audio"),
+        )
+        push = PushService(self.sessions, AsyncMock())
+        ai = AsyncMock()
+        ai.interact.return_value = ButlerAIInteraction(
+            proposal=ButlerInteractionProposal(
+                user_message_text="What is planned?",
+                response_text="You have no events today.",
+                decision={"intent": "query", "requested_action": "none"},
+            ),
+            response_audio=b"RIFF0000WAVEaudio",
+            response_audio_mime_type="audio/wav",
+        )
+        service = ButlerRequestService(
+            settings=settings,
+            session_factory=self.sessions,
+            butler=ButlerService(
+                settings=settings,
+                session_factory=self.sessions,
+                ai_provider=ai,
+                changes=DailyPlanChanges(self.sessions, push),
+            ),
+            push=push,
+        )
+        request_id = uuid.uuid4()
+        await service.accept_text(
+            request_id=request_id, user_id=self.user_id, message="What is planned?"
+        )
+        with patch.object(
+            service,
+            "_encode_response_ogg",
+            AsyncMock(side_effect=ValueError("encoder failed")),
+        ):
+            await service.process(request_id)
+
+        result = await service.result(self.user_id, request_id)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.response_text, "You have no events today.")
+        self.assertIsNone(result.response_audio_url)
+        self.assertTrue(result.warnings)
+
+    def test_response_retention_defaults_to_one_day_and_is_configurable(self):
+        default = Settings(jwt_secret="test-only-secret-32-characters-long")
+        override = Settings(
+            jwt_secret="test-only-secret-32-characters-long",
+            butler_response_audio_retention_days=3,
+        )
+        self.assertEqual(default.butler_response_audio_retention_days, 1)
+        self.assertEqual(override.butler_response_audio_retention_days, 3)
 
 
 if __name__ == "__main__":

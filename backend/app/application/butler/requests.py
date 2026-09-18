@@ -164,14 +164,22 @@ class ButlerRequestService:
                 interaction.response_audio,
                 interaction.response_audio_mime_type,
             )
-            await self._complete(
-                request.id, interaction.result, response_audio_path, audio_type
-            )
+            await self._complete(request.id, interaction.result, response_audio_path, audio_type)
             try:
                 await self._delete_file(request.input_audio_path)
                 await self._clear_input_path(request.id)
-            except OSError:
-                logger.exception("Input audio cleanup deferred for request %s", request.id)
+                if request.input_audio_path:
+                    logger.info(
+                        "Temporary input audio deleted request_id=%s path=%s",
+                        request.id,
+                        request.input_audio_path,
+                    )
+            except Exception:
+                logger.exception(
+                    "Temporary input audio cleanup failed request_id=%s; "
+                    "maintenance cleanup retained",
+                    request.id,
+                )
             await self._push.butler_request_state(
                 request.user_id, "butler_request_completed", request.id
             )
@@ -203,25 +211,144 @@ class ButlerRequestService:
     async def _response_audio(
         self, request_id: uuid.UUID, audio: bytes, mime_type: str
     ) -> tuple[Path | None, str | None]:
-        path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.wav"
-        try:
-            if mime_type != "audio/wav":
-                raise ValueError(f"Unsupported response audio type: {mime_type}")
-            if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
-                raise ValueError("Response audio is not a valid WAV container")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(path.write_bytes, audio)
-            logger.info(
-                "Single-call response audio stored request_id=%s type=%s bytes=%d",
+        path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.ogg"
+        if not audio:
+            logger.warning(
+                "Response audio unavailable request_id=%s cause=openai_no_usable_audio; "
+                "canonical text/action preserved",
+                request_id,
+            )
+            return None, None
+        if mime_type != "audio/wav":
+            logger.warning(
+                "Response audio unavailable request_id=%s cause=unsupported_provider_mime "
+                "mime=%s bytes=%d; canonical text/action preserved",
                 request_id,
                 mime_type,
                 len(audio),
             )
-            return path, mime_type
-        except Exception:
-            path.unlink(missing_ok=True)
-            logger.exception("Single-call response audio storage failed for request %s", request_id)
             return None, None
+        if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+            logger.warning(
+                "Response audio unavailable request_id=%s cause=invalid_openai_wav bytes=%d; "
+                "canonical text/action preserved",
+                request_id,
+                len(audio),
+            )
+            return None, None
+        logger.info(
+            "Response WAV validated request_id=%s bytes=%d",
+            request_id,
+            len(audio),
+        )
+        try:
+            encoded = await self._encode_response_ogg(request_id, audio)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(path.write_bytes, encoded)
+            logger.info(
+                "Response audio stored request_id=%s mime=audio/ogg bytes=%d "
+                "path=%s available=true",
+                request_id,
+                len(encoded),
+                path,
+            )
+            return path, "audio/ogg"
+        except (FileNotFoundError, ValueError, OSError) as exc:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "Partial response audio cleanup failed request_id=%s path=%s",
+                    request_id,
+                    path,
+                    exc_info=True,
+                )
+            cause = (
+                "ffmpeg_unavailable"
+                if isinstance(exc, FileNotFoundError)
+                else "storage_failed"
+                if isinstance(exc, OSError)
+                else "wav_to_opus_failed"
+            )
+            logger.warning(
+                "Response audio unavailable request_id=%s cause=%s error_type=%s; "
+                "canonical text/action preserved",
+                request_id,
+                cause,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return None, None
+
+    async def _encode_response_ogg(self, request_id: uuid.UUID, wav: bytes) -> bytes:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-v",
+                "error",
+                "-f",
+                "wav",
+                "-i",
+                "pipe:0",
+                "-map_metadata",
+                "-1",
+                "-c:a",
+                "libopus",
+                "-b:a",
+                "32k",
+                "-vbr",
+                "on",
+                "-f",
+                "ogg",
+                "pipe:1",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            logger.error(
+                "Response conversion failed request_id=%s cause=ffmpeg_unavailable wav_bytes=%d",
+                request_id,
+                len(wav),
+            )
+            raise
+        except OSError as exc:
+            logger.error(
+                "Response conversion failed request_id=%s cause=ffmpeg_start_failed error_type=%s",
+                request_id,
+                type(exc).__name__,
+            )
+            raise ValueError("Response audio encoder could not start") from exc
+        encoded, stderr = await process.communicate(wav)
+        if process.returncode != 0 or not encoded:
+            logger.warning(
+                "Response conversion failed request_id=%s cause=wav_to_opus_failed "
+                "wav_bytes=%d exit_code=%s stderr=%s",
+                request_id,
+                len(wav),
+                process.returncode,
+                stderr.decode(errors="replace")[:500],
+            )
+            raise ValueError("Response WAV could not be encoded as Ogg/Opus")
+        if not self._is_ogg_opus(encoded):
+            logger.warning(
+                "Response conversion failed request_id=%s cause=invalid_encoded_ogg bytes=%d",
+                request_id,
+                len(encoded),
+            )
+            raise ValueError("Encoded response is not valid Ogg/Opus")
+        logger.info(
+            "Response audio converted request_id=%s format=wav_to_ogg_opus "
+            "wav_bytes=%d opus_bytes=%d",
+            request_id,
+            len(wav),
+            len(encoded),
+        )
+        return encoded
+
+    @staticmethod
+    def _is_ogg_opus(data: bytes) -> bool:
+        return len(data) >= 32 and data[:4] == b"OggS" and b"OpusHead" in data[:256]
 
     async def _complete(
         self,
@@ -266,9 +393,7 @@ class ButlerRequestService:
                     hours=self._settings.butler_input_audio_failure_retention_hours
                 )
 
-    async def result(
-        self, user_id: uuid.UUID, request_id: uuid.UUID
-    ) -> ButlerRequestResult | None:
+    async def result(self, user_id: uuid.UUID, request_id: uuid.UUID) -> ButlerRequestResult | None:
         async with self._sessions() as session:
             request = await session.scalar(
                 select(ButlerRequestModel).where(
@@ -278,6 +403,13 @@ class ButlerRequestService:
             )
         if request is None:
             return None
+        if request.status == "completed":
+            logger.info(
+                "Butler result exposed request_id=%s response_audio_available=%s mime=%s",
+                request.id,
+                bool(request.response_audio_path),
+                request.response_audio_mime_type,
+            )
         return ButlerRequestResult(
             request_id=request.id,
             status=request.status,
@@ -376,16 +508,44 @@ class ButlerRequestService:
             )
             for request in requests:
                 if request.input_audio_delete_after and request.input_audio_delete_after <= now:
-                    await self._delete_file(request.input_audio_path)
-                    request.input_audio_path = None
-                    request.input_audio_delete_after = None
+                    try:
+                        await self._delete_file(request.input_audio_path)
+                    except OSError:
+                        logger.warning(
+                            "Expired retained input audio cleanup failed request_id=%s path=%s",
+                            request.id,
+                            request.input_audio_path,
+                            exc_info=True,
+                        )
+                    else:
+                        logger.info(
+                            "Expired retained input audio deleted request_id=%s path=%s",
+                            request.id,
+                            request.input_audio_path,
+                        )
+                        request.input_audio_path = None
+                        request.input_audio_delete_after = None
                 if (
                     request.response_audio_delete_after
                     and request.response_audio_delete_after <= now
                 ):
-                    await self._delete_file(request.response_audio_path)
-                    request.response_audio_path = None
-                    request.response_audio_delete_after = None
+                    try:
+                        await self._delete_file(request.response_audio_path)
+                    except OSError:
+                        logger.warning(
+                            "Expired response audio cleanup failed request_id=%s path=%s",
+                            request.id,
+                            request.response_audio_path,
+                            exc_info=True,
+                        )
+                    else:
+                        logger.info(
+                            "Expired response audio deleted request_id=%s path=%s",
+                            request.id,
+                            request.response_audio_path,
+                        )
+                        request.response_audio_path = None
+                        request.response_audio_delete_after = None
 
     @staticmethod
     async def _delete_file(path: str | None) -> None:

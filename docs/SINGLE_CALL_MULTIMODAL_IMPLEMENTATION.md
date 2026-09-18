@@ -49,6 +49,7 @@ audio or text
 The v1.7 audio contract is explicit:
 
 - **Client recording/upload:** Ogg container with Opus audio (`audio/ogg`). The client streams/uploads this compressed format to the backend; it does not upload WAV.
+- **Android compatibility:** framework `MediaRecorder` exposes the required OGG + OPUS pair from Android 10 (API 29). Voice capture fails clearly on API 26-28 instead of silently producing AAC under an Ogg name; supported production voice devices must run API 29 or newer.
 - **Temporary backend input:** the uploaded Ogg/Opus asset is stored only long enough to support durable asynchronous processing/recovery. Before the OpenAI call, the backend converts it to WAV.
 - **OpenAI input/output:** WAV is the normalized internal provider format. WAV is not the client transport/storage format.
 - **Backend response conversion:** audio returned by OpenAI is normalized as WAV first, then encoded to Ogg/Opus before durable response storage.
@@ -85,12 +86,22 @@ the canonical response transcript before backend normalization and Opus encoding
   request becomes failed and no false success message is written to conversation
   history.
 - Provider or structured-schema failure fails the request and remains observable.
+- **Input-audio failures are request failures:** invalid Ogg/Opus, unavailable FFmpeg,
+  or an undecodable upload means Butler has no trustworthy user instruction. The
+  durable input is retained temporarily for retry/recovery and later maintenance cleanup.
 - Missing, malformed, unnormalizable, or unencodable response audio is logged and degrades to
   the existing completed text-only response with an audio warning. It never causes
   a second provider call.
-- A materially different audio transcript is rejected into the same text-only
-  fallback; tolerant normalization still permits harmless punctuation/formatting
-  variation.
+- **Response-audio failures never fail the request:** absent model audio, decode
+  failure, materially unrelated speech, invalid WAV, Opus encoding failure, or
+  storage failure preserves the canonical text/action, completes the request,
+  returns `response_audio_url = null`, and emits a warning plus a cause-specific log.
+- The transcript check is deliberately permissive. A similarity score of at least
+  `0.30`, or two shared meaningful normalized tokens, accepts the audio; punctuation,
+  capitalization, filler, contractions, formatting, spoken numbers/times, and
+  moderate paraphrases therefore survive. Audio is dropped only when the transcript
+  has strong evidence of being materially unrelated. `proposal.response_text`
+  remains canonical regardless of the decision.
 - Idempotency receipts and asynchronous recovery remain active for retried durable
   requests.
 

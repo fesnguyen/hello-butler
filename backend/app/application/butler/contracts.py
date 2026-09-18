@@ -121,6 +121,7 @@ class ButlerAIProvider(Protocol):
     async def interact(
         self,
         *,
+        request_id: uuid.UUID | None,
         message: str | None,
         audio_path: Path | None,
         audio_mime_type: str | None,
