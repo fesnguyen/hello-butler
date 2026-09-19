@@ -9,6 +9,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.hellobutler.app.execution.ScheduleRestoreWorker
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -52,6 +53,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         onPauseOrDispose { }
     }
     val recorder = remember { ButlerAudioRecorder(context) }
+    var captureStartedAtMillis by remember { mutableLongStateOf(0L) }
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
     var creatingEvent by remember { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -86,12 +88,24 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
             return
         }
         runCatching { recorder.start() }.fold(
-            onSuccess = { viewModel.beginRecording(mode) },
+            onSuccess = {
+                captureStartedAtMillis = SystemClock.elapsedRealtime()
+                viewModel.beginRecording(mode)
+            },
             onFailure = { viewModel.captureError(it.message ?: "Recording could not start") },
         )
     }
 
-    fun finishCapture() { viewModel.finishRecording(recorder.stop()) }
+    fun finishCapture() {
+        val elapsedMillis = SystemClock.elapsedRealtime() - captureStartedAtMillis
+        captureStartedAtMillis = 0L
+        if (shouldDiscardVoiceCapture(elapsedMillis)) {
+            recorder.cancel()
+            viewModel.cancelRecording()
+            return
+        }
+        viewModel.finishRecording(recorder.stop())
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
