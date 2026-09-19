@@ -2,14 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import json
 import logging
-import re
-from collections import Counter
-from difflib import SequenceMatcher
+import time
+import uuid
 from pathlib import Path
-import tempfile
 from typing import Any, TypeVar, cast
 
 from openai import APIError, AsyncOpenAI
@@ -18,8 +15,8 @@ from pydantic import BaseModel, ValidationError
 from app.application.butler import (
     ButlerAIUnavailableError,
     ButlerContext,
-    ButlerDecision,
-    ButlerUnderstanding,
+    ButlerInteractionProposal,
+    ButlerSpeech,
 )
 from app.application.planning.contracts import (
     DayPlanningInput,
@@ -30,8 +27,7 @@ from app.application.planning.contracts import (
 )
 
 from .prompts import (
-    BUTLER_DECISION_INSTRUCTIONS,
-    BUTLER_RESPONSE_AUDIO_INSTRUCTIONS,
+    BUTLER_INTERACTION_INSTRUCTIONS,
     DAY_PLANNING_INSTRUCTIONS,
     GOOD_NIGHT_SUMMARY_INSTRUCTIONS,
     MORNING_BRIEF_INSTRUCTIONS,
@@ -39,7 +35,56 @@ from .prompts import (
 
 logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=BaseModel)
-_UNDERSTANDING_TOOL = "submit_butler_understanding"
+_INTERACTION_TOOL = "submit_butler_interaction"
+
+
+class OpenAIButlerVoiceProvider:
+    def __init__(
+        self, *, api_key: str, model: str = "gpt-4o-mini-tts", voice: str = "alloy"
+    ) -> None:
+        self._model = model
+        self._voice = voice
+        self._client = AsyncOpenAI(api_key=api_key) if api_key else None
+
+    async def synthesize(
+        self, *, text: str, request_id: uuid.UUID | None = None
+    ) -> ButlerSpeech:
+        if self._client is None:
+            raise ButlerAIUnavailableError("OpenAI API key is not configured for TTS")
+        started = time.perf_counter()
+        logger.info(
+            "Butler TTS started request_id=%s model=%s text_chars=%d",
+            request_id,
+            self._model,
+            len(text),
+        )
+        try:
+            response = await self._client.audio.speech.create(
+                model=self._model,
+                voice=cast(Any, self._voice),
+                input=text,
+                response_format="wav",
+            )
+            audio = response.content
+            if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+                raise ButlerAIUnavailableError("TTS returned invalid WAV audio")
+        except (APIError, OSError) as exc:
+            logger.warning(
+                "Butler TTS failed request_id=%s model=%s elapsed_ms=%d error_type=%s",
+                request_id,
+                self._model,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
+            raise ButlerAIUnavailableError("TTS provider request failed") from exc
+        logger.info(
+            "Butler TTS completed request_id=%s model=%s elapsed_ms=%d wav_bytes=%d",
+            request_id,
+            self._model,
+            round((time.perf_counter() - started) * 1000),
+            len(audio),
+        )
+        return ButlerSpeech(audio=audio, mime_type="audio/wav")
 
 
 class OpenAIButlerProvider:
@@ -49,14 +94,12 @@ class OpenAIButlerProvider:
         api_key: str,
         model: str,
         audio_model: str = "gpt-audio-1.5",
-        audio_voice: str = "alloy",
     ) -> None:
         self._model = model
         self._audio_model = audio_model
-        self._audio_voice = audio_voice
         self._client = AsyncOpenAI(api_key=api_key) if api_key else None
 
-    async def understand(
+    async def interact(
         self,
         *,
         message: str | None,
@@ -66,234 +109,156 @@ class OpenAIButlerProvider:
         now: str,
         timezone: str,
         context: ButlerContext,
-    ) -> ButlerUnderstanding:
+        request_id: uuid.UUID | None = None,
+    ) -> ButlerInteractionProposal:
+        if self._client is None:
+            raise ButlerAIUnavailableError("OpenAI API key is not configured")
         payload: dict[str, object] = {
             "interaction_mode": interaction_mode,
             "now": now,
             "timezone": timezone,
             "context": context.model_dump(mode="json"),
+            "output_schema": ButlerInteractionProposal.model_json_schema(),
         }
-        if audio_path is not None:
-            return await self._understand_audio(audio_path, audio_mime_type, payload)
-        if message is None:
+        if audio_path is None and message is None:
             raise ButlerAIUnavailableError("Butler provider received no input")
-        decision = await self._parse(
-            instructions=BUTLER_DECISION_INSTRUCTIONS,
-            payload={"message": message, **payload},
-            text_format=ButlerDecision,
-        )
-        return ButlerUnderstanding(user_message_text=message, decision=decision)
 
-    async def _understand_audio(
-        self,
-        path: Path,
-        mime_type: str | None,
-        payload: dict[str, object],
-    ) -> ButlerUnderstanding:
-        if self._client is None:
-            raise ButlerAIUnavailableError("OpenAI API key is not configured")
-        audio = await self._wav_audio(path)
-        logger.info(
-            "Calling multimodal Butler model=%s input_type=%s input_bytes=%d",
-            self._audio_model,
-            mime_type or "unknown",
-            path.stat().st_size,
-        )
-        tool = {
-            "type": "function",
-            "function": {
-                "name": _UNDERSTANDING_TOOL,
-                "description": (
-                    "Return the understood user utterance and Butler decision. "
-                    "Application code validates and applies all mutations."
-                ),
-                "parameters": ButlerUnderstanding.model_json_schema(),
-            },
-        }
-        messages = [
-            {"role": "system", "content": BUTLER_DECISION_INSTRUCTIONS},
+        content: list[dict[str, object]] = [
             {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(payload, ensure_ascii=True),
-                    },
-                    {
-                        "type": "input_audio",
-                        "input_audio": {
-                            "data": base64.b64encode(audio).decode("ascii"),
-                            "format": "wav",
-                        },
-                    },
-                ],
-            },
+                "type": "text",
+                "text": json.dumps({"message": message, **payload}, ensure_ascii=True),
+            }
         ]
+        input_bytes = 0
+        if audio_path is not None:
+            audio = await self._wav_audio(audio_path, audio_mime_type, request_id)
+            input_bytes = audio_path.stat().st_size
+            content.append(
+                {
+                    "type": "input_audio",
+                    "input_audio": {
+                        "data": base64.b64encode(audio).decode("ascii"),
+                        "format": "wav",
+                    },
+                }
+            )
+
+        started = time.perf_counter()
+        logger.info(
+            "Butler interaction started request_id=%s api=chat_completions model=%s "
+            "input_type=%s input_bytes=%d",
+            request_id,
+            self._audio_model,
+            audio_mime_type or "text/plain",
+            input_bytes,
+        )
         try:
-            completion = await self._client.chat.completions.create(
-                model=self._audio_model,
-                messages=cast(Any, messages),
-                tools=cast(Any, [tool]),
-                tool_choice=cast(
-                    Any,
-                    {"type": "function", "function": {"name": _UNDERSTANDING_TOOL}},
-                ),
-                store=False,
+            proposal = await self._chat_interaction(content)
+            logger.info(
+                "Butler interaction completed request_id=%s api=chat_completions model=%s "
+                "elapsed_ms=%d action=%s intent=%s",
+                request_id,
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+                proposal.decision.requested_action,
+                proposal.decision.intent,
             )
-            calls = completion.choices[0].message.tool_calls or []
-            call = next(
-                (
-                    item
-                    for item in calls
-                    if item.type == "function"
-                    and item.function.name == _UNDERSTANDING_TOOL
-                ),
-                None,
+            return proposal
+        except (
+            APIError,
+            IndexError,
+            OSError,
+            ValidationError,
+            json.JSONDecodeError,
+        ) as exc:
+            logger.warning(
+                "Butler interaction failed request_id=%s api=chat_completions model=%s "
+                "elapsed_ms=%d error_type=%s",
+                request_id,
+                self._audio_model,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
             )
-            if call is None:
-                raise ButlerAIUnavailableError(
-                    "Multimodal AI provider returned no Butler understanding"
-                )
-            return ButlerUnderstanding.model_validate_json(call.function.arguments)
-        except (APIError, IndexError, OSError, ValidationError, json.JSONDecodeError) as exc:
             raise ButlerAIUnavailableError("Multimodal AI provider request failed") from exc
 
-    async def _normalize_response_wav(self, data: bytes) -> bytes:
-        input_path: Path | None = None
-        output_path: Path | None = None
-
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as input_file:
-                input_file.write(data)
-                input_path = Path(input_file.name)
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as output_file:
-                output_path = Path(output_file.name)
-
-            # Let FFmpeg create the output file itself.
-            output_path.unlink()
-
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                str(input_path),
-                "-map_metadata",
-                "-1",
-                "-c:a",
-                "pcm_s16le",
-                "-ac",
-                "1",
-                "-ar",
-                "24000",
-                "-f",
-                "wav",
-                str(output_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            _, stderr = await process.communicate()
-
-            if process.returncode != 0 or not output_path.is_file():
-                logger.warning(
-                    "Response audio normalization failed exit_code=%s error=%s",
-                    process.returncode,
-                    stderr.decode(errors="replace"),
-                )
-                raise ButlerAIUnavailableError(
-                    "Generated response audio could not be normalized"
-                )
-
-            normalized = await asyncio.to_thread(output_path.read_bytes)
-
-            if not self._is_wav(normalized):
-                raise ButlerAIUnavailableError(
-                    "Normalized response audio is not WAV"
-                )
-
-            logger.info(
-                "Response audio normalized input_bytes=%d output_bytes=%d",
-                len(data),
-                len(normalized),
-            )
-
-            return normalized
-
-        except OSError as exc:
-            raise ButlerAIUnavailableError(
-                "Response audio normalization is unavailable"
-            ) from exc
-
-        finally:
-            if input_path is not None:
-                input_path.unlink(missing_ok=True)
-            if output_path is not None:
-                output_path.unlink(missing_ok=True)
-
-    async def synthesize(self, text: str, path: Path) -> str:
+    async def _chat_interaction(
+        self, content: list[dict[str, object]]
+    ) -> ButlerInteractionProposal:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
-        try:
-            completion = await self._client.chat.completions.create(
-                model=self._audio_model,
-                modalities=["text", "audio"],
-                audio=cast(Any, {"voice": self._audio_voice, "format": "wav"}),
-                messages=cast(
-                    Any,
-                    [
-                        {"role": "system", "content": BUTLER_RESPONSE_AUDIO_INSTRUCTIONS},
-                        {"role": "user", "content": text},
-                    ],
-                ),
-                store=False,
+        completion = await self._client.chat.completions.create(
+            model=self._audio_model,
+            messages=cast(
+                Any,
+                [
+                    {"role": "system", "content": BUTLER_INTERACTION_INSTRUCTIONS},
+                    {"role": "user", "content": content},
+                ],
+            ),
+            tools=cast(
+                Any,
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": _INTERACTION_TOOL,
+                            "description": (
+                                "Return the complete proposed Butler interaction. "
+                                "Application code validates and applies mutations."
+                            ),
+                            "parameters": ButlerInteractionProposal.model_json_schema(),
+                        },
+                    }
+                ],
+            ),
+            tool_choice=cast(
+                Any,
+                {"type": "function", "function": {"name": _INTERACTION_TOOL}},
+            ),
+            store=False,
+        )
+        assistant = completion.choices[0].message
+        call = next(
+            (
+                item
+                for item in assistant.tool_calls or []
+                if item.type == "function" and item.function.name == _INTERACTION_TOOL
+            ),
+            None,
+        )
+        if call is None:
+            raise ButlerAIUnavailableError(
+                "Chat Completions returned no structured Butler interaction"
             )
-            output = completion.choices[0].message.audio
-            if output is None:
-                raise ButlerAIUnavailableError("Audio model returned no response audio")
-            if not self._same_message(output.transcript, text):
-                logger.warning(
-                    "Audio model transcript differs from canonical response similarity=%.2f; "
-                    "accepting generated audio",
-                    self._message_similarity(output.transcript, text),
-                )
-            data = base64.b64decode(output.data, validate=True)
-            if not data:
-                raise ButlerAIUnavailableError("Audio model returned empty response audio")
-            
-            data = await self._normalize_response_wav(data)  # normalize the response audio to ensure it is a valid WAV file
-
-            path.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(path.write_bytes, data)
-        except (APIError, IndexError, OSError, binascii.Error) as exc:
-            path.unlink(missing_ok=True)
-            raise ButlerAIUnavailableError("Response audio generation failed") from exc
-        return "audio/wav"
-
-    @staticmethod
-    def _same_message(spoken: str, canonical: str) -> bool:
-        return OpenAIButlerProvider._message_similarity(spoken, canonical) >= 0.72
-
-    @staticmethod
-    def _message_similarity(spoken: str, canonical: str) -> float:
-        spoken_words = re.findall(r"\w+", spoken.casefold())
-        canonical_words = re.findall(r"\w+", canonical.casefold())
-        if not spoken_words or not canonical_words:
-            return 0.0
-        spoken_text = " ".join(spoken_words)
-        canonical_text = " ".join(canonical_words)
-        sequence_score = SequenceMatcher(None, spoken_text, canonical_text).ratio()
-        overlap = sum((Counter(spoken_words) & Counter(canonical_words)).values())
-        token_score = (2 * overlap) / (len(spoken_words) + len(canonical_words))
-        return max(sequence_score, token_score)
+        return ButlerInteractionProposal.model_validate_json(call.function.arguments)
 
     @staticmethod
     def _is_wav(data: bytes) -> bool:
         return len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WAVE"
 
-    async def _wav_audio(self, path: Path) -> bytes:
+    async def _wav_audio(
+        self,
+        path: Path,
+        mime_type: str | None,
+        request_id: uuid.UUID | None = None,
+    ) -> bytes:
+        input_bytes = path.stat().st_size
+        if mime_type != "audio/ogg":
+            logger.warning(
+                "Input audio rejected request_id=%s cause=unsupported_mime mime=%s bytes=%d",
+                request_id,
+                mime_type,
+                input_bytes,
+            )
+            raise ButlerAIUnavailableError("Uploaded audio must use audio/ogg")
+        header = await asyncio.to_thread(self._read_prefix, path, 256)
+        if not header.startswith(b"OggS") or b"OpusHead" not in header:
+            logger.warning(
+                "Input audio rejected request_id=%s cause=invalid_ogg bytes=%d",
+                request_id,
+                input_bytes,
+            )
+            raise ButlerAIUnavailableError("Uploaded audio is not valid Ogg/Opus")
         try:
             process = await asyncio.create_subprocess_exec(
                 "ffmpeg",
@@ -311,13 +276,53 @@ class OpenAIButlerProvider:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _stderr = await process.communicate()
+            stdout, stderr = await process.communicate()
+        except FileNotFoundError as exc:
+            logger.error(
+                "Input audio conversion failed request_id=%s cause=ffmpeg_unavailable bytes=%d",
+                request_id,
+                input_bytes,
+            )
+            raise ButlerAIUnavailableError("FFmpeg is unavailable for audio conversion") from exc
         except OSError as exc:
+            logger.error(
+                "Input audio conversion failed request_id=%s "
+                "cause=ffmpeg_start_failed error_type=%s",
+                request_id,
+                type(exc).__name__,
+            )
             raise ButlerAIUnavailableError("Audio format conversion is unavailable") from exc
         if process.returncode != 0 or not stdout:
-            logger.warning("Audio format conversion failed exit_code=%s", process.returncode)
+            logger.warning(
+                "Input audio conversion failed request_id=%s cause=opus_to_wav_failed "
+                "input_bytes=%d exit_code=%s stderr=%s",
+                request_id,
+                input_bytes,
+                process.returncode,
+                stderr.decode(errors="replace")[:500],
+            )
             raise ButlerAIUnavailableError("Uploaded audio could not be decoded")
+        if not self._is_wav(stdout):
+            logger.warning(
+                "Input audio conversion failed request_id=%s "
+                "cause=invalid_converted_wav output_bytes=%d",
+                request_id,
+                len(stdout),
+            )
+            raise ButlerAIUnavailableError("Uploaded audio conversion produced invalid WAV")
+        logger.info(
+            "Input audio converted request_id=%s format=ogg/opus_to_wav "
+            "input_bytes=%d output_bytes=%d",
+            request_id,
+            input_bytes,
+            len(stdout),
+        )
         return stdout
+
+    @staticmethod
+    def _read_prefix(path: Path, size: int) -> bytes:
+        with path.open("rb") as source:
+            return source.read(size)
 
     async def plan_day(self, planning_input: DayPlanningInput) -> PlannedDayProposal:
         return await self._parse(

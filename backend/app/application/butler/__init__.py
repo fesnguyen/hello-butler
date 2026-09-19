@@ -4,8 +4,11 @@ from app.application.butler.contracts import (
     ButlerContext,
     ButlerDecision,
     ButlerError,
+    ButlerInteractionProposal,
+    ButlerMutationRejectedError,
     ButlerResult,
-    ButlerUnderstanding,
+    ButlerSpeech,
+    ButlerVoiceProvider,
 )
 from app.application.butler.service import ButlerService
 
@@ -17,5 +20,8 @@ __all__ = [
     "ButlerError",
     "ButlerResult",
     "ButlerService",
-    "ButlerUnderstanding",
+    "ButlerSpeech",
+    "ButlerInteractionProposal",
+    "ButlerMutationRejectedError",
+    "ButlerVoiceProvider",
 ]

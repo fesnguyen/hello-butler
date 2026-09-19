@@ -4,7 +4,10 @@ from app.application.push import PushService
 from app.application.push.changes import DailyPlanChanges
 from app.core.config import Settings
 from app.core.database import AsyncSessionLocal
-from app.infrastructure.ai.openai_provider import OpenAIButlerProvider
+from app.infrastructure.ai.openai_provider import (
+    OpenAIButlerProvider,
+    OpenAIButlerVoiceProvider,
+)
 from app.infrastructure.push import FirebasePushProvider
 
 
@@ -37,7 +40,11 @@ def butler_request_service(settings: Settings) -> ButlerRequestService:
         api_key=settings.openai_api_key,
         model=settings.openai_model,
         audio_model=settings.butler_audio_model,
-        audio_voice=settings.butler_audio_voice,
+    )
+    voice_provider = OpenAIButlerVoiceProvider(
+        api_key=settings.openai_api_key,
+        model=settings.butler_tts_model,
+        voice=settings.butler_audio_voice,
     )
     butler = ButlerService(
         settings=settings,
@@ -49,6 +56,6 @@ def butler_request_service(settings: Settings) -> ButlerRequestService:
         settings=settings,
         session_factory=AsyncSessionLocal,
         butler=butler,
-        audio=provider,
         push=push_service(settings),
+        voice_provider=voice_provider,
     )

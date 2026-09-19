@@ -23,15 +23,18 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4-nano"
     butler_audio_model: str = "gpt-audio-1.5"
+    butler_tts_model: str = "gpt-4o-mini-tts"
     butler_audio_voice: str = "alloy"
+    butler_voice_enabled: bool = True
     butler_audio_root: str = "data/butler_audio"
     butler_max_input_audio_bytes: int = 15 * 1024 * 1024
     butler_processing_stale_minutes: int = 10
     butler_maintenance_interval_seconds: int = 60
-    butler_response_audio_retention_days: int = 7
+    butler_response_audio_retention_days: int = 1
     butler_input_audio_failure_retention_hours: int = 24
     butler_default_timezone: str = "UTC"
     butler_history_limit: int = 6
+    butler_history_window_minutes: int = Field(default=30, ge=1, le=1440)
     butler_user_context_limit: int = 20
     butler_event_limit: int = 30
     nightly_planning_time: time = time(23, 0)

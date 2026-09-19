@@ -8,7 +8,11 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from app.application.butler.contracts import ButlerDecision
+from app.application.butler.contracts import (
+    ButlerDecision,
+    ButlerInteractionProposal,
+    ButlerMutationRejectedError,
+)
 from app.application.butler.service import ButlerService
 from app.application.planning.contracts import (
     GoodNightSummaryDraft,
@@ -23,7 +27,13 @@ from app.application.sync.contracts import DailyEventMutation, EventSyncOperatio
 from app.application.sync.service import DailyEventSyncService
 from app.core.config import Settings
 from app.infrastructure.db.base import Base
-from app.infrastructure.db.models import DailyEventModel, DailyPlanModel, UserModel
+from app.infrastructure.db.models import (
+    ConversationMessageModel,
+    DailyEventModel,
+    DailyPlanModel,
+    UserContextEntryModel,
+    UserModel,
+)
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -87,6 +97,17 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             content="Your actual day."
         )
         return ai
+
+    @staticmethod
+    def interaction(
+        message: str, decision: ButlerDecision, response: str
+    ) -> ButlerInteractionProposal:
+        return ButlerInteractionProposal(
+            thought="The response follows from the supplied decision.",
+            user_message_text=message,
+            decision=decision,
+            response_text=response,
+        )
 
     async def test_push_observes_committed_data_and_only_sends_hint_to_both_devices(self):
         operation = self.operation()
@@ -159,16 +180,20 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         ai = AsyncMock()
         target_date = self.today + timedelta(days=3)
 
-        async def understand(**request):
+        async def interact(**request):
             self.assertEqual(request["context"].relevant_events[0].start_time, time(19))
-            return ButlerDecision(
-                intent="command",
-                requested_action="update_daily_event",
-                target_event_id=created.event_id,
-                event_date=target_date,
+            return self.interaction(
+                "Move it",
+                ButlerDecision(
+                    intent="command",
+                    requested_action="update_daily_event",
+                    target_event_id=created.event_id,
+                    event_date=target_date,
+                ),
+                "Done. I moved Exercise.",
             )
 
-        ai.understand.side_effect = understand
+        ai.interact.side_effect = interact
         service = ButlerService(
             settings=self.settings,
             session_factory=self.sessions,
@@ -181,8 +206,12 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_butler_change_publishes_even_if_history_later_fails(self):
         ai = AsyncMock()
-        ai.understand.return_value = ButlerDecision(
-            intent="command", requested_action="create_daily_event", title="Exercise"
+        ai.interact.return_value = self.interaction(
+            "Add exercise",
+            ButlerDecision(
+                intent="command", requested_action="create_daily_event", title="Exercise"
+            ),
+            "Done. I added Exercise.",
         )
         service = ButlerService(
             settings=self.settings,
@@ -201,6 +230,129 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 user_id=self.user, interaction_mode="order", message="Add exercise"
             )
         self.provider.send_data.assert_awaited_once()
+
+    async def test_butler_skip_uses_model_response_unchanged(self):
+        created = self.operation()
+        await self.sync.apply(self.user, [created])
+        ai = AsyncMock()
+        canonical = "Of course. I skipped Exercise for today."
+        ai.interact.return_value = self.interaction(
+            "Skip exercise",
+            ButlerDecision(
+                intent="command",
+                requested_action="skip_daily_event",
+                target_event_id=created.event_id,
+            ),
+            canonical,
+        )
+        service = ButlerService(
+            settings=self.settings,
+            session_factory=self.sessions,
+            ai_provider=ai,
+            changes=self.changes,
+        )
+
+        completed = await service.handle(
+            user_id=self.user, interaction_mode="order", message="Skip exercise"
+        )
+
+        async with self.sessions() as session:
+            event = await session.get(DailyEventModel, created.event_id)
+        self.assertEqual(event.status, "skipped")
+        self.assertEqual(completed.response, canonical)
+
+    async def test_butler_updates_user_context(self):
+        context_id = uuid.uuid4()
+        async with self.sessions() as session, session.begin():
+            session.add(
+                UserContextEntryModel(
+                    id=context_id,
+                    user_id=self.user,
+                    context_type="reference",
+                    content="I prefer evening exercise.",
+                )
+            )
+        ai = AsyncMock()
+        ai.interact.return_value = self.interaction(
+            "Actually I prefer morning exercise",
+            ButlerDecision(
+                intent="command",
+                requested_action="update_user_context",
+                target_context_id=context_id,
+                context_content="I prefer morning exercise.",
+            ),
+            "Got it. I'll remember that you prefer morning exercise.",
+        )
+        service = ButlerService(
+            settings=self.settings,
+            session_factory=self.sessions,
+            ai_provider=ai,
+            changes=self.changes,
+        )
+
+        await service.handle(
+            user_id=self.user,
+            interaction_mode="talk",
+            message="Actually I prefer morning exercise",
+        )
+
+        async with self.sessions() as session:
+            entry = await session.get(UserContextEntryModel, context_id)
+        self.assertEqual(entry.content, "I prefer morning exercise.")
+
+    async def test_query_and_clarification_apply_no_mutation(self):
+        for intent, follow_up in (("query", False), ("clarify", True)):
+            with self.subTest(intent=intent):
+                ai = AsyncMock()
+                ai.interact.return_value = self.interaction(
+                    "Hello",
+                    ButlerDecision(intent=intent, requested_action="none"),
+                    "How can I help?" if intent == "query" else "Sorry, what did you mean?",
+                )
+                service = ButlerService(
+                    settings=self.settings,
+                    session_factory=self.sessions,
+                    ai_provider=ai,
+                    changes=self.changes,
+                )
+                completed = await service.handle(
+                    user_id=self.user, interaction_mode="talk", message="Hello"
+                )
+                self.assertEqual(completed.requires_follow_up, follow_up)
+
+        async with self.sessions() as session:
+            events = list((await session.scalars(select(DailyEventModel))).all())
+        self.assertEqual(events, [])
+
+    async def test_invalid_mutation_cannot_persist_false_success(self):
+        ai = AsyncMock()
+        ai.interact.return_value = self.interaction(
+            "Move the missing meeting",
+            ButlerDecision(
+                intent="command",
+                requested_action="update_daily_event",
+                target_event_id=uuid.uuid4(),
+                start_time=time(15),
+            ),
+            "Done. I moved your meeting.",
+        )
+        service = ButlerService(
+            settings=self.settings,
+            session_factory=self.sessions,
+            ai_provider=ai,
+            changes=self.changes,
+        )
+
+        with self.assertRaises(ButlerMutationRejectedError):
+            await service.handle(
+                user_id=self.user,
+                interaction_mode="order",
+                message="Move the missing meeting",
+            )
+
+        async with self.sessions() as session:
+            messages = list((await session.scalars(select(ConversationMessageModel))).all())
+        self.assertEqual(messages, [])
 
     async def test_preparation_pushes_and_user_owned_event_survives_regeneration(self):
         planner = DayPlanningService(self.settings, self.sessions, self.planner_ai(), self.changes)

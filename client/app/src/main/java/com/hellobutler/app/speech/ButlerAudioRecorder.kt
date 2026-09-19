@@ -12,16 +12,19 @@ class ButlerAudioRecorder(private val context: Context) {
 
     fun start(): File {
         check(recorder == null) { "Recording is already active" }
-        val file = File(context.cacheDir, "butler-input-${UUID.randomUUID()}.m4a")
+        check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            "Ogg/Opus recording requires Android 10 or newer"
+        }
+        val file = File(context.cacheDir, "butler-input-${UUID.randomUUID()}.ogg")
         val active = if (Build.VERSION.SDK_INT >= 31) MediaRecorder(context) else {
             @Suppress("DEPRECATION")
             MediaRecorder()
         }
         try {
             active.setAudioSource(MediaRecorder.AudioSource.MIC)
-            active.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            active.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            active.setAudioEncodingBitRate(48_000)
+            active.setOutputFormat(MediaRecorder.OutputFormat.OGG)
+            active.setAudioEncoder(MediaRecorder.AudioEncoder.OPUS)
+            active.setAudioEncodingBitRate(32_000)
             active.setAudioSamplingRate(16_000)
             active.setOutputFile(file.absolutePath)
             active.prepare()

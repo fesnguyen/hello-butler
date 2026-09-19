@@ -20,6 +20,11 @@ import kotlinx.coroutines.launch
 
 enum class CaptureMode { ORDER, TALK, TEXT }
 
+internal const val MINIMUM_VOICE_CAPTURE_MILLIS = 1_000L
+
+internal fun shouldDiscardVoiceCapture(elapsedMillis: Long): Boolean =
+    elapsedMillis < MINIMUM_VOICE_CAPTURE_MILLIS
+
 data class MainUiState(
     val overlayVisible: Boolean = false,
     val captureMode: CaptureMode? = null,
@@ -53,6 +58,17 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
         viewModelScope.launch {
             runCatching { butler.queueAudio(if (mode == CaptureMode.ORDER) "order" else "talk", file) }
                 .onFailure { captureError(it.message ?: "Voice message could not be queued") }
+        }
+    }
+
+    fun cancelRecording() {
+        _state.update {
+            it.copy(
+                overlayVisible = true,
+                captureMode = null,
+                recording = false,
+                error = null,
+            )
         }
     }
 

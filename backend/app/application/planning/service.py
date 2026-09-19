@@ -50,12 +50,12 @@ class DayPlanningService:
         proposal = await self._ai.plan_day(planning_input)
         proposed = self._normalize(proposal, planning_input.known_events)
         final_for_brief = [
-            event.model_dump(mode="json")
-            for event in sorted(
-                [*planning_input.known_events, *[self._known(event) for event in proposed]],
-                key=lambda event: (event.start_time is None, event.start_time or time.max),
-            )
-        ]
+        event.model_dump(mode="json")
+        for event in sorted(
+            [*planning_input.known_events, *[self._known(event) for event in proposed]],
+            key=lambda event: DayPlanningService._time_sort_key(event.start_time),
+        )
+    ]
         brief = await self._ai.compose_morning_brief(planning_input, final_for_brief)
         brief_time = (
             morning_brief_time
@@ -117,6 +117,14 @@ class DayPlanningService:
         )
 
     @staticmethod
+    def _time_sort_key(value: time | None) -> tuple[bool, int]:
+        """Return a tuple suitable for sorting times, with None values considered last."""
+        if value is None:
+            return True, 24 * 60 * 60
+
+        return False, value.hour * 3600 + value.minute * 60 + value.second
+
+    @staticmethod
     def _normalize(
         proposal: PlannedDayProposal,
         known_events: Sequence[PlanningKnownEvent],
@@ -137,8 +145,7 @@ class DayPlanningService:
         return sorted(
             events,
             key=lambda event: (
-                event.start_time is None,
-                event.start_time or time.max,
+                *DayPlanningService._time_sort_key(event.start_time),
                 event.title.casefold(),
             ),
         )

@@ -170,6 +170,18 @@ The backend does not make a second AI call merely to rewrite the response after 
 
 The model never writes directly to PostgreSQL.
 
+The structured tool payload contains `user_message_text`, the typed `ButlerDecision`,
+and `response_text`. Native model audio remains separate from that JSON payload at
+the provider boundary. The application combines both parts into one internal
+interaction result; base64 audio is never modeled as an arbitrary mutation field.
+
+If application validation cannot apply a proposed mutation, processing fails with
+an observable mutation-rejection error before conversation history or a completed
+request can persist the model's success claim. No second model call rewrites that
+claim. If only returned response audio is missing or malformed, the canonical text
+result may complete with an audio-unavailable warning; the backend never invokes a
+separate TTS fallback.
+
 ---
 
 # Semantic Routes

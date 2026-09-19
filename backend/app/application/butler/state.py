@@ -9,6 +9,7 @@ from app.application.butler.contracts import (
     ButlerContext,
     ButlerDecision,
     ButlerError,
+    ButlerInteractionProposal,
     ButlerResult,
     InteractionMode,
 )
@@ -27,6 +28,7 @@ class ButlerState(TypedDict):
     context: NotRequired[ButlerContext]
     decision: NotRequired[ButlerDecision]
     result: NotRequired[ButlerResult]
+    proposal: NotRequired[ButlerInteractionProposal]
 
 
 class ButlerStateUpdate(TypedDict, total=False):
@@ -34,6 +36,7 @@ class ButlerStateUpdate(TypedDict, total=False):
     context: ButlerContext
     decision: ButlerDecision
     result: ButlerResult
+    proposal: ButlerInteractionProposal
 
 
 def context_from(state: ButlerState) -> ButlerContext:
@@ -55,3 +58,14 @@ def result_from(state: ButlerState) -> ButlerResult:
     if result is None:
         raise ButlerError("Butler graph state is missing result")
     return result
+
+
+def proposal_from(state: ButlerState) -> ButlerInteractionProposal:
+    proposal = state.get("proposal")
+    if proposal is None:
+        raise ButlerError("Butler graph state is missing interaction proposal")
+    return proposal
+
+
+def canonical_response_from(state: ButlerState) -> str:
+    return proposal_from(state).response_text
