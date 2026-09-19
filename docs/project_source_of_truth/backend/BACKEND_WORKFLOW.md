@@ -277,9 +277,25 @@ Order prioritizes unattended execution; Talk prioritizes conversational response
 
 ---
 
+# Upcoming Event Derivation and Mutation
+
+When serving planning/presentation context, derive Upcoming Events from actionable User Context whose applicable period is active today or in the future. Do not persist a duplicate Upcoming Event entity.
+
+```text
+User Context
+      ↓ filter active/future actionable context
+Upcoming projection
+      ├── supplied as one input to planning
+      └── supplied for client presentation
+```
+
+Daily planning combines this projection with routines, preferences, constraints, existing events, and other relevant context. It may materialize zero, one, or multiple Daily Events as appropriate; there is no rule that every Upcoming Event becomes a Daily Event. Daily routines bypass the Upcoming classification and remain routine planning context.
+
+For an Upcoming Event update/reschedule/skip/remove request, resolve the projected item to its source User Context and mutate that source. Recurring context must support the semantic difference between changing one occurrence and changing/removing the recurring rule.
+
 # Direct Event Updates
 
-Direct visible event edits bypass AI and remain local-first: Room updates immediately, sync is queued, backend validates/reconciles, then Room receives canonical state.
+Direct visible Daily Event edits remain deterministic/local-first: Room updates immediately, sync is queued, backend validates/reconciles, then Room receives canonical state. Upcoming Event edits target User Context and therefore follow the appropriate User Context mutation/reconciliation path rather than being persisted as Daily Event edits.
 
 ---
 
