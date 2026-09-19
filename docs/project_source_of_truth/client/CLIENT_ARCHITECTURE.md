@@ -18,7 +18,9 @@ The Android client is the local execution engine for the user's day and the pres
 
 ```text
 Main Screen
-├── Daily Event list
+├── Daily Plan / Daily Event list
+├── prominent Upcoming divider
+├── Upcoming Events derived from User Context
 ├── Butler conversation overlay
 └── persistent controls
     ├── Order → audio
@@ -27,6 +29,28 @@ Main Screen
 ```
 
 There is no separate conversation screen. `Open in App` opens the Main Screen with the conversation overlay visible, normally around 60–70% of screen height as appropriate to the current UI.
+
+## Daily Plan and Upcoming Event Presentation
+
+The Main Screen has two distinct event sections:
+
+```text
+DAILY PLAN
+  Daily Event
+  Daily Event
+
+════════ UPCOMING ════════
+
+  Upcoming Event
+  Upcoming Event
+```
+
+Daily Events are concrete members of the Daily Plan. Upcoming Events are read/projection models derived from actionable, non-expired User Context; the client must not treat them as another persisted Daily Event collection or require an `UpcomingEvent` database table.
+
+The Upcoming section is rendered below the Daily Plan with a visually strong divider/header so future context cannot be mistaken for today's committed plan. Show only projected information whose applicable range is active today or in the future.
+
+Upcoming items expose appropriate edit/reschedule/skip/remove interactions like Daily Events, but those operations target the underlying User Context/occurrence semantics through the backend. A recurring Upcoming Event may therefore be changed for one occurrence or at the recurring-rule level. Daily routines themselves are not displayed as Upcoming Events.
+
 
 ---
 
