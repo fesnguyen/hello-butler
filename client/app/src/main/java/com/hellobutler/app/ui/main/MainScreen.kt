@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.hellobutler.app.data.local.DailyEventEntity
+import com.hellobutler.app.data.remote.UpcomingEventDto
 import com.hellobutler.app.execution.SpeechForegroundService
 import com.hellobutler.app.execution.SpeechPlaybackState
 import com.hellobutler.app.execution.ButlerAudioPlaybackService
@@ -47,6 +48,7 @@ import kotlinx.coroutines.launch
 fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     val state by viewModel.state.collectAsState()
     val events by viewModel.events.collectAsState()
+    val upcomingEvents by viewModel.upcomingEvents.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -65,6 +67,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     var captureStartedAtMillis by remember { mutableLongStateOf(0L) }
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
     var creatingEvent by remember { mutableStateOf(false) }
+    var selectedUpcoming by remember { mutableStateOf<UpcomingEventDto?>(null) }
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (!granted) viewModel.captureError("Microphone permission is required for voice input")
     }
@@ -216,7 +219,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 }
             }
             Box(Modifier.fillMaxWidth().weight(1f)) {
-                if (events.isEmpty()) {
+                if (events.isEmpty() && upcomingEvents.isEmpty()) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { EmptyDay(viewModel::openConversation) }
                 } else {
                     LazyColumn(
@@ -232,6 +235,12 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                             }
                         }
                         items(events, key = { it.id }) { event -> DailyEventCard(event) { selectedEvent = event } }
+                        if (upcomingEvents.isNotEmpty()) {
+                            item { UpcomingDivider() }
+                            items(upcomingEvents, key = { it.id }) { event ->
+                                UpcomingEventCard(event) { selectedUpcoming = event }
+                            }
+                        }
                     }
                 }
                 if (state.overlayVisible) {
@@ -261,6 +270,18 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 viewModel.updateEvent(it)
                 selectedEvent = null
                 creatingEvent = false
+            },
+        )
+    }
+    selectedUpcoming?.let { event ->
+        UpcomingEventDialog(
+            event = event,
+            onDismiss = { selectedUpcoming = null },
+            onMutate = { action, scope, title, startsOn, endsOn, startTime, endTime ->
+                viewModel.mutateUpcomingEvent(
+                    event, action, scope, title, startsOn, endsOn, startTime, endTime,
+                )
+                selectedUpcoming = null
             },
         )
     }

@@ -21,8 +21,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.hellobutler.app.data.local.DailyEventEntity
+import com.hellobutler.app.data.remote.UpcomingEventDto
 import com.hellobutler.app.execution.LocalTextToSpeech
 import java.time.LocalTime
+import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import kotlinx.coroutines.launch
@@ -95,6 +97,127 @@ private fun eventIcon(type: String): ImageVector = when (type.lowercase()) {
     "reminder" -> Icons.Outlined.NotificationsNone
     "good_night_summary", "goodnight_summary", "night_summary" -> Icons.Outlined.Bedtime
     else -> Icons.Outlined.Event
+}
+
+@Composable
+fun UpcomingDivider() {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 22.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
+        Surface(
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.primaryContainer,
+        ) {
+            Text(
+                "UPCOMING",
+                Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+        HorizontalDivider(Modifier.weight(1f), color = MaterialTheme.colorScheme.primary)
+    }
+}
+
+@Composable
+fun UpcomingEventCard(event: UpcomingEventDto, onConfigure: () -> Unit) {
+    Card(
+        Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = .36f)),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, top = 12.dp, bottom = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.width(104.dp)) {
+                Text(event.dateLabel(), style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.tertiary)
+                event.startTime?.let { Text(formatTime(it), style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold) }
+            }
+            Icon(Icons.Outlined.Event, null, tint = MaterialTheme.colorScheme.tertiary)
+            Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                Text(event.title, style = MaterialTheme.typography.titleSmall)
+                if (event.description != event.title) {
+                    Text(event.description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                }
+            }
+            IconButton(onClick = onConfigure) { Icon(Icons.Outlined.MoreVert, "Configure Upcoming Event") }
+        }
+    }
+}
+
+private fun UpcomingEventDto.dateLabel(): String {
+    val today = LocalDate.now()
+    val start = LocalDate.parse(startsOn)
+    val end = LocalDate.parse(endsOn)
+    if (start == today) return "Today"
+    if (start == today.plusDays(1)) return "Tomorrow"
+    val formatter = DateTimeFormatter.ofPattern("MMM d")
+    return if (start == end) start.format(formatter) else "${start.format(formatter)} → ${end.format(formatter)}"
+}
+
+@Composable
+fun UpcomingEventDialog(
+    event: UpcomingEventDto,
+    onDismiss: () -> Unit,
+    onMutate: (String, String, String?, String?, String?, String?, String?) -> Unit,
+) {
+    var title by remember(event.id) { mutableStateOf(event.title) }
+    var startsOn by remember(event.id) { mutableStateOf(event.startsOn) }
+    var endsOn by remember(event.id) { mutableStateOf(event.endsOn) }
+    var startTime by remember(event.id) { mutableStateOf(event.startTime.orEmpty()) }
+    var endTime by remember(event.id) { mutableStateOf(event.endTime.orEmpty()) }
+    var scope by remember(event.id) { mutableStateOf(if (event.recurring) "occurrence" else "rule") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Upcoming Event") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (event.recurring) {
+                    SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+                        listOf("occurrence" to "This one", "rule" to "Entire series").forEachIndexed { index, option ->
+                            SegmentedButton(
+                                selected = scope == option.first,
+                                onClick = { scope = option.first },
+                                shape = SegmentedButtonDefaults.itemShape(index, 2),
+                            ) { Text(option.second, style = MaterialTheme.typography.labelSmall) }
+                        }
+                    }
+                }
+                OutlinedTextField(title, { title = it }, label = { Text("Title") }, singleLine = true)
+                OutlinedTextField(startsOn, { startsOn = it }, label = { Text("Start date (YYYY-MM-DD)") }, singleLine = true)
+                OutlinedTextField(endsOn, { endsOn = it }, label = { Text("End date (YYYY-MM-DD)") }, singleLine = true)
+                OutlinedTextField(startTime, { startTime = it }, label = { Text("Start time (HH:MM)") }, singleLine = true)
+                OutlinedTextField(endTime, { endTime = it }, label = { Text("End time (HH:MM)") }, singleLine = true)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val moved = startsOn != event.startsOn || endsOn != event.endsOn
+                onMutate(
+                    if (moved) "reschedule" else "modify", scope, title.trim(),
+                    startsOn, endsOn, startTime.ifBlank { null }, endTime.ifBlank { null },
+                )
+            }) { Text("Save changes") }
+        },
+        dismissButton = {
+            Row {
+                if (event.recurring && scope == "occurrence") {
+                    TextButton(onClick = { onMutate("skip", scope, null, null, null, null, null) }) { Text("Skip") }
+                }
+                TextButton(
+                    onClick = { onMutate("remove", scope, null, null, null, null, null) },
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
+                ) { Text(if (scope == "rule" && event.recurring) "Remove series" else "Remove") }
+                TextButton(onClick = onDismiss) { Text("Cancel") }
+            }
+        },
+    )
 }
 
 @Composable

@@ -16,6 +16,7 @@ from app.application.butler.state import (
     canonical_response_from,
     decision_from,
 )
+from app.application.upcoming import UpcomingEventMutation, UpcomingEventService
 from app.infrastructure.db.models import UserContextEntryModel
 
 
@@ -38,6 +39,12 @@ class UserContextActions:
                 content=decision.context_content,
                 starts_on=decision.context_starts_on,
                 ends_on=decision.context_ends_on,
+                is_actionable=decision.context_is_actionable or False,
+                title=decision.context_title,
+                start_time=decision.context_start_time,
+                end_time=decision.context_end_time,
+                recurrence=decision.context_recurrence,
+                recurrence_days=decision.context_recurrence_days or [],
             )
             session.add(entry)
             changed = ChangedEntity(type="user_context", id=entry.id)
@@ -75,8 +82,27 @@ class UserContextActions:
             if decision.context_ends_on is not None:
                 entry.ends_on = decision.context_ends_on
                 changed = True
+            if decision.context_is_actionable is not None:
+                entry.is_actionable = decision.context_is_actionable
+                changed = True
+            if decision.context_title is not None:
+                entry.title = decision.context_title
+                changed = True
+            if decision.context_start_time is not None:
+                entry.start_time = decision.context_start_time
+                changed = True
+            if decision.context_end_time is not None:
+                entry.end_time = decision.context_end_time
+                changed = True
+            if decision.context_recurrence is not None:
+                entry.recurrence = decision.context_recurrence
+                changed = True
+            if decision.context_recurrence_days is not None:
+                entry.recurrence_days = decision.context_recurrence_days
+                changed = True
             if not changed:
                 raise ButlerMutationRejectedError("User Context update contains no changes")
+            entry.version += 1
 
             entity = ChangedEntity(type="user_context", id=entry.id)
             result = ButlerResult(
@@ -84,4 +110,41 @@ class UserContextActions:
             )
             save_action_result(session, state, result)
 
+        return {"result": result}
+
+    async def mutate_upcoming(self, state: ButlerState) -> ButlerStateUpdate:
+        decision = decision_from(state)
+        if (
+            decision.target_context_id is None
+            or decision.target_context_version is None
+            or decision.upcoming_action is None
+            or decision.upcoming_scope is None
+        ):
+            raise ButlerMutationRejectedError("Upcoming Event mutation is incomplete")
+        mutation = UpcomingEventMutation(
+            action=decision.upcoming_action,
+            scope=decision.upcoming_scope,
+            base_version=decision.target_context_version,
+            occurrence_date=decision.upcoming_occurrence_date,
+            title=decision.context_title,
+            starts_on=decision.context_starts_on,
+            ends_on=decision.context_ends_on,
+            start_time=decision.context_start_time,
+            end_time=decision.context_end_time,
+        )
+        async with self._session_factory() as session, session.begin():
+            if prior := await prior_action_result(session, state):
+                return {"result": prior}
+            await UpcomingEventService().mutate(
+                session,
+                state["user_id"],
+                decision.target_context_id,
+                mutation,
+                state["today"],
+            )
+            entity = ChangedEntity(type="user_context", id=decision.target_context_id)
+            result = ButlerResult(
+                response=canonical_response_from(state), changed_entities=[entity]
+            )
+            save_action_result(session, state, result)
         return {"result": result}

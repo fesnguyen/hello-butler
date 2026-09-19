@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.data.repository.ButlerRepository
 import com.hellobutler.app.data.repository.DailyEventRepository
+import com.hellobutler.app.data.remote.UpcomingEventDto
 import java.io.File
 import java.time.LocalDate
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -38,6 +39,7 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     private val today = LocalDate.now().toString()
     val events: StateFlow<List<DailyEventEntity>> = eventsRepository.observeDate(today)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val upcomingEvents = eventsRepository.upcomingEvents
     val messages = butler.observeMessages().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
@@ -84,6 +86,26 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     fun dismissOverlay() = _state.update { it.copy(overlayVisible = false, captureMode = null, textDraft = null, recording = false) }
     fun updateEvent(event: DailyEventEntity) { viewModelScope.launch { eventsRepository.update(event) } }
     fun deleteEvent(event: DailyEventEntity) { viewModelScope.launch { eventsRepository.delete(event) } }
+    fun mutateUpcomingEvent(
+        event: UpcomingEventDto,
+        action: String,
+        scope: String,
+        title: String? = null,
+        startsOn: String? = null,
+        endsOn: String? = null,
+        startTime: String? = null,
+        endTime: String? = null,
+    ) {
+        viewModelScope.launch {
+            runCatching {
+                eventsRepository.mutateUpcomingEvent(
+                    event, action, scope, title, startsOn, endsOn, startTime, endTime,
+                )
+            }.onFailure { error ->
+                _state.update { it.copy(error = error.message ?: "Upcoming Event update failed") }
+            }
+        }
+    }
     fun recreateTodayPlan() {
         if (_state.value.recreatingToday) return
         _state.update { it.copy(recreatingToday = true, error = null) }

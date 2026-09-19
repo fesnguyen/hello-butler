@@ -1,14 +1,22 @@
 import uuid
+from collections.abc import Sequence
 from datetime import date, datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import AuthenticatedUser, get_authenticated_user
 from app.application.sync import DailyEventSyncService, EventSyncOperation, SyncBatchResult
+from app.application.upcoming import (
+    UpcomingEvent,
+    UpcomingEventMutation,
+    UpcomingEventService,
+    UpcomingMutationResult,
+    load_upcoming,
+)
 from app.core.config import Settings, get_settings
 from app.core.database import get_session
 from app.core.lifecycle import daily_plan_changes
@@ -51,6 +59,7 @@ class SyncPlan(BaseModel):
 class DailyPlanSnapshot(BaseModel):
     plan: SyncPlan | None
     events: list[SyncEvent]
+    upcoming_events: list[UpcomingEvent]
 
 
 class SyncBatchRequest(BaseModel):
@@ -83,26 +92,28 @@ async def get_daily_plan(
             )
         )
     ).scalar_one_or_none()
-    if plan is None:
-        return DailyPlanSnapshot(plan=None, events=[])
-    rows = (
-        (
-            await session.execute(
-                select(DailyEventModel)
-                .where(
-                    DailyEventModel.user_id == user.id,
-                    DailyEventModel.daily_plan_id == plan.id,
-                    DailyEventModel.deleted_at.is_(None),
-                )
-                .order_by(
-                    DailyEventModel.start_time.is_(None),
-                    DailyEventModel.start_time,
-                    DailyEventModel.sort_order,
+    rows: Sequence[DailyEventModel] = (
+        []
+        if plan is None
+        else (
+            (
+                await session.execute(
+                    select(DailyEventModel)
+                    .where(
+                        DailyEventModel.user_id == user.id,
+                        DailyEventModel.daily_plan_id == plan.id,
+                        DailyEventModel.deleted_at.is_(None),
+                    )
+                    .order_by(
+                        DailyEventModel.start_time.is_(None),
+                        DailyEventModel.start_time,
+                        DailyEventModel.sort_order,
+                    )
                 )
             )
+            .scalars()
+            .all()
         )
-        .scalars()
-        .all()
     )
     return DailyPlanSnapshot(
         plan=SyncPlan(
@@ -110,7 +121,9 @@ async def get_daily_plan(
             plan_date=plan.plan_date,
             status=plan.status,
             updated_at=plan.updated_at,
-        ),
+        )
+        if plan
+        else None,
         events=[
             SyncEvent(
                 id=row.id,
@@ -136,4 +149,27 @@ async def get_daily_plan(
             )
             for row in rows
         ],
+        upcoming_events=await load_upcoming(session, user.id, plan_date),
     )
+
+
+@router.put("/upcoming-events/{context_id}", response_model=UpcomingMutationResult)
+async def mutate_upcoming_event(
+    context_id: uuid.UUID,
+    mutation: UpcomingEventMutation,
+    user: AuthenticatedUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+) -> UpcomingMutationResult:
+    today = datetime.now(settings.timezone).date()
+    try:
+        async with session.begin():
+            return await UpcomingEventService().mutate(
+                session, user.id, context_id, mutation, today
+            )
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc

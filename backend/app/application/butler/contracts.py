@@ -17,6 +17,7 @@ RequestedAction = Literal[
     "delete_daily_event",
     "remember_user_context",
     "update_user_context",
+    "mutate_upcoming_event",
     "answer_today_events",
     "none",
 ]
@@ -34,6 +35,14 @@ class ContextEntry(BaseModel):
     content: str
     starts_on: date | None
     ends_on: date | None
+    is_actionable: bool
+    title: str | None
+    start_time: time | None
+    end_time: time | None
+    recurrence: Literal["daily", "weekly"] | None
+    recurrence_days: list[int]
+    occurrence_exceptions: list[dict[str, object]]
+    version: int
 
 
 class ContextPlan(BaseModel):
@@ -67,6 +76,7 @@ class ButlerDecision(BaseModel):
     target_event_id: uuid.UUID | None = None
     target_event_title: str | None = None
     target_context_id: uuid.UUID | None = None
+    target_context_version: int | None = None
     title: str | None = None
     description: str | None = None
     event_date: date | None = None
@@ -79,6 +89,15 @@ class ButlerDecision(BaseModel):
     context_content: str | None = None
     context_starts_on: date | None = None
     context_ends_on: date | None = None
+    context_is_actionable: bool | None = None
+    context_title: str | None = None
+    context_start_time: time | None = None
+    context_end_time: time | None = None
+    context_recurrence: Literal["daily", "weekly"] | None = None
+    context_recurrence_days: list[int] | None = None
+    upcoming_action: Literal["modify", "reschedule", "skip", "remove"] | None = None
+    upcoming_scope: Literal["occurrence", "rule"] | None = None
+    upcoming_occurrence_date: date | None = None
     missing_information: list[str] = Field(default_factory=list)
     clarification_question: str | None = None
     answer: str | None = None
@@ -87,17 +106,13 @@ class ButlerDecision(BaseModel):
 class ButlerInteractionProposal(BaseModel):
     thought: str = Field(
         min_length=1,
-        description=(
-            "Internal thought process of the Butler leading to the proposed decision."
-        ),
+        description=("Internal thought process of the Butler leading to the proposed decision."),
     )
     user_message_text: str = Field(min_length=1)
     decision: ButlerDecision
     response_text: str = Field(
         min_length=1,
-        description=(
-            "Canonical final user-facing Butler response."
-        ),
+        description=("Canonical final user-facing Butler response."),
     )
 
 
@@ -136,9 +151,7 @@ class ButlerAIProvider(Protocol):
 
 
 class ButlerVoiceProvider(Protocol):
-    async def synthesize(
-        self, *, text: str, request_id: uuid.UUID | None
-    ) -> ButlerSpeech: ...
+    async def synthesize(self, *, text: str, request_id: uuid.UUID | None) -> ButlerSpeech: ...
 
 
 class ButlerError(RuntimeError):
