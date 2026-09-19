@@ -14,6 +14,8 @@ Hello Butler has one primary product screen:
 MainScreen
 │
 ├── DailyEventList
+├── UpcomingDivider
+├── UpcomingEventList
 ├── ButlerConversationOverlay
 └── ButlerControlBar
     ├── Order
@@ -22,6 +24,23 @@ MainScreen
 ```
 
 Butler interaction happens over the user's day. There is no separate conversation screen.
+
+The event surface is ordered as Daily Plan first, then a prominent Upcoming divider, then Upcoming Events derived from active/future User Context. Upcoming Events must not be mixed into today's Daily Event list.
+
+```text
+Daily Plan
+  ├── Daily Event
+  └── Daily Event
+
+════════ Upcoming ════════
+
+Upcoming
+  ├── future/current time-bounded context
+  └── future/current recurring occurrences
+```
+
+Do not display ordinary daily routines in the Upcoming section. Do not assume every Upcoming Event will become a Daily Event; it is planning input and user-visible future context, not a pre-generated Daily Plan.
+
 
 When `Open in App` is selected from a notification, open Main Screen and show the Butler conversation overlay from the bottom at roughly 60–70% screen height as appropriate to the current UI.
 
@@ -222,7 +241,9 @@ Order/Talk recordings can be queued for later upload. Typed requests can be queu
 
 # Direct Event Configuration
 
-Direct event edits remain deterministic/local-first and bypass Butler AI: update Room, update UI, queue sync, then reconcile with backend.
+Direct Daily Event edits remain deterministic/local-first and bypass Butler AI: update Room, update UI, queue sync, then reconcile with backend.
+
+Upcoming Events provide comparable modify/reschedule/skip/remove controls, but the operation targets their source User Context rather than creating/updating a separate Upcoming Event record. Recurring items must allow the backend/domain behavior to distinguish one-occurrence changes from changes to the recurring rule.
 
 ---
 
