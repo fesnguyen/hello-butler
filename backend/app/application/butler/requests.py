@@ -130,14 +130,20 @@ class ButlerRequestService:
         return status
 
     async def process(self, request_id: uuid.UUID) -> None:
+        """Process one accepted Butler request through handling, persistence, cleanup, and notification."""
+
+        # Prevent the same request from being processed concurrently within this application instance.
         async with self._lock:
             if request_id in self._processing:
                 return
             self._processing.add(request_id)
+
         try:
+            # Atomically claim the persisted request; skip completed or actively processing requests.
             request = await self._claim(request_id)
             if request is None:
                 return
+
             logger.info(
                 "Processing Butler request request_id=%s mode=%s source=%s audio_type=%s",
                 request.id,
@@ -145,12 +151,18 @@ class ButlerRequestService:
                 request.input_source,
                 request.input_audio_mime_type,
             )
+
+            # Notify the client that Butler has started handling the accepted request.
             await self._push.butler_request_state(
                 request.user_id, "butler_request_handling", request.id
             )
+
+            # Resolve the temporary input audio asset when this is a voice request.
             audio_path = Path(request.input_audio_path) if request.input_audio_path else None
             if request.input_source == "audio" and audio_path is None:
                 raise RuntimeError("Accepted audio request has no input asset")
+
+            # Hand the user request to Butler for AI understanding, mutations, text, and response audio.
             interaction = await self._butler.handle(
                 request_id=request.id,
                 user_id=request.user_id,
@@ -159,12 +171,18 @@ class ButlerRequestService:
                 audio_path=audio_path,
                 audio_mime_type=request.input_audio_mime_type,
             )
+
+            # Normalize and persist usable response audio; audio failure degrades to text-only.
             response_audio_path, audio_type = await self._response_audio(
                 request.id,
                 interaction.response_audio,
                 interaction.response_audio_mime_type,
             )
+
+            # Persist the completed Butler result and optional response-audio reference.
             await self._complete(request.id, interaction.result, response_audio_path, audio_type)
+
+            # Successful processing no longer needs the temporary user input audio.
             try:
                 await self._delete_file(request.input_audio_path)
                 await self._clear_input_path(request.id)
@@ -175,20 +193,27 @@ class ButlerRequestService:
                         request.input_audio_path,
                     )
             except Exception:
+                # Cleanup failure must not turn an otherwise successful Butler request into a failure.
                 logger.exception(
                     "Temporary input audio cleanup failed request_id=%s; "
                     "maintenance cleanup retained",
                     request.id,
                 )
+
+            # Notify the client that the completed result is ready to retrieve.
             await self._push.butler_request_state(
                 request.user_id, "butler_request_completed", request.id
             )
+
         except asyncio.CancelledError:
+            # Preserve asyncio cancellation semantics instead of recording cancellation as a request failure.
             raise
         except Exception as exc:
+            # Any processing failure is persisted so the client can observe the failed request state.
             logger.exception("Butler request %s failed", request_id)
             await self._fail(request_id, exc)
         finally:
+            # Always release the in-memory processing guard, regardless of outcome.
             async with self._lock:
                 self._processing.discard(request_id)
 

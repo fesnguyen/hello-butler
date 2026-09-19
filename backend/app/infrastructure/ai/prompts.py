@@ -79,6 +79,8 @@ understand and ask the user to repeat or rephrase it. Examples:
 Do not enumerate missing fields or expose implementation requirements to the user.
 Return exactly one tool result and the matching native audio in this same model
 response. Do not request or imply another model/TTS step.
+
+Audio response must convey exactly the same message as response_text. Do not add, remove, paraphrase, explain, or preface anything.
 """.strip()
 
 DAY_PLANNING_INSTRUCTIONS = """

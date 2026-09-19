@@ -85,9 +85,18 @@ class ButlerDecision(BaseModel):
 
 
 class ButlerInteractionProposal(BaseModel):
+    thought: str = Field(min_length=1, description="Internal thought process of the Butler leading to the proposed decision, " \
+        "include why and how the response audio is generated.")
     user_message_text: str = Field(min_length=1)
     decision: ButlerDecision
-    response_text: str = Field(min_length=1)
+    response_text: str = Field(
+        min_length=1,
+        description=(
+            "Canonical final user-facing Butler response. "
+            "When native response audio is generated, it must speak this exact message "
+            "without adding, removing, or paraphrasing content."
+        )
+    )
 
 
 @dataclass(frozen=True, slots=True)
