@@ -106,6 +106,30 @@ The second call receives the exact canonical `response_text`. It does not indepe
 - Supported mutations remain event create/update/skip/remove and User Context create/update. Queries and clarifications use no mutation.
 - Context loading continues to use the configured conversation window plus relevant events and User Context.
 
+## Daily and upcoming event presentation
+
+Hello Butler distinguishes two event groups in the plan UI:
+
+- **Daily events:** events that belong to the selected day's actionable daily plan.
+- **Upcoming events:** future commitments derived from User Context for upcoming days. Relevant future User Context is surfaced as upcoming events so the user can see what is approaching without mixing those commitments into today's daily schedule.
+
+Upcoming events are displayed **under the daily plan** in a separate section. The client must place a clear, eye-catching visual divider between the daily-event list and the upcoming-event list so the two scopes are immediately distinguishable.
+
+```text
+DAILY PLAN
+  daily event
+  daily event
+  daily event
+
+================ prominent divider ================
+
+UPCOMING EVENTS
+  upcoming event
+  upcoming event
+```
+
+This presentation distinction does not turn an upcoming User Context entry into a daily-plan event. It remains future context until the appropriate planning/lifecycle logic materializes or otherwise handles it for its relevant day.
+
 ## Audio transport and storage contract
 
 The client/backend transport contract remains compressed Ogg/Opus:
