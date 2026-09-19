@@ -100,6 +100,7 @@ class ButlerGraph:
             "delete_daily_event": self._event_actions.delete,
             "remember_user_context": self._context_actions.remember,
             "update_user_context": self._context_actions.update,
+            "mutate_upcoming_event": self._context_actions.mutate_upcoming,
         }
         handler = handlers.get(decision_from(state).requested_action)
         if handler is None:

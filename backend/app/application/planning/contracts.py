@@ -44,11 +44,23 @@ class PlanningKnownEvent(BaseModel):
     origin: str = "user"
 
 
+class PlanningUpcomingEvent(BaseModel):
+    source_context_id: uuid.UUID
+    occurrence_date: date | None
+    title: str
+    description: str
+    starts_on: date
+    ends_on: date
+    start_time: time | None
+    end_time: time | None
+
+
 class DayPlanningInput(BaseModel):
     target_date: date
     weekday: str
     timezone: str
     user_context: list[PlanningContextEntry]
+    upcoming_events: list[PlanningUpcomingEvent]
     known_events: list[PlanningKnownEvent]
 
 

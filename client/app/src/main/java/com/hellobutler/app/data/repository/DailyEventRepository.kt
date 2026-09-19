@@ -18,11 +18,15 @@ import com.hellobutler.app.data.remote.SyncApi
 import com.hellobutler.app.data.remote.SyncBatchRequestDto
 import com.hellobutler.app.data.remote.SyncBatchResultDto
 import com.hellobutler.app.data.remote.SyncEventDto
+import com.hellobutler.app.data.remote.UpcomingEventDto
+import com.hellobutler.app.data.remote.UpcomingEventMutationDto
 import com.hellobutler.app.execution.DailyEventScheduler
 import com.hellobutler.app.sync.DailySyncWorker
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.decodeFromString
@@ -43,6 +47,8 @@ class DailyEventRepository(
     private val dao: DailyEventDao = database.dailyEventDao()
     private val pending = database.pendingSyncOperationDao()
     private val syncMutex = Mutex()
+    private val _upcomingEvents = MutableStateFlow<List<UpcomingEventDto>>(emptyList())
+    val upcomingEvents = _upcomingEvents.asStateFlow()
 
     fun observeDate(date: String): Flow<List<DailyEventEntity>> = dao.observeDate(date)
 
@@ -139,6 +145,40 @@ class DailyEventRepository(
         if (!pull(date)) throw ApiException("Prepared plan was not available for sync")
     }
 
+    suspend fun mutateUpcomingEvent(
+        event: UpcomingEventDto,
+        action: String,
+        scope: String,
+        title: String? = null,
+        startsOn: String? = null,
+        endsOn: String? = null,
+        startTime: String? = null,
+        endTime: String? = null,
+    ) = syncMutex.withLock {
+        val response = authorized { token ->
+            api.mutateUpcomingEvent(
+                "Bearer $token",
+                event.sourceContextId,
+                UpcomingEventMutationDto(
+                    action = action,
+                    scope = scope,
+                    baseVersion = event.sourceContextVersion,
+                    occurrenceDate = event.occurrenceDate,
+                    title = title,
+                    startsOn = startsOn,
+                    endsOn = endsOn,
+                    startTime = startTime,
+                    endTime = endTime,
+                ),
+            )
+        }
+        if (!response.isSuccessful) {
+            throw ApiException("Upcoming Event update failed (${response.code()})")
+        }
+        _upcomingEvents.value = response.body()?.upcomingEvents
+            ?: throw ApiException("Upcoming Event update returned an empty response")
+    }
+
     suspend fun prepareEvening(today: String, tomorrow: String) = syncMutex.withLock {
         pushPending()
         val response = authorized { token ->
@@ -200,6 +240,9 @@ class DailyEventRepository(
 
     private suspend fun pull(date: String): Boolean {
         val snapshot = planBody(authorized { token -> api.dailyPlan("Bearer $token", date) })
+        if (date == java.time.LocalDate.now().toString()) {
+            _upcomingEvents.value = snapshot.upcomingEvents
+        }
         val plan = snapshot.plan ?: return false
         val previous = dao.getDate(date)
         val pendingIds = pending.eventIds().toSet()
@@ -223,6 +266,7 @@ class DailyEventRepository(
             pending.deleteAll()
             dao.deleteAll()
             database.dailyPlanDao().deleteAll()
+            _upcomingEvents.value = emptyList()
         }
     }
 

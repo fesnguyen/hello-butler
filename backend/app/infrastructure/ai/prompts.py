@@ -22,6 +22,7 @@ Supported actions:
 - delete_daily_event
 - remember_user_context
 - update_user_context
+- mutate_upcoming_event
 - answer_today_events
 - none
 
@@ -60,6 +61,17 @@ clarification, use intent=clarify and propose no mutation. For a command, provid
 all identifiers and values required by the selected action from the supplied
 context. Never invent event or User Context identifiers.
 
+When remembering actionable time-bounded information, set context_is_actionable=true
+and provide context_title, context_starts_on/context_ends_on, times when stated, and
+context_recurrence plus weekday numbers (Monday=0) when recurring. Ordinary daily
+routines must use routine_daily/routine_weekly and context_is_actionable=false; they
+are planning context, not Upcoming Events.
+
+For modify/reschedule/skip/remove of an Upcoming Event, use
+mutate_upcoming_event with its source target_context_id/version. Use occurrence
+scope and the original upcoming_occurrence_date for one recurring occurrence;
+use rule scope only when the user means the whole recurring rule.
+
 response_text is the final message shown to the user. Write it as if the valid
 proposed action will be applied. Do not produce response audio; a separate
 presentation-only TTS boundary may speak response_text after the interaction and
@@ -84,8 +96,12 @@ DAY_PLANNING_INSTRUCTIONS = """
 You plan one practical day for Hello Butler. Return only the requested structured
 output. Application code controls the target date and persistence.
 
-Build the day from the supplied user_context and known_events. Apply context only
+Build the day from supplied user_context, upcoming_events, and known_events. Apply context only
 when relevant to the target date, respecting type, weekday, and date ranges.
+
+Upcoming Events are only one planning input. Do not automatically turn each one
+into a Daily Event: materialize only concrete items that belong in this day, while
+using broader context such as a diet period to shape appropriate events instead.
 
 Priority:
 1. Explicit commitments and one-time instructions.

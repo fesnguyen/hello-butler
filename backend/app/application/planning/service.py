@@ -14,11 +14,13 @@ from app.application.planning.contracts import (
     PlannedDayProposal,
     PlanningContextEntry,
     PlanningKnownEvent,
+    PlanningUpcomingEvent,
     PreparedDayResult,
     PreparedEvent,
     ProposedDailyEvent,
 )
 from app.application.push.changes import DailyPlanChanges
+from app.application.upcoming import project_upcoming
 from app.core.config import Settings
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel, UserContextEntryModel
 
@@ -50,12 +52,12 @@ class DayPlanningService:
         proposal = await self._ai.plan_day(planning_input)
         proposed = self._normalize(proposal, planning_input.known_events)
         final_for_brief = [
-        event.model_dump(mode="json")
-        for event in sorted(
-            [*planning_input.known_events, *[self._known(event) for event in proposed]],
-            key=lambda event: DayPlanningService._time_sort_key(event.start_time),
-        )
-    ]
+            event.model_dump(mode="json")
+            for event in sorted(
+                [*planning_input.known_events, *[self._known(event) for event in proposed]],
+                key=lambda event: DayPlanningService._time_sort_key(event.start_time),
+            )
+        ]
         brief = await self._ai.compose_morning_brief(planning_input, final_for_brief)
         brief_time = (
             morning_brief_time
@@ -112,6 +114,20 @@ class DayPlanningService:
                     ends_on=row.ends_on,
                 )
                 for row in contexts
+            ],
+            upcoming_events=[
+                PlanningUpcomingEvent(
+                    source_context_id=item.source_context_id,
+                    occurrence_date=item.occurrence_date,
+                    title=item.title,
+                    description=item.description,
+                    starts_on=item.starts_on,
+                    ends_on=item.ends_on,
+                    start_time=item.start_time,
+                    end_time=item.end_time,
+                )
+                for item in project_upcoming(list(contexts), target_date)
+                if item.starts_on <= target_date <= item.ends_on
             ],
             known_events=[self._known_model(row) for row in known],
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta
+from typing import Literal, cast
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -54,6 +55,14 @@ class ButlerContextLoader:
                     content=row.content,
                     starts_on=row.starts_on,
                     ends_on=row.ends_on,
+                    is_actionable=row.is_actionable,
+                    title=row.title,
+                    start_time=row.start_time,
+                    end_time=row.end_time,
+                    recurrence=cast("Literal['daily', 'weekly'] | None", row.recurrence),
+                    recurrence_days=row.recurrence_days,
+                    occurrence_exceptions=row.occurrence_exceptions,
+                    version=row.version,
                 )
                 for row in user_context
             ],
@@ -77,9 +86,7 @@ class ButlerContextLoader:
         session: AsyncSession,
         user_id: uuid.UUID,
     ) -> Sequence[ConversationMessageModel]:
-        cutoff = datetime.now(UTC) - timedelta(
-            minutes=self._settings.butler_history_window_minutes
-        )
+        cutoff = datetime.now(UTC) - timedelta(minutes=self._settings.butler_history_window_minutes)
         result = await session.execute(
             select(ConversationMessageModel)
             .where(
