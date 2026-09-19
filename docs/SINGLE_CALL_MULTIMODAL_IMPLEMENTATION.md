@@ -9,6 +9,10 @@ Normal Butler audio and text interactions now make one multimodal OpenAI request
 That response contains the typed application proposal and native response audio.
 There is no later OpenAI/TTS request.
 
+The default interaction endpoint is Chat Completions. It can be changed with
+`BUTLER_OPENAI_INTERACTION_API=responses` for endpoint comparison; no `.env` entry
+is required for the default `chat_completions` mode.
+
 ## Flow
 
 ```text
@@ -31,9 +35,39 @@ audio or text
   -> complete the durable request and notify the client
 ```
 
+## OpenAI endpoint behavior and audio fix
+
+The original Chat Completions implementation forced
+`submit_butler_interaction` as a function call. A forced function call selects a
+tool-call output branch rather than a normal assistant message. The structured
+arguments were returned, but there was no spoken assistant message on which native
+audio could be returned. Adding descriptions to the tool schema or saying that
+audio was mandatory could not change that response shape.
+
+The fixed `chat_completions` mode no longer requests a tool call. It requests both
+text and audio modalities from `gpt-audio-1.5`; the text modality contains the raw
+`ButlerInteractionProposal` JSON and the audio modality speaks only
+`response_text`. The backend validates the JSON with the existing Pydantic model,
+then applies the same WAV validation, consistency guard, and Opus conversion as
+before. This remains one OpenAI call.
+
+The optional `responses` mode retains a forced function call for the structured
+proposal and also remains one OpenAI call. It is intentionally text-only at the
+provider boundary: current OpenAI audio guidance directs audio-output applications
+to Chat Completions and describes Responses as text/image input with text output.
+Therefore this mode completes with canonical text/action and the existing
+`openai_no_audio` warning; it does not fake or synthesize response audio.
+
+Endpoint selection:
+
+- `BUTLER_OPENAI_INTERACTION_API=chat_completions` (default): audio input, validated
+  proposal JSON, and native WAV response audio in one call.
+- `BUTLER_OPENAI_INTERACTION_API=responses`: audio/text input and a tool-validated
+  proposal in one call, with expected text-only completion.
+
 ## Contract
 
-- `ButlerInteractionProposal` is the Pydantic tool schema. It reuses the existing
+- `ButlerInteractionProposal` is the Pydantic interaction schema. It reuses the existing
   `ButlerDecision` action contract rather than introducing dictionary mutations.
 - `ButlerAIInteraction` keeps the proposal and decoded audio separate at the
   provider boundary.
@@ -114,11 +148,13 @@ the canonical response transcript before backend normalization and Opus encoding
 
 ## Verification
 
-- Backend unit suite: 22 tests passed.
+- Backend unit suite: 29 tests passed.
 - Ruff: passed for application and tests.
 - Tests cover the one-call invariant, original audio/context input, text input,
   event create/update/skip, User Context update, query/clarification no-op,
   unchanged canonical response persistence, response-audio storage, malformed-audio fallback,
   mutation rejection, and existing recovery/idempotency behavior.
+- Provider tests cover the Chat Completions JSON-plus-audio request shape and the
+  configurable Responses API tool-call/text-only fallback shape.
 - Pyright was run and continues to report the repository's existing LangGraph and
   third-party typing/stub issues; no new single-call contract error was reported.

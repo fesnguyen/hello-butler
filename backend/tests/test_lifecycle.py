@@ -105,6 +105,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     ) -> ButlerAIInteraction:
         return ButlerAIInteraction(
             proposal=ButlerInteractionProposal(
+                thought="The response follows from the supplied decision.",
                 user_message_text=message,
                 decision=decision,
                 response_text=response,

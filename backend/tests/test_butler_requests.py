@@ -69,6 +69,7 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         ai = AsyncMock()
         ai.interact.return_value = ButlerAIInteraction(
             proposal=ButlerInteractionProposal(
+                thought="The user asked to add exercise and the response confirms it.",
                 user_message_text="  Add exercise.  ",
                 response_text="Done. I added Exercise today.",
                 decision={
@@ -138,6 +139,7 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         ai = AsyncMock()
         ai.interact.return_value = ButlerAIInteraction(
             proposal=ButlerInteractionProposal(
+                thought="The user asked for today's plan and the response answers it.",
                 user_message_text="What is planned?",
                 response_text="You have no events today.",
                 decision={"intent": "query", "requested_action": "none"},

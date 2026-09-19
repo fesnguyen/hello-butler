@@ -38,6 +38,7 @@ def butler_request_service(settings: Settings) -> ButlerRequestService:
         model=settings.openai_model,
         audio_model=settings.butler_audio_model,
         audio_voice=settings.butler_audio_voice,
+        interaction_api=settings.butler_openai_interaction_api,
     )
     butler = ButlerService(
         settings=settings,

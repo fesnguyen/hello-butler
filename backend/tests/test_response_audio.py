@@ -14,19 +14,21 @@ from app.infrastructure.ai.openai_provider import OpenAIButlerProvider
 
 
 def completion(proposal: ButlerInteractionProposal, audio: bytes) -> SimpleNamespace:
-    tool_call = SimpleNamespace(
-        type="function",
-        function=SimpleNamespace(
-            name="submit_butler_interaction",
-            arguments=proposal.model_dump_json(),
-        ),
-    )
     output = SimpleNamespace(
         transcript=proposal.response_text,
         data=base64.b64encode(audio).decode(),
     )
-    message = SimpleNamespace(tool_calls=[tool_call], audio=output)
+    message = SimpleNamespace(content=proposal.model_dump_json(), audio=output)
     return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+def response(proposal: ButlerInteractionProposal) -> SimpleNamespace:
+    call = SimpleNamespace(
+        type="function_call",
+        name="submit_butler_interaction",
+        arguments=proposal.model_dump_json(),
+    )
+    return SimpleNamespace(output=[call])
 
 
 def context() -> ButlerContext:
@@ -39,16 +41,27 @@ def context() -> ButlerContext:
 
 
 class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
-    def provider(self, result: SimpleNamespace) -> tuple[OpenAIButlerProvider, AsyncMock]:
-        provider = OpenAIButlerProvider(api_key="", model="text-model")
+    def provider(
+        self,
+        result: SimpleNamespace,
+        *,
+        interaction_api: str = "chat_completions",
+    ) -> tuple[OpenAIButlerProvider, AsyncMock]:
+        provider = OpenAIButlerProvider(
+            api_key="",
+            model="text-model",
+            interaction_api=interaction_api,  # type: ignore[arg-type]
+        )
         create = AsyncMock(return_value=result)
         provider._client = SimpleNamespace(
-            chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+            chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+            responses=SimpleNamespace(create=create),
         )
         return provider, create
 
     async def test_audio_interaction_uses_one_call_with_original_audio_and_context(self):
         proposal = ButlerInteractionProposal(
+            thought="The user asked to move the meeting and the response confirms it.",
             user_message_text="Move my meeting to 3 PM tomorrow.",
             decision={
                 "intent": "command",
@@ -84,6 +97,8 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         create.assert_awaited_once()
         kwargs = create.await_args.kwargs
         self.assertEqual(kwargs["modalities"], ["text", "audio"])
+        self.assertNotIn("tools", kwargs)
+        self.assertNotIn("tool_choice", kwargs)
         user_content = kwargs["messages"][1]["content"]
         self.assertEqual(
             user_content[1]["input_audio"]["data"],
@@ -96,8 +111,37 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.response_audio, b"RIFF0000WAVEnormalized")
         self.assertEqual(result.response_audio_mime_type, "audio/wav")
 
+    async def test_responses_mode_uses_one_tool_call_and_falls_back_to_text_only(self):
+        proposal = ButlerInteractionProposal(
+            thought="The user asked a plan query and the response answers it.",
+            user_message_text="What is on my plan?",
+            decision={"intent": "query", "requested_action": "none"},
+            response_text="You have no events today.",
+        )
+        provider, create = self.provider(response(proposal), interaction_api="responses")
+
+        with self.assertLogs("app.infrastructure.ai.openai_provider", "WARNING") as logs:
+            result = await provider.interact(
+                message="What is on my plan?",
+                audio_path=None,
+                audio_mime_type=None,
+                interaction_mode="talk",
+                now="2026-09-17T18:00:00+07:00",
+                timezone="Asia/Ho_Chi_Minh",
+                context=context(),
+            )
+
+        create.assert_awaited_once()
+        kwargs = create.await_args.kwargs
+        self.assertEqual(kwargs["tool_choice"]["name"], "submit_butler_interaction")
+        self.assertEqual(kwargs["input"][0]["content"][0]["type"], "input_text")
+        self.assertEqual(result.proposal, proposal)
+        self.assertEqual(result.response_audio, b"")
+        self.assertIn("api=responses cause=openai_no_audio", " ".join(logs.output))
+
     async def test_text_interaction_uses_the_same_single_call(self):
         proposal = ButlerInteractionProposal(
+            thought="The user asked a plan query and the response answers it.",
             user_message_text="What is on my plan?",
             decision={"intent": "query", "requested_action": "none"},
             response_text="You have no events today.",
@@ -127,6 +171,7 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_malformed_returned_audio_falls_back_to_text_without_another_call(self):
         proposal = ButlerInteractionProposal(
+            thought="The response greets the user.",
             user_message_text="Hello",
             decision={"intent": "query", "requested_action": "none"},
             response_text="Hello.",
@@ -152,6 +197,7 @@ class SingleCallInteractionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_mismatched_audio_is_not_returned_to_the_client(self):
         proposal = ButlerInteractionProposal(
+            thought="The response confirms the requested meeting move.",
             user_message_text="Move my meeting",
             decision={"intent": "query", "requested_action": "none"},
             response_text=(
