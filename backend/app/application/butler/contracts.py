@@ -88,8 +88,7 @@ class ButlerInteractionProposal(BaseModel):
     thought: str = Field(
         min_length=1,
         description=(
-            "Internal thought process of the Butler leading to the proposed decision, "
-            "include why and how the response audio is generated."
+            "Internal thought process of the Butler leading to the proposed decision."
         ),
     )
     user_message_text: str = Field(min_length=1)
@@ -97,18 +96,15 @@ class ButlerInteractionProposal(BaseModel):
     response_text: str = Field(
         min_length=1,
         description=(
-            "Canonical final user-facing Butler response. "
-            "When native response audio is generated, it must speak this exact message "
-            "without adding, removing, or paraphrasing content."
+            "Canonical final user-facing Butler response."
         ),
     )
 
 
 @dataclass(frozen=True, slots=True)
-class ButlerAIInteraction:
-    proposal: ButlerInteractionProposal
-    response_audio: bytes
-    response_audio_mime_type: str
+class ButlerSpeech:
+    audio: bytes
+    mime_type: str
 
 
 class ChangedEntity(BaseModel):
@@ -124,13 +120,6 @@ class ButlerResult(BaseModel):
     requires_follow_up: bool = False
 
 
-@dataclass(frozen=True, slots=True)
-class ButlerCompletedInteraction:
-    result: ButlerResult
-    response_audio: bytes
-    response_audio_mime_type: str
-
-
 class ButlerAIProvider(Protocol):
     async def interact(
         self,
@@ -143,7 +132,13 @@ class ButlerAIProvider(Protocol):
         now: str,
         timezone: str,
         context: ButlerContext,
-    ) -> ButlerAIInteraction: ...
+    ) -> ButlerInteractionProposal: ...
+
+
+class ButlerVoiceProvider(Protocol):
+    async def synthesize(
+        self, *, text: str, request_id: uuid.UUID | None
+    ) -> ButlerSpeech: ...
 
 
 class ButlerError(RuntimeError):

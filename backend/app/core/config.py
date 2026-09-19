@@ -1,6 +1,5 @@
 from datetime import time
 from functools import lru_cache
-from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field, field_validator
@@ -24,8 +23,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_model: str = "gpt-5.4-nano"
     butler_audio_model: str = "gpt-audio-1.5"
+    butler_tts_model: str = "gpt-4o-mini-tts"
     butler_audio_voice: str = "alloy"
-    butler_openai_interaction_api: Literal["chat_completions", "responses"] = "chat_completions"
+    butler_voice_enabled: bool = True
     butler_audio_root: str = "data/butler_audio"
     butler_max_input_audio_bytes: int = 15 * 1024 * 1024
     butler_processing_stale_minutes: int = 10

@@ -9,7 +9,6 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from app.application.butler.contracts import (
-    ButlerAIInteraction,
     ButlerDecision,
     ButlerInteractionProposal,
     ButlerMutationRejectedError,
@@ -102,16 +101,12 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     @staticmethod
     def interaction(
         message: str, decision: ButlerDecision, response: str
-    ) -> ButlerAIInteraction:
-        return ButlerAIInteraction(
-            proposal=ButlerInteractionProposal(
-                thought="The response follows from the supplied decision.",
-                user_message_text=message,
-                decision=decision,
-                response_text=response,
-            ),
-            response_audio=b"RIFF0000WAVEaudio",
-            response_audio_mime_type="audio/wav",
+    ) -> ButlerInteractionProposal:
+        return ButlerInteractionProposal(
+            thought="The response follows from the supplied decision.",
+            user_message_text=message,
+            decision=decision,
+            response_text=response,
         )
 
     async def test_push_observes_committed_data_and_only_sends_hint_to_both_devices(self):
@@ -206,7 +201,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             changes=self.changes,
         )
         result = await service.handle(user_id=self.user, interaction_mode="talk", message="Move it")
-        self.assertEqual(result.result.changed_entities[0].plan_dates, [self.today, target_date])
+        self.assertEqual(result.changed_entities[0].plan_dates, [self.today, target_date])
         self.assertEqual(self.provider.send_data.await_count, 3)
 
     async def test_butler_change_publishes_even_if_history_later_fails(self):
@@ -264,7 +259,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         async with self.sessions() as session:
             event = await session.get(DailyEventModel, created.event_id)
         self.assertEqual(event.status, "skipped")
-        self.assertEqual(completed.result.response, canonical)
+        self.assertEqual(completed.response, canonical)
 
     async def test_butler_updates_user_context(self):
         context_id = uuid.uuid4()
@@ -323,7 +318,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 completed = await service.handle(
                     user_id=self.user, interaction_mode="talk", message="Hello"
                 )
-                self.assertEqual(completed.result.requires_follow_up, follow_up)
+                self.assertEqual(completed.requires_follow_up, follow_up)
 
         async with self.sessions() as session:
             events = list((await session.scalars(select(DailyEventModel))).all())

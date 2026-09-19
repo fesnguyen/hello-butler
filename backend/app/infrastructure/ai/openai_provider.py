@@ -2,26 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import json
 import logging
-import re
-import tempfile
 import time
 import uuid
-from collections import Counter
-from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, TypeVar, cast
 
 from openai import APIError, AsyncOpenAI
 from pydantic import BaseModel, ValidationError
 
 from app.application.butler import (
-    ButlerAIInteraction,
     ButlerAIUnavailableError,
     ButlerContext,
     ButlerInteractionProposal,
+    ButlerSpeech,
 )
 from app.application.planning.contracts import (
     DayPlanningInput,
@@ -43,6 +38,55 @@ ModelT = TypeVar("ModelT", bound=BaseModel)
 _INTERACTION_TOOL = "submit_butler_interaction"
 
 
+class OpenAIButlerVoiceProvider:
+    def __init__(
+        self, *, api_key: str, model: str = "gpt-4o-mini-tts", voice: str = "alloy"
+    ) -> None:
+        self._model = model
+        self._voice = voice
+        self._client = AsyncOpenAI(api_key=api_key) if api_key else None
+
+    async def synthesize(
+        self, *, text: str, request_id: uuid.UUID | None = None
+    ) -> ButlerSpeech:
+        if self._client is None:
+            raise ButlerAIUnavailableError("OpenAI API key is not configured for TTS")
+        started = time.perf_counter()
+        logger.info(
+            "Butler TTS started request_id=%s model=%s text_chars=%d",
+            request_id,
+            self._model,
+            len(text),
+        )
+        try:
+            response = await self._client.audio.speech.create(
+                model=self._model,
+                voice=cast(Any, self._voice),
+                input=text,
+                response_format="wav",
+            )
+            audio = response.content
+            if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+                raise ButlerAIUnavailableError("TTS returned invalid WAV audio")
+        except (APIError, OSError) as exc:
+            logger.warning(
+                "Butler TTS failed request_id=%s model=%s elapsed_ms=%d error_type=%s",
+                request_id,
+                self._model,
+                round((time.perf_counter() - started) * 1000),
+                type(exc).__name__,
+            )
+            raise ButlerAIUnavailableError("TTS provider request failed") from exc
+        logger.info(
+            "Butler TTS completed request_id=%s model=%s elapsed_ms=%d wav_bytes=%d",
+            request_id,
+            self._model,
+            round((time.perf_counter() - started) * 1000),
+            len(audio),
+        )
+        return ButlerSpeech(audio=audio, mime_type="audio/wav")
+
+
 class OpenAIButlerProvider:
     def __init__(
         self,
@@ -50,13 +94,9 @@ class OpenAIButlerProvider:
         api_key: str,
         model: str,
         audio_model: str = "gpt-audio-1.5",
-        audio_voice: str = "alloy",
-        interaction_api: Literal["chat_completions", "responses"] = "chat_completions",
     ) -> None:
         self._model = model
         self._audio_model = audio_model
-        self._audio_voice = audio_voice
-        self._interaction_api = interaction_api
         self._client = AsyncOpenAI(api_key=api_key) if api_key else None
 
     async def interact(
@@ -70,7 +110,7 @@ class OpenAIButlerProvider:
         timezone: str,
         context: ButlerContext,
         request_id: uuid.UUID | None = None,
-    ) -> ButlerAIInteraction:
+    ) -> ButlerInteractionProposal:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
         payload: dict[str, object] = {
@@ -105,102 +145,36 @@ class OpenAIButlerProvider:
 
         started = time.perf_counter()
         logger.info(
-            "Single-call Butler interaction started request_id=%s api=%s model=%s "
+            "Butler interaction started request_id=%s api=chat_completions model=%s "
             "input_type=%s input_bytes=%d",
             request_id,
-            self._interaction_api,
             self._audio_model,
             audio_mime_type or "text/plain",
             input_bytes,
         )
         try:
-            if self._interaction_api == "responses":
-                proposal, output = await self._responses_interaction(content)
-            else:
-                proposal, output = await self._chat_interaction(content)
-            if output is None:
-                logger.warning(
-                    "Response audio unavailable request_id=%s api=%s cause=openai_no_audio; "
-                    "using text-only fallback",
-                    request_id,
-                    self._interaction_api,
-                )
-                response_audio = b""
-            else:
-                try:
-                    response_audio = base64.b64decode(output.data, validate=True)
-                    logger.info(
-                        "OpenAI response audio returned request_id=%s returned=true "
-                        "decoded_bytes=%d",
-                        request_id,
-                        len(response_audio),
-                    )
-                except binascii.Error:
-                    logger.warning(
-                        "Response audio unavailable request_id=%s cause=base64_decode_failed",
-                        request_id,
-                        exc_info=True,
-                    )
-                    response_audio = b""
-                if response_audio:
-                    try:
-                        response_audio = await self._normalize_response_wav(response_audio)
-                    except ButlerAIUnavailableError as exc:
-                        logger.warning(
-                            "Response audio unavailable request_id=%s "
-                            "cause=wav_normalization_failed detail=%s",
-                            request_id,
-                            exc,
-                            exc_info=True,
-                        )
-                        response_audio = b""
-                score = self._message_similarity(output.transcript, proposal.response_text)
-                if response_audio and not self._same_message(
-                    output.transcript, proposal.response_text
-                ):
-                    logger.warning(
-                        "Response audio unavailable request_id=%s cause=materially_unrelated "
-                        "similarity=%.2f; canonical text/action preserved",
-                        request_id,
-                        score,
-                    )
-                    response_audio = b""
-                elif response_audio:
-                    logger.info(
-                        "Response audio consistency accepted request_id=%s similarity=%.2f",
-                        request_id,
-                        score,
-                    )
+            proposal = await self._chat_interaction(content)
             logger.info(
-                "Single-call Butler interaction completed request_id=%s api=%s model=%s "
-                "elapsed_ms=%d "
-                "response_audio_bytes=%d action=%s intent=%s",
+                "Butler interaction completed request_id=%s api=chat_completions model=%s "
+                "elapsed_ms=%d action=%s intent=%s",
                 request_id,
-                self._interaction_api,
                 self._audio_model,
                 round((time.perf_counter() - started) * 1000),
-                len(response_audio),
                 proposal.decision.requested_action,
                 proposal.decision.intent,
             )
-            return ButlerAIInteraction(
-                proposal=proposal,
-                response_audio=response_audio,
-                response_audio_mime_type="audio/wav",
-            )
+            return proposal
         except (
             APIError,
             IndexError,
             OSError,
             ValidationError,
             json.JSONDecodeError,
-            binascii.Error,
         ) as exc:
             logger.warning(
-                "Single-call Butler interaction failed request_id=%s api=%s model=%s "
+                "Butler interaction failed request_id=%s api=chat_completions model=%s "
                 "elapsed_ms=%d error_type=%s",
                 request_id,
-                self._interaction_api,
                 self._audio_model,
                 round((time.perf_counter() - started) * 1000),
                 type(exc).__name__,
@@ -209,13 +183,11 @@ class OpenAIButlerProvider:
 
     async def _chat_interaction(
         self, content: list[dict[str, object]]
-    ) -> tuple[ButlerInteractionProposal, Any | None]:
+    ) -> ButlerInteractionProposal:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
         completion = await self._client.chat.completions.create(
             model=self._audio_model,
-            modalities=["text", "audio"],
-            audio=cast(Any, {"voice": self._audio_voice, "format": "wav"}),
             messages=cast(
                 Any,
                 [
@@ -223,190 +195,42 @@ class OpenAIButlerProvider:
                     {"role": "user", "content": content},
                 ],
             ),
+            tools=cast(
+                Any,
+                [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": _INTERACTION_TOOL,
+                            "description": (
+                                "Return the complete proposed Butler interaction. "
+                                "Application code validates and applies mutations."
+                            ),
+                            "parameters": ButlerInteractionProposal.model_json_schema(),
+                        },
+                    }
+                ],
+            ),
+            tool_choice=cast(
+                Any,
+                {"type": "function", "function": {"name": _INTERACTION_TOOL}},
+            ),
             store=False,
         )
         assistant = completion.choices[0].message
-        if not assistant.content:
-            raise ButlerAIUnavailableError(
-                "Chat Completions returned no structured Butler interaction"
-            )
-        proposal = ButlerInteractionProposal.model_validate_json(assistant.content)
-        return proposal, assistant.audio
-
-    async def _responses_interaction(
-        self, content: list[dict[str, object]]
-    ) -> tuple[ButlerInteractionProposal, None]:
-        if self._client is None:
-            raise ButlerAIUnavailableError("OpenAI API key is not configured")
-        response_content = [
-            {
-                "type": "input_text" if item["type"] == "text" else "input_audio",
-                **{key: value for key, value in item.items() if key != "type"},
-            }
-            for item in content
-        ]
-        tool = {
-            "type": "function",
-            "name": _INTERACTION_TOOL,
-            "description": (
-                "Return the complete proposed Butler interaction. Application code "
-                "validates and applies all proposed mutations."
-            ),
-            "parameters": ButlerInteractionProposal.model_json_schema(),
-        }
-        response = await self._client.responses.create(
-            model=self._audio_model,
-            instructions=BUTLER_INTERACTION_INSTRUCTIONS,
-            input=cast(Any, [{"role": "user", "content": response_content}]),
-            tools=cast(Any, [tool]),
-            tool_choice=cast(Any, {"type": "function", "name": _INTERACTION_TOOL}),
-            store=False,
-        )
         call = next(
             (
                 item
-                for item in response.output
-                if item.type == "function_call" and item.name == _INTERACTION_TOOL
+                for item in assistant.tool_calls or []
+                if item.type == "function" and item.function.name == _INTERACTION_TOOL
             ),
             None,
         )
         if call is None:
-            raise ButlerAIUnavailableError("Responses API returned no Butler interaction")
-        return ButlerInteractionProposal.model_validate_json(call.arguments), None
-
-    async def _normalize_response_wav(self, data: bytes) -> bytes:
-        input_path: Path | None = None
-        output_path: Path | None = None
-
-        try:
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as input_file:
-                input_file.write(data)
-                input_path = Path(input_file.name)
-
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as output_file:
-                output_path = Path(output_file.name)
-
-            # Let FFmpeg create the output file itself.
-            output_path.unlink()
-
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-v",
-                "error",
-                "-y",
-                "-i",
-                str(input_path),
-                "-map_metadata",
-                "-1",
-                "-c:a",
-                "pcm_s16le",
-                "-ac",
-                "1",
-                "-ar",
-                "24000",
-                "-f",
-                "wav",
-                str(output_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-            _, stderr = await process.communicate()
-
-            if process.returncode != 0 or not output_path.is_file():
-                logger.warning(
-                    "Response audio normalization failed exit_code=%s error=%s",
-                    process.returncode,
-                    stderr.decode(errors="replace"),
-                )
-                raise ButlerAIUnavailableError("Generated response audio could not be normalized")
-
-            normalized = await asyncio.to_thread(output_path.read_bytes)
-
-            if not self._is_wav(normalized):
-                raise ButlerAIUnavailableError("Normalized response audio is not WAV")
-
-            logger.info(
-                "Response audio normalized input_bytes=%d output_bytes=%d",
-                len(data),
-                len(normalized),
-            )
-
-            return normalized
-
-        except FileNotFoundError as exc:
-            logger.error("Response WAV normalization failed cause=ffmpeg_unavailable")
             raise ButlerAIUnavailableError(
-                "Response audio normalization failed because FFmpeg is unavailable"
-            ) from exc
-
-        except OSError as exc:
-            logger.error(
-                "Response WAV normalization failed cause=ffmpeg_start_failed error_type=%s",
-                type(exc).__name__,
+                "Chat Completions returned no structured Butler interaction"
             )
-            raise ButlerAIUnavailableError("Response audio normalization is unavailable") from exc
-
-        finally:
-            if input_path is not None:
-                input_path.unlink(missing_ok=True)
-            if output_path is not None:
-                output_path.unlink(missing_ok=True)
-
-    @staticmethod
-    def _same_message(spoken: str, canonical: str) -> bool:
-        spoken_words = OpenAIButlerProvider._message_words(spoken)
-        canonical_words = OpenAIButlerProvider._message_words(canonical)
-        if not spoken_words or not canonical_words:
-            return False
-        spoken_meaningful = OpenAIButlerProvider._meaningful_words(spoken_words)
-        canonical_meaningful = OpenAIButlerProvider._meaningful_words(canonical_words)
-        shared = spoken_meaningful & canonical_meaningful
-        if shared:
-            return True
-
-        # The transcript comes from the same multimodal response as the audio, so
-        # lexical difference alone is not evidence of bad audio. Only two long,
-        # disjoint messages provide enough evidence to discard otherwise valid audio.
-        return not (len(spoken_meaningful) >= 8 and len(canonical_meaningful) >= 8)
-
-    @staticmethod
-    def _message_similarity(spoken: str, canonical: str) -> float:
-        spoken_words = OpenAIButlerProvider._message_words(spoken)
-        canonical_words = OpenAIButlerProvider._message_words(canonical)
-        if not spoken_words or not canonical_words:
-            return 0.0
-        spoken_text = " ".join(spoken_words)
-        canonical_text = " ".join(canonical_words)
-        sequence_score = SequenceMatcher(None, spoken_text, canonical_text).ratio()
-        overlap = sum((Counter(spoken_words) & Counter(canonical_words)).values())
-        token_score = (2 * overlap) / (len(spoken_words) + len(canonical_words))
-        return max(sequence_score, token_score)
-
-    @staticmethod
-    def _message_words(value: str) -> list[str]:
-        return re.findall(r"\w+", value.casefold())
-
-    @staticmethod
-    def _meaningful_words(words: list[str]) -> set[str]:
-        stop_words = {
-            "a",
-            "an",
-            "and",
-            "at",
-            "for",
-            "i",
-            "in",
-            "is",
-            "it",
-            "of",
-            "on",
-            "the",
-            "to",
-            "was",
-            "your",
-        }
-        return set(words) - stop_words
+        return ButlerInteractionProposal.model_validate_json(call.function.arguments)
 
     @staticmethod
     def _is_wav(data: bytes) -> bool:

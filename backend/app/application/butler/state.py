@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import NotRequired, TypedDict
 
 from app.application.butler.contracts import (
-    ButlerAIInteraction,
     ButlerContext,
     ButlerDecision,
     ButlerError,
+    ButlerInteractionProposal,
     ButlerResult,
     InteractionMode,
 )
@@ -28,7 +28,7 @@ class ButlerState(TypedDict):
     context: NotRequired[ButlerContext]
     decision: NotRequired[ButlerDecision]
     result: NotRequired[ButlerResult]
-    interaction: NotRequired[ButlerAIInteraction]
+    proposal: NotRequired[ButlerInteractionProposal]
 
 
 class ButlerStateUpdate(TypedDict, total=False):
@@ -36,7 +36,7 @@ class ButlerStateUpdate(TypedDict, total=False):
     context: ButlerContext
     decision: ButlerDecision
     result: ButlerResult
-    interaction: ButlerAIInteraction
+    proposal: ButlerInteractionProposal
 
 
 def context_from(state: ButlerState) -> ButlerContext:
@@ -60,12 +60,12 @@ def result_from(state: ButlerState) -> ButlerResult:
     return result
 
 
-def interaction_from(state: ButlerState) -> ButlerAIInteraction:
-    interaction = state.get("interaction")
-    if interaction is None:
-        raise ButlerError("Butler graph state is missing multimodal interaction")
-    return interaction
+def proposal_from(state: ButlerState) -> ButlerInteractionProposal:
+    proposal = state.get("proposal")
+    if proposal is None:
+        raise ButlerError("Butler graph state is missing interaction proposal")
+    return proposal
 
 
 def canonical_response_from(state: ButlerState) -> str:
-    return interaction_from(state).proposal.response_text
+    return proposal_from(state).response_text

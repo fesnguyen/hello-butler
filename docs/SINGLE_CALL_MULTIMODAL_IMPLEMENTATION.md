@@ -193,6 +193,14 @@ User entitlement, billing, and default voice-access policy are intentionally out
 - No TTS retry may regenerate or alter the canonical `response_text`.
 - Durable request recovery and idempotency remain responsible for preventing duplicate interaction mutations.
 
+## Current configuration
+
+- `butler_voice_enabled` controls whether the optional speech call is attempted and defaults to enabled until entitlement policy is implemented.
+- `butler_tts_model` selects the Speech API model and defaults to `gpt-4o-mini-tts`.
+- `butler_audio_voice` selects the TTS voice.
+- These are code defaults and do not require `.env` entries; deployments may override them normally.
+- The interaction call uses Chat Completions with a required structured function result. The obsolete Chat Completions/Responses endpoint switch is removed.
+
 ## Implementation direction
 
 The existing v1.7 single-call code is transitional and must be refactored to match this document:
@@ -206,3 +214,4 @@ The existing v1.7 single-call code is transitional and must be refactored to mat
 - update tests from a one-call invariant to separate interaction and optional-TTS invariants.
 
 This document records the architecture decision only; it does not claim the current branch implementation already satisfies the two-call design.
+

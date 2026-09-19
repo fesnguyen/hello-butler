@@ -11,7 +11,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.application.butler.contracts import ButlerResult, ChangedEntity, InteractionMode
+from app.application.butler.contracts import (
+    ButlerResult,
+    ButlerVoiceProvider,
+    ChangedEntity,
+    InteractionMode,
+)
 from app.application.butler.service import ButlerService
 from app.application.push.service import PushService
 from app.core.config import Settings
@@ -55,11 +60,13 @@ class ButlerRequestService:
         session_factory: async_sessionmaker[AsyncSession],
         butler: ButlerService,
         push: PushService,
+        voice_provider: ButlerVoiceProvider | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = session_factory
         self._butler = butler
         self._push = push
+        self._voice_provider = voice_provider
         self._processing: set[uuid.UUID] = set()
         self._lock = asyncio.Lock()
 
@@ -130,20 +137,14 @@ class ButlerRequestService:
         return status
 
     async def process(self, request_id: uuid.UUID) -> None:
-        """Process one accepted Butler request through handling, persistence, cleanup, and notification."""
-
-        # Prevent the same request from being processed concurrently within this application instance.
         async with self._lock:
             if request_id in self._processing:
                 return
             self._processing.add(request_id)
-
         try:
-            # Atomically claim the persisted request; skip completed or actively processing requests.
             request = await self._claim(request_id)
             if request is None:
                 return
-
             logger.info(
                 "Processing Butler request request_id=%s mode=%s source=%s audio_type=%s",
                 request.id,
@@ -151,19 +152,13 @@ class ButlerRequestService:
                 request.input_source,
                 request.input_audio_mime_type,
             )
-
-            # Notify the client that Butler has started handling the accepted request.
             await self._push.butler_request_state(
                 request.user_id, "butler_request_handling", request.id
             )
-
-            # Resolve the temporary input audio asset when this is a voice request.
             audio_path = Path(request.input_audio_path) if request.input_audio_path else None
             if request.input_source == "audio" and audio_path is None:
                 raise RuntimeError("Accepted audio request has no input asset")
-
-            # Hand the user request to Butler for AI understanding, mutations, text, and response audio.
-            interaction = await self._butler.handle(
+            result = await self._butler.handle(
                 request_id=request.id,
                 user_id=request.user_id,
                 interaction_mode=cast(InteractionMode, request.interaction_mode),
@@ -171,18 +166,10 @@ class ButlerRequestService:
                 audio_path=audio_path,
                 audio_mime_type=request.input_audio_mime_type,
             )
-
-            # Normalize and persist usable response audio; audio failure degrades to text-only.
-            response_audio_path, audio_type = await self._response_audio(
-                request.id,
-                interaction.response_audio,
-                interaction.response_audio_mime_type,
+            response_audio_path, audio_type = await self._synthesize_response_audio(
+                request.id, result.response
             )
-
-            # Persist the completed Butler result and optional response-audio reference.
-            await self._complete(request.id, interaction.result, response_audio_path, audio_type)
-
-            # Successful processing no longer needs the temporary user input audio.
+            await self._complete(request.id, result, response_audio_path, audio_type)
             try:
                 await self._delete_file(request.input_audio_path)
                 await self._clear_input_path(request.id)
@@ -193,29 +180,50 @@ class ButlerRequestService:
                         request.input_audio_path,
                     )
             except Exception:
-                # Cleanup failure must not turn an otherwise successful Butler request into a failure.
                 logger.exception(
                     "Temporary input audio cleanup failed request_id=%s; "
                     "maintenance cleanup retained",
                     request.id,
                 )
-
-            # Notify the client that the completed result is ready to retrieve.
             await self._push.butler_request_state(
                 request.user_id, "butler_request_completed", request.id
             )
-
         except asyncio.CancelledError:
-            # Preserve asyncio cancellation semantics instead of recording cancellation as a request failure.
             raise
         except Exception as exc:
-            # Any processing failure is persisted so the client can observe the failed request state.
             logger.exception("Butler request %s failed", request_id)
             await self._fail(request_id, exc)
         finally:
-            # Always release the in-memory processing guard, regardless of outcome.
             async with self._lock:
                 self._processing.discard(request_id)
+
+    async def _synthesize_response_audio(
+        self, request_id: uuid.UUID, response_text: str
+    ) -> tuple[Path | None, str | None]:
+        if not self._settings.butler_voice_enabled:
+            logger.info("Butler voice skipped request_id=%s cause=voice_disabled", request_id)
+            return None, None
+        if self._voice_provider is None:
+            logger.warning(
+                "Response audio unavailable request_id=%s cause=tts_unavailable; "
+                "canonical text/action preserved",
+                request_id,
+            )
+            return None, None
+        try:
+            speech = await self._voice_provider.synthesize(
+                text=response_text, request_id=request_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "Response audio unavailable request_id=%s cause=tts_failed "
+                "error_type=%s; canonical text/action preserved",
+                request_id,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            return None, None
+        return await self._response_audio(request_id, speech.audio, speech.mime_type)
 
     async def _claim(self, request_id: uuid.UUID) -> ButlerRequestModel | None:
         stale = datetime.now(UTC) - timedelta(
@@ -239,7 +247,7 @@ class ButlerRequestService:
         path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.ogg"
         if not audio:
             logger.warning(
-                "Response audio unavailable request_id=%s cause=openai_no_usable_audio; "
+                "Response audio unavailable request_id=%s cause=tts_no_usable_audio; "
                 "canonical text/action preserved",
                 request_id,
             )
@@ -255,7 +263,7 @@ class ButlerRequestService:
             return None, None
         if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
             logger.warning(
-                "Response audio unavailable request_id=%s cause=invalid_openai_wav bytes=%d; "
+                "Response audio unavailable request_id=%s cause=invalid_tts_wav bytes=%d; "
                 "canonical text/action preserved",
                 request_id,
                 len(audio),
@@ -459,6 +467,7 @@ class ButlerRequestService:
                 if request.status == "completed"
                 and request.response_text
                 and not request.response_audio_path
+                and self._settings.butler_voice_enabled
                 else []
             ),
         )

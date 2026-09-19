@@ -44,15 +44,15 @@ class ButlerGraph:
     def _build(self) -> CompiledStateGraph[ButlerState, None, ButlerState, ButlerState]:
         graph = StateGraph(ButlerState)
         graph.add_node("load_context", self._load_context)
-        graph.add_node("multimodal_interaction", self._multimodal_interaction)
+        graph.add_node("interaction", self._interaction)
         graph.add_node("apply_action", self._apply_action)
         graph.add_node("complete_without_mutation", self._complete_without_mutation)
         graph.add_node("save_history", self._save_history)
 
         graph.add_edge(START, "load_context")
-        graph.add_edge("load_context", "multimodal_interaction")
+        graph.add_edge("load_context", "interaction")
         graph.add_conditional_edges(
-            "multimodal_interaction",
+            "interaction",
             self._route,
             {
                 "command": "apply_action",
@@ -68,8 +68,8 @@ class ButlerGraph:
     async def _load_context(self, state: ButlerState) -> ButlerStateUpdate:
         return {"context": await self._context_loader.load(state["user_id"], state["today"])}
 
-    async def _multimodal_interaction(self, state: ButlerState) -> ButlerStateUpdate:
-        interaction = await self._ai_provider.interact(
+    async def _interaction(self, state: ButlerState) -> ButlerStateUpdate:
+        proposal = await self._ai_provider.interact(
             request_id=state.get("request_id"),
             message=state["message"] or None,
             audio_path=state["audio_path"],
@@ -80,9 +80,9 @@ class ButlerGraph:
             context=context_from(state),
         )
         return {
-            "message": interaction.proposal.user_message_text,
-            "decision": interaction.proposal.decision,
-            "interaction": interaction,
+            "message": proposal.user_message_text,
+            "decision": proposal.decision,
+            "proposal": proposal,
         }
 
     @staticmethod
