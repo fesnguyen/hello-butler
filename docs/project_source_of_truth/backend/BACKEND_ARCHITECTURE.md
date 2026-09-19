@@ -237,9 +237,19 @@ FCM is a wake-up signal, not canonical content. Result fetch and authenticated a
 
 ---
 
-# Planning and Proactive Speech
+# Planning, Upcoming Events, and Proactive Speech
 
-The Daily Plan / Daily Event lifecycle remains authoritative. Morning Brief and Good Night Summary remain proactive-speech exceptions at the client presentation layer. Ordinary Butler responses remain silent by default until the user selects playback.
+The Daily Plan / Daily Event lifecycle remains authoritative.
+
+Upcoming Events are derived projections of actionable User Context, not persisted domain entities. **Do not add an `UpcomingEvent` table/model.** User Context remains authoritative; derive the current/future Upcoming representation when needed for planning or presentation.
+
+Upcoming Events are one planning input among routines, preferences, constraints, existing events, and other relevant User Context. They are not future Daily Plans. Planning may use an Upcoming Event without materializing it as a Daily Event. Daily routines are recurring planning context and are not Upcoming Events.
+
+Only context whose applicable time range is active today or in the future is eligible for Upcoming presentation. For example, "Diet for a week starting September 22" may project an Upcoming Event spanning September 22–28 without requiring a generic Diet Daily Event on every day.
+
+Upcoming Event mutations resolve to the underlying User Context. Update/reschedule/skip/remove must preserve a single source of truth and distinguish occurrence-level exceptions from changes/removal of an entire recurring rule.
+
+Morning Brief and Good Night Summary remain proactive-speech exceptions at the client presentation layer. Ordinary Butler responses remain silent by default until the user selects playback.
 
 ---
 
