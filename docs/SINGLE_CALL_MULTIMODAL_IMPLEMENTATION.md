@@ -1,160 +1,208 @@
-# Single-Call Multimodal Butler Implementation
+# Two-Call Butler Interaction and Voice Implementation
 
-Date: 2026-09-17  
+Date: 2026-09-19  
 Source-of-truth version: 1.7
 
-## Result
+## Decision
 
-Normal Butler audio and text interactions now make one multimodal OpenAI request.
-That response contains the typed application proposal and native response audio.
-There is no later OpenAI/TTS request.
+Hello Butler no longer treats a single multimodal OpenAI call as the target architecture.
 
-The default interaction endpoint is Chat Completions. It can be changed with
-`BUTLER_OPENAI_INTERACTION_API=responses` for endpoint comparison; no `.env` entry
-is required for the default `chat_completions` mode.
+The interaction is split into two responsibilities:
+
+1. **Understanding and response generation:** accept user text or audio, understand the request with Butler context, and return the structured `ButlerInteractionProposal` including the canonical `response_text`.
+2. **Optional text-to-speech:** when Butler voice is enabled for the user, synthesize that already-final `response_text` into response audio.
+
+Text is the canonical Butler response. Voice is an optional presentation feature layered on top of the completed text response.
+
+## Why the single-call design was removed
+
+The single-call experiment tried to obtain both a machine-facing structured interaction and independent native speech in one assistant response.
+
+Two behaviors were observed:
+
+- A forced function/tool call reliably returned the structured Butler proposal, but the assistant turn did not return native response audio.
+- A normal audio assistant response returned native audio, but when the assistant response was constrained to the proposal JSON, the generated audio transcript represented that JSON rather than speaking only the nested `response_text`.
+
+The audio response and its transcript therefore cannot be treated as independent channels where the transcript carries the complete structured proposal while the audio speaks only one selected field.
+
+The architecture now keeps structured understanding and speech synthesis separate instead of relying on prompt instructions or transcript-similarity heuristics to bridge those responsibilities.
 
 ## Flow
 
+### Text request without Butler voice
+
 ```text
-audio or text
-  -> Android records voice as Ogg/Opus and streams/uploads it to the backend
-  -> backend stores the Opus input only as a temporary durable request asset
-  -> backend converts Opus -> WAV before the OpenAI multimodal call
+user text
   -> load conversation, User Context, plan/events, time and timezone
-  -> OpenAIButlerProvider.interact()                         [one API call]
+  -> OpenAI interaction/understanding call
        -> ButlerInteractionProposal
             user_message_text
             ButlerDecision
             response_text
-       -> native assistant response audio
   -> validate/apply the proposed action through application services
   -> persist canonical response_text and changed entities
-  -> normalize model WAV output, then encode WAV -> Ogg/Opus
-  -> store the Opus response for later client download
-  -> delete the temporary input voice after successful processing
   -> complete the durable request and notify the client
+  -> Android displays response_text
 ```
 
-## OpenAI endpoint behavior and audio fix
+This path requires no response-audio generation.
 
-The original Chat Completions implementation forced
-`submit_butler_interaction` as a function call. A forced function call selects a
-tool-call output branch rather than a normal assistant message. The structured
-arguments were returned, but there was no spoken assistant message on which native
-audio could be returned. Adding descriptions to the tool schema or saying that
-audio was mandatory could not change that response shape.
+### Audio request without Butler voice
 
-The fixed `chat_completions` mode no longer requests a tool call. It requests both
-text and audio modalities from `gpt-audio-1.5`; the text modality contains the raw
-`ButlerInteractionProposal` JSON and the audio modality speaks only
-`response_text`. The backend validates the JSON with the existing Pydantic model,
-then applies the same WAV validation, consistency guard, and Opus conversion as
-before. This remains one OpenAI call.
+```text
+Android records Ogg/Opus
+  -> backend stores temporary Ogg/Opus
+  -> FFmpeg -> WAV
+  -> OpenAI interaction/understanding call
+       audio + Butler context
+       -> ButlerInteractionProposal
+            user_message_text
+            ButlerDecision
+            response_text
+  -> validate/apply the proposed action
+  -> persist canonical response_text and changed entities
+  -> delete temporary input audio after successful processing
+  -> complete request
+  -> Android displays response_text
+```
 
-The optional `responses` mode retains a forced function call for the structured
-proposal and also remains one OpenAI call. It is intentionally text-only at the
-provider boundary: current OpenAI audio guidance directs audio-output applications
-to Chat Completions and describes Responses as text/image input with text output.
-Therefore this mode completes with canonical text/action and the existing
-`openai_no_audio` warning; it does not fake or synthesize response audio.
+Input audio and Butler response voice are separate capabilities. A user may speak a request without requiring a synthesized Butler voice response.
 
-Endpoint selection:
+### Request with Butler voice enabled
 
-- `BUTLER_OPENAI_INTERACTION_API=chat_completions` (default): audio input, validated
-  proposal JSON, and native WAV response audio in one call.
-- `BUTLER_OPENAI_INTERACTION_API=responses`: audio/text input and a tool-validated
-  proposal in one call, with expected text-only completion.
+```text
+CALL 1 - UNDERSTAND AND RESPOND
+
+user text or normalized user audio
+  -> OpenAI interaction/understanding
+  -> ButlerInteractionProposal
+       user_message_text
+       ButlerDecision
+       response_text
+  -> validate/apply proposed action
+  -> response_text becomes canonical
+
+CALL 2 - OPTIONAL SPEECH
+
+canonical response_text
+  -> text-to-speech
+  -> WAV
+  -> FFmpeg -> Ogg/Opus
+  -> backend retained response audio
+  -> Android download/playback
+```
+
+The second call receives the exact canonical `response_text`. It does not independently decide what Butler should say.
 
 ## Contract
 
-- `ButlerInteractionProposal` is the Pydantic interaction schema. It reuses the existing
-  `ButlerDecision` action contract rather than introducing dictionary mutations.
-- `ButlerAIInteraction` keeps the proposal and decoded audio separate at the
-  provider boundary.
-- `ButlerCompletedInteraction` carries the validated domain result and normalized
-  audio from the graph to durable request processing.
-- Supported mutations now include event create/update/skip/remove and User Context
-  create/update. Queries and clarifications use no mutation.
-- Context loading supplies conversation from the configured 30-minute window and
-  relevant events from today through the next seven days before the single call.
+- `ButlerInteractionProposal` remains the structured interaction contract.
+- `ButlerDecision` remains the machine-facing action/query decision.
+- `response_text` is the single canonical user-facing Butler response.
+- The interaction model may consume text or audio, but its responsibility ends with structured understanding and canonical text generation.
+- Text-to-speech receives only the finalized `response_text`.
+- Response audio is optional. A completed Butler request does not require response audio.
+- Voice availability is an application capability/entitlement concern and must not change the meaning or execution of the Butler interaction.
+- Supported mutations remain event create/update/skip/remove and User Context create/update. Queries and clarifications use no mutation.
+- Context loading continues to use the configured conversation window plus relevant events and User Context.
 
 ## Audio transport and storage contract
 
-The v1.7 audio contract is explicit:
+The client/backend transport contract remains compressed Ogg/Opus:
 
-- **Client recording/upload:** Ogg container with Opus audio (`audio/ogg`). The client streams/uploads this compressed format to the backend; it does not upload WAV.
-- **Android compatibility:** framework `MediaRecorder` exposes the required OGG + OPUS pair from Android 10 (API 29). Voice capture fails clearly on API 26-28 instead of silently producing AAC under an Ogg name; supported production voice devices must run API 29 or newer.
-- **Temporary backend input:** the uploaded Ogg/Opus asset is stored only long enough to support durable asynchronous processing/recovery. Before the OpenAI call, the backend converts it to WAV.
-- **OpenAI input/output:** WAV is the normalized internal provider format. WAV is not the client transport/storage format.
-- **Backend response conversion:** audio returned by OpenAI is normalized as WAV first, then encoded to Ogg/Opus before durable response storage.
-- **Client response:** the client downloads and plays the stored Ogg/Opus response (`audio/ogg`). Response metadata, extension, validation, caching, and playback must agree with that format.
-- **Input lifetime:** after successful request processing, the temporary input voice asset is deleted automatically and its persisted path is cleared. Failed/recoverable work may retain it only as required by retry/recovery, after which cleanup removes it.
-- **Output lifetime:** response Opus is retained for a configurable number of days so the user can download/play it later. The application default is **1 day**. This is a code/configuration default and does **not** require an explicit `.env` entry; deployments may override it.
-- FFmpeg is the backend codec boundary for Opus <-> WAV conversion and is therefore a required runtime dependency for voice processing.
-
-This keeps network and durable response audio compressed while giving the model one stable WAV boundary:
+- **Client recording/upload:** Android records Ogg/Opus (`audio/ogg`).
+- **Android compatibility:** framework OGG + OPUS recording requires Android 10 (API 29) or newer.
+- **Temporary backend input:** uploaded Ogg/Opus is retained only as required for durable processing/recovery.
+- **Understanding input:** before an audio interaction call, backend FFmpeg converts Ogg/Opus to the provider-supported normalized audio format.
+- **Speech output:** when voice is enabled, text-to-speech receives the canonical `response_text` and returns response audio.
+- **Backend response conversion:** provider response audio is normalized as needed and encoded to Ogg/Opus before durable storage.
+- **Client response:** Android downloads and plays Ogg/Opus (`audio/ogg`).
+- **Input lifetime:** successful processing deletes temporary input audio and clears its persisted path. Failed/recoverable work may retain it temporarily for retry/recovery.
+- **Output lifetime:** synthesized response audio remains subject to the configured retention period; the current application default is 1 day.
+- FFmpeg remains the backend codec boundary for client audio transport and provider audio formats.
 
 ```text
+INPUT AUDIO
+
 Android Ogg/Opus
   -> backend temporary Ogg/Opus
-  -> FFmpeg -> WAV
-  -> OpenAI single multimodal call
-  -> WAV
+  -> FFmpeg -> provider input format
+  -> interaction/understanding call
+  -> structured proposal + canonical response_text
+
+
+OPTIONAL BUTLER VOICE
+
+canonical response_text
+  -> text-to-speech call
+  -> provider audio
   -> FFmpeg -> Ogg/Opus
-  -> backend retained response (default 1 day)
-  -> Android download/playback
+  -> backend retained response
+  -> Android playback
 ```
 
 ## Canonical response behavior
 
-`response_text` from the single model response remains unchanged through action
-execution, history persistence, request persistence, notification, and Android
-presentation. The audio is generated in that same response and is checked against
-the canonical response transcript before backend normalization and Opus encoding.
+`response_text` is finalized by the interaction call before text-to-speech begins.
+
+The same value is used for:
+
+- conversation history,
+- durable request result,
+- notifications/client presentation,
+- text-to-speech input when Butler voice is enabled.
+
+The speech call must not paraphrase, rewrite, summarize, or make new decisions. Its job is presentation only.
+
+This removes the previous need to compare independently generated speech against canonical text as an acceptance gate. The TTS input itself is the canonical response.
+
+## Voice is optional
+
+Butler must remain fully functional without synthesized response audio.
+
+When voice is unavailable or disabled:
+
+```text
+interaction succeeds
+  -> action/query result is applied
+  -> response_text is persisted
+  -> response_audio_url = null
+  -> client presents text
+```
+
+When voice is enabled:
+
+```text
+interaction succeeds
+  -> response_text is persisted
+  -> TTS is attempted
+  -> successful audio is stored and exposed to the client
+```
+
+A TTS failure must not undo an already successful Butler interaction. The request remains completed with its canonical text and action result, while response audio is omitted and the failure is logged.
+
+User entitlement, billing, and default voice-access policy are intentionally outside this v1.7 implementation document.
 
 ## Validation and failures
 
-- The model only proposes changes. Existing action services resolve ownership,
-  targets, required fields, dates, and database mutations.
-- An invalid/unresolvable mutation raises `ButlerMutationRejectedError`. The
-  request becomes failed and no false success message is written to conversation
-  history.
-- Provider or structured-schema failure fails the request and remains observable.
-- **Input-audio failures are request failures:** invalid Ogg/Opus, unavailable FFmpeg,
-  or an undecodable upload means Butler has no trustworthy user instruction. The
-  durable input is retained temporarily for retry/recovery and later maintenance cleanup.
-- Missing, malformed, unnormalizable, or unencodable response audio is logged and degrades to
-  the existing completed text-only response with an audio warning. It never causes
-  a second provider call.
-- **Response-audio failures never fail the request:** absent model audio, decode
-  failure, materially unrelated speech, invalid WAV, Opus encoding failure, or
-  storage failure preserves the canonical text/action, completes the request,
-  returns `response_audio_url = null`, and emits a warning plus a cause-specific log.
-- The transcript check is deliberately permissive and acts only as a strong-mismatch
-  sanity guard. Valid decoded and normalized audio is preserved by default, including
-  short semantic paraphrases with little or no lexical overlap. Audio is dropped only
-  when the transcript provides strong evidence of being materially unrelated.
-  `proposal.response_text` remains canonical regardless of the decision.
-- Idempotency receipts and asynchronous recovery remain active for retried durable
-  requests.
+- The interaction model only proposes changes. Existing application services validate ownership, targets, required fields, dates, and database mutations.
+- An invalid or unresolvable mutation fails the interaction and must not write a false success message.
+- Structured interaction/schema failure fails the request.
+- Input-audio failures can fail an audio request because Butler cannot reliably understand the user's instruction.
+- TTS and response-audio processing failures are non-fatal because the canonical interaction has already completed.
+- No TTS retry may regenerate or alter the canonical `response_text`.
+- Durable request recovery and idempotency remain responsible for preventing duplicate interaction mutations.
 
-## Removed architecture
+## Implementation direction
 
-- `ButlerResponseAudioProvider` and `synthesize()` were removed.
-- `BUTLER_DECISION_INSTRUCTIONS` plus `BUTLER_RESPONSE_AUDIO_INSTRUCTIONS` were
-  replaced for interaction processing by `BUTLER_INTERACTION_INSTRUCTIONS`.
-- Backend-generated query summaries and canned successful mutation responses no
-  longer replace the model's canonical response.
+The existing v1.7 single-call code is transitional and must be refactored to match this document:
 
-## Verification
+- remove native response-audio generation from the interaction/understanding provider call;
+- restore a dedicated response speech/TTS boundary;
+- pass only finalized `response_text` into that boundary;
+- invoke TTS only when Butler voice is enabled for the user;
+- keep text-only completion as the normal valid result when voice is disabled or unavailable;
+- retain Ogg/Opus client transport and response storage;
+- update tests from a one-call invariant to separate interaction and optional-TTS invariants.
 
-- Backend unit suite: 29 tests passed.
-- Ruff: passed for application and tests.
-- Tests cover the one-call invariant, original audio/context input, text input,
-  event create/update/skip, User Context update, query/clarification no-op,
-  unchanged canonical response persistence, response-audio storage, malformed-audio fallback,
-  mutation rejection, and existing recovery/idempotency behavior.
-- Provider tests cover the Chat Completions JSON-plus-audio request shape and the
-  configurable Responses API tool-call/text-only fallback shape.
-- Pyright was run and continues to report the repository's existing LangGraph and
-  third-party typing/stub issues; no new single-call contract error was reported.
+This document records the architecture decision only; it does not claim the current branch implementation already satisfies the two-call design.
