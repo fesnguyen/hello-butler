@@ -40,6 +40,47 @@ Prepare Tomorrow
 
 Daily Events remain the concrete representation of the user's day. User Context describes durable, recurring, temporary, or one-time information that helps Butler prepare and adapt that day.
 
+## Daily Events, Upcoming Events, and Routines
+
+Butler distinguishes the concrete events in a generated day from future actionable information that may influence later planning.
+
+```text
+User Context
+├── routine / preference / reference context
+└── time-bounded future or currently-active context
+        ↓ project when actionable
+   Upcoming Events
+        ↓ one planning input among others
+Daily Planning
+├── routines
+├── Upcoming Events
+├── preferences / constraints
+├── existing Daily Events
+└── other relevant User Context
+        ↓
+Daily Plan
+└── Daily Events
+```
+
+An **Upcoming Event** is a derived, time-aware presentation of actionable User Context. It is **not** a new persistence entity or database table. User Context remains its source of truth. Do not create an `UpcomingEvent` table/model merely to support this concept.
+
+Examples:
+
+- "I have a dentist appointment next Tuesday at 15:00" may appear as one Upcoming Event.
+- "I will meet the client every day at 15:00 this week" remains recurring User Context. Today's applicable occurrence may be represented in today's Daily Events, while future applicable occurrences may be shown as Upcoming Events.
+- "Diet for a week starting September 22" may appear as one Upcoming Event covering September 22–28 while that period is current or future. It is planning context; it does not imply that one generic "Diet" Daily Event must be created every day.
+
+Upcoming Events are **inputs to planning, not pre-generated future Daily Plans**. An Upcoming Event may influence a Daily Plan without becoming a Daily Event, and Daily Plans are also generated from routines, preferences, constraints, existing events, and other relevant context.
+
+A **daily routine is not an Upcoming Event**. Routines are recurring planning context. When a routine applies to a particular day, planning may materialize the appropriate concrete Daily Events for that day.
+
+Only Upcoming Events whose relevant time range is still active today or lies in the future should be presented. Expired occurrences/ranges are not shown as Upcoming Events.
+
+Upcoming Events must be actionable from the user's perspective like Daily Events: the user may modify, reschedule, skip an occurrence when meaningful, or remove them. These actions mutate the underlying User Context (or an appropriate occurrence/exception representation within the existing context architecture); they must not create a second independent Upcoming Event persistence source. For recurring context, distinguish an occurrence-level change such as "cancel tomorrow's client meeting" from a rule-level change such as "stop these client meetings."
+
+On the Main Screen, Upcoming Events appear **below the Daily Plan**, separated from Daily Events by a clear, eye-catching visual divider/section boundary. They must not be visually mixed into today's Daily Event list.
+
+
 ---
 
 ## Three Primary Butler Controls
