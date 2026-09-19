@@ -8,6 +8,8 @@ import android.provider.Settings
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.hellobutler.app.execution.ScheduleRestoreWorker
 import android.content.pm.PackageManager
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.SystemClock
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,6 +38,9 @@ import com.hellobutler.app.speech.ButlerAudioRecorder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,6 +49,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     val events by viewModel.events.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val speaking by SpeechPlaybackState.speaking.collectAsState()
     var exactAlarmsAllowed by remember { mutableStateOf(true) }
     LifecycleResumeEffect(Unit) {
@@ -53,6 +59,9 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         onPauseOrDispose { }
     }
     val recorder = remember { ButlerAudioRecorder(context) }
+    val listeningTone = remember { ToneGenerator(AudioManager.STREAM_NOTIFICATION, 45) }
+    var captureStartJob by remember { mutableStateOf<Job?>(null) }
+    var capturePending by remember { mutableStateOf(false) }
     var captureStartedAtMillis by remember { mutableLongStateOf(0L) }
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
     var creatingEvent by remember { mutableStateOf(false) }
@@ -63,7 +72,13 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         ActivityResultContracts.RequestPermission()
     ) { }
 
-    DisposableEffect(Unit) { onDispose { recorder.cancel() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            captureStartJob?.cancel()
+            recorder.cancel()
+            listeningTone.release()
+        }
+    }
     val openConversation by ButlerNavigation.openConversation.collectAsState()
     LaunchedEffect(openConversation) {
         if (openConversation) {
@@ -82,21 +97,40 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
     }
 
     fun startCapture(mode: CaptureMode) {
-        if (state.recording) return
+        viewModel.openConversation()
+        if (state.recording || capturePending) return
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
-        runCatching { recorder.start() }.fold(
-            onSuccess = {
-                captureStartedAtMillis = SystemClock.elapsedRealtime()
-                viewModel.beginRecording(mode)
-            },
-            onFailure = { viewModel.captureError(it.message ?: "Recording could not start") },
-        )
+        capturePending = true
+        captureStartJob = scope.launch {
+            delay(LISTENING_CUE_DELAY_MILLIS)
+            if (!capturePending) return@launch
+            runCatching { recorder.start() }.fold(
+                onSuccess = {
+                    captureStartedAtMillis = SystemClock.elapsedRealtime()
+                    capturePending = false
+                    viewModel.beginRecording(mode)
+                    listeningTone.startTone(ToneGenerator.TONE_PROP_BEEP, LISTENING_CUE_DURATION_MILLIS)
+                },
+                onFailure = {
+                    capturePending = false
+                    viewModel.captureError(it.message ?: "Recording could not start")
+                },
+            )
+        }
     }
 
     fun finishCapture() {
+        val pendingStart = captureStartJob
+        captureStartJob = null
+        if (capturePending) {
+            capturePending = false
+            pendingStart?.cancel()
+            return
+        }
+        if (captureStartedAtMillis == 0L) return
         val elapsedMillis = SystemClock.elapsedRealtime() - captureStartedAtMillis
         captureStartedAtMillis = 0L
         if (shouldDiscardVoiceCapture(elapsedMillis)) {
@@ -131,7 +165,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         },
         bottomBar = {
             ButlerControlBar(
-                enabled = !state.recording,
+                enabled = !state.recording && !capturePending,
                 activeMode = state.captureMode,
                 recording = state.recording,
                 onVoicePressed = ::startCapture,
@@ -231,6 +265,9 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
         )
     }
 }
+
+private const val LISTENING_CUE_DELAY_MILLIS = 100L
+private const val LISTENING_CUE_DURATION_MILLIS = 80
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

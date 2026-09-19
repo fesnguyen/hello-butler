@@ -64,7 +64,7 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     fun cancelRecording() {
         _state.update {
             it.copy(
-                overlayVisible = false,
+                overlayVisible = true,
                 captureMode = null,
                 recording = false,
                 error = null,
