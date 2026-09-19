@@ -237,9 +237,19 @@ FCM is a wake-up signal, not canonical content. Result fetch and authenticated a
 
 ---
 
-# Planning and Proactive Speech
+# Planning, Upcoming Events, and Proactive Speech
 
-The Daily Plan / Daily Event lifecycle remains authoritative. Morning Brief and Good Night Summary remain proactive-speech exceptions at the client presentation layer. Ordinary Butler responses remain silent by default until the user selects playback.
+The Daily Plan / Daily Event lifecycle remains authoritative.
+
+Upcoming Events are **derived projections of actionable User Context**, not persisted domain entities. Do not add an `UpcomingEvent` table/model. The backend should derive current/future Upcoming Event representations from User Context when required for planning or presentation, while keeping User Context as the source of truth.
+
+Upcoming Events are one source for Daily Plan generation, not a future plan waiting to be copied. Planning may use an Upcoming Event without materializing it as a Daily Event, and planning must continue to consider routines, preferences, constraints, existing events, and other relevant User Context. Daily routines are recurring planning context and must not be classified as Upcoming Events.
+
+Time-bounded context is eligible for Upcoming presentation only while its applicable range is active today or in the future. For example, "Diet for a week starting September 22" can project an Upcoming Event spanning September 22–28 without requiring a generic Diet Daily Event for every day.
+
+Mutations initiated against an Upcoming Event must resolve back to its underlying User Context. Support meaningful update/reschedule/skip/remove behavior and distinguish occurrence-level exceptions from changes/removal of an entire recurring rule. Avoid duplicated authoritative state between User Context and Daily Events.
+
+Morning Brief and Good Night Summary remain proactive-speech exceptions at the client presentation layer. Ordinary Butler responses remain silent by default until the user selects playback.
 
 ---
 
