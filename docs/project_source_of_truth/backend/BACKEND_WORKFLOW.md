@@ -299,6 +299,36 @@ Direct visible Daily Event edits remain deterministic/local-first: Room updates 
 
 ---
 
+# Credits and TTS Resolution
+
+Before a paid Butler reasoning/planning operation, load the authenticated user's backend-authoritative credit balance. If the operation requires paid AI and credits are insufficient, handle that state explicitly through the application/API contract. Open-source TTS is not a replacement for reasoning.
+
+After canonical `response_text` is finalized, resolve speech separately:
+
+```text
+response_text
+    ↓
+Profile.tts_method
+    ├── OPEN_SOURCE
+    │      ↓
+    │   Kokoro/open-source TTS
+    │   no additional TTS credits
+    │
+    └── OPENAI
+           ├── credits > 0
+           │      ↓
+           │   OpenAI TTS
+           │   deduct additional TTS credits
+           │
+           └── credits <= 0
+                  ↓
+               Kokoro/open-source TTS
+```
+
+The effective fallback does not modify `Profile.tts_method`. Credit checks/deductions are backend responsibilities and the balance must not become negative. TTS generation is best-effort: failure preserves the completed canonical text response and must not convert successful reasoning into an HTTP 500 solely because speech generation failed.
+
+---
+
 # Reliability Rules
 
 - request creation must tolerate retries
