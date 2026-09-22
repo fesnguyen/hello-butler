@@ -282,9 +282,9 @@ Client ownership includes local recording before upload, typed composer state, t
 
 ---
 
-# Profile, Credits, and TTS Settings
+# User Settings, Credits, TTS, and Preferences
 
-Application settings are presented inside the existing Profile surface; do not maintain a separate Settings screen for these preferences.
+The previous Profile menu/surface is renamed **User Settings**. Application/account settings and user-manageable saved Butler preferences live there; do not keep a duplicate Profile/Settings destination.
 
 ```text
 Profile
@@ -294,6 +294,8 @@ Profile
     ├── Open Source
     └── OpenAI
 ```
+
+User Settings also shows the user's saved Butler preferences from the backend-authoritative preference/User Context model. Render one preference per line with long content ellipsized. Selecting a row opens a detail dialog/popup with the full preference and an individual Delete action. Confirm destructive deletion, call the backend authoritative delete/mutation path, then reconcile local state. Do not treat unrelated User Context types as editable saved preferences.
 
 The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
 
