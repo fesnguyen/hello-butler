@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -244,6 +244,38 @@ Order/Talk recordings can be queued for later upload. Typed requests can be queu
 Direct Daily Event edits remain deterministic/local-first and bypass Butler AI: update Room, update UI, queue sync, then reconcile with backend.
 
 Upcoming Events provide comparable modify/reschedule/skip/remove controls, but the operation targets their source User Context rather than creating/updating a separate Upcoming Event record. Recurring items must allow the backend/domain behavior to distinguish one-occurrence changes from changes to the recurring rule.
+
+---
+
+# User Settings, Credits, TTS, and Preferences
+
+Rename the previous **Profile** menu/destination to **User Settings**. Account information, credits, TTS selection, and user-manageable saved Butler preferences are presented there.
+
+```text
+Profile
+├── existing account/profile information
+├── Credits        read-only
+└── TTS Method     editable
+    ├── Open Source
+    └── OpenAI
+```
+
+Saved preferences are presented as a compact list:
+
+```text
+Preferences
+Prefers concise morning briefs...
+Avoid meetings before 9 AM...
+Usually exercises after work...
+```
+
+Each preference occupies one line and truncates overflow with an ellipsis. Tapping a row opens a detail popup/dialog with the complete preference. The dialog provides an individual Delete action; deletion is confirmed, sent to the backend authoritative preference/User Context mutation path, and the list is refreshed/reconciled after success. Only user-manageable saved preferences belong here, not all User Context categories.
+
+The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
+
+The UI should explain that Open Source speech does not add TTS credit cost while OpenAI speech consumes additional credits. A zero balance does not prevent selecting OpenAI and does not rewrite the preference: the backend resolves OpenAI to open-source TTS at runtime while credits are unavailable.
+
+Response playback remains based on backend-generated audio. Android native TTS is not the fallback for normal Butler speech; if backend TTS is unavailable, canonical response text remains usable.
 
 ---
 

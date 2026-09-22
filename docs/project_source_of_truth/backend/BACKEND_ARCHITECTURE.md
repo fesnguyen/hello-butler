@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.7  
+**Version:** 1.8  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -193,28 +193,42 @@ One completed request produces one user conversation message and one Butler conv
 
 ---
 
-# Response Audio Storage and Delivery
+# Response Audio Provider Selection and Delivery
 
-Response audio comes from the same multimodal API call as the canonical response text.
+Canonical Butler response text is finalized before speech generation. TTS is a separate provider boundary and must not reason, rewrite, or paraphrase the response.
+
+The backend supports two TTS methods stored on the user's Profile:
 
 ```text
-ONE AI call returns response text + matching audio
-      ↓
-backend validates/persists result
-backend normalizes/stores response audio asset
-      ↓
-FCM completed(request_id)
-      ↓
-client GETs canonical result text/metadata
-      ↓
-client immediately downloads response audio
-      ↓
-local cache
+OPEN_SOURCE → Kokoro/open-source provider
+OPENAI      → existing OpenAI TTS provider
 ```
 
-The backend may normalize/finalize the returned audio container for reliable playback. Audio normalization is media processing, not another AI generation call, and must not alter spoken content.
+Effective provider selection is:
 
-The text result must remain available even if audio download is delayed. Backend response audio is retention-limited.
+```text
+User/Profile.tts_method
+      ├── OPEN_SOURCE → Kokoro → no TTS credit charge
+      └── OPENAI
+            ├── credits > 0 → OpenAI TTS → deduct additional credits
+            └── credits <= 0 → Kokoro fallback
+```
+
+The runtime fallback must not modify the stored `OPENAI` preference. Provider-specific implementation remains in Infrastructure behind the TTS boundary; application orchestration selects the provider and owns credit policy.
+
+Both providers must produce audio compatible with the existing backend/client audio transport contract. Generated audio is stored temporarily, exposed through the existing authenticated response-audio path, and cached by the client. TTS failure must not turn a successfully reasoned Butler interaction into a 500 response; canonical text remains valid.
+
+---
+
+# User Settings and Credits
+
+The client-facing destination is named **User Settings**. Do not create a separate UserConfig/settings table for the current scope. Extend the existing user/profile persistence and API model with the credit balance and TTS preference. Profile settings are distinct from User Context: User Context describes the user's life and planning context, while Profile controls application behavior.
+
+Credits are Hello Butler product credits, not raw provider token counts. Backend application logic is authoritative for checking and deducting credits. Paid Butler reasoning/planning requires sufficient credits. OpenAI TTS has an additional credit cost; Kokoro/open-source TTS has no additional credit cost. Credit updates must be server-controlled and must not allow the balance to become negative.
+
+User Settings also exposes user-manageable saved Butler preferences using the existing authoritative preference/User Context persistence. The API must support listing the relevant saved preferences and deleting them individually. Deletion removes/updates the authoritative record; do not create a duplicate client-preference store. Only preference records intended for user management are exposed through this list—do not automatically expose routines, temporary/one-time planning context, upcoming-event context, or internal metadata.
+
+The normal client user/profile contract may read credits and read/update `tts_method`, but must not permit the client to arbitrarily set its own credit balance.
 
 ---
 
@@ -257,7 +271,7 @@ Morning Brief and Good Night Summary remain proactive-speech exceptions at the c
 
 Protected endpoints derive identity from verified authentication; client-provided `user_id` is never authority.
 
-PostgreSQL remains authoritative for users, User Context, conversation text, Daily Plans/Events, request/result metadata, devices, and synchronization metadata. Temporary audio assets may live outside PostgreSQL with referenced metadata.
+PostgreSQL remains authoritative for users/profile data including credits and TTS preference, User Context, conversation text, Daily Plans/Events, request/result metadata, devices, and synchronization metadata. Temporary audio assets may live outside PostgreSQL with referenced metadata.
 
 ---
 
