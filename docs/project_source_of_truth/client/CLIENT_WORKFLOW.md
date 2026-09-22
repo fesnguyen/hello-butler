@@ -247,9 +247,9 @@ Upcoming Events provide comparable modify/reschedule/skip/remove controls, but t
 
 ---
 
-# Profile, Credits, and TTS Settings
+# User Settings, Credits, TTS, and Preferences
 
-Application settings are presented inside the existing Profile surface; do not maintain a separate Settings screen for these preferences.
+Rename the previous **Profile** menu/destination to **User Settings**. Account information, credits, TTS selection, and user-manageable saved Butler preferences are presented there.
 
 ```text
 Profile
@@ -259,6 +259,17 @@ Profile
     ├── Open Source
     └── OpenAI
 ```
+
+Saved preferences are presented as a compact list:
+
+```text
+Preferences
+Prefers concise morning briefs...
+Avoid meetings before 9 AM...
+Usually exercises after work...
+```
+
+Each preference occupies one line and truncates overflow with an ellipsis. Tapping a row opens a detail popup/dialog with the complete preference. The dialog provides an individual Delete action; deletion is confirmed, sent to the backend authoritative preference/User Context mutation path, and the list is refreshed/reconciled after success. Only user-manageable saved preferences belong here, not all User Context categories.
 
 The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
 
