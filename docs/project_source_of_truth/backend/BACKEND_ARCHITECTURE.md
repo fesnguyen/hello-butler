@@ -207,7 +207,7 @@ OPENAI      → existing OpenAI TTS provider
 Effective provider selection is:
 
 ```text
-Profile.tts_method
+User/Profile.tts_method
       ├── OPEN_SOURCE → Kokoro → no TTS credit charge
       └── OPENAI
             ├── credits > 0 → OpenAI TTS → deduct additional credits
@@ -220,13 +220,15 @@ Both providers must produce audio compatible with the existing backend/client au
 
 ---
 
-# Profile and Credits
+# User Settings and Credits
 
-Do not create a separate UserConfig/settings table for the current scope. Extend the existing user/profile persistence and API model with the credit balance and TTS preference. Profile settings are distinct from User Context: User Context describes the user's life and planning context, while Profile controls application behavior.
+The client-facing destination is named **User Settings**. Do not create a separate UserConfig/settings table for the current scope. Extend the existing user/profile persistence and API model with the credit balance and TTS preference. Profile settings are distinct from User Context: User Context describes the user's life and planning context, while Profile controls application behavior.
 
 Credits are Hello Butler product credits, not raw provider token counts. Backend application logic is authoritative for checking and deducting credits. Paid Butler reasoning/planning requires sufficient credits. OpenAI TTS has an additional credit cost; Kokoro/open-source TTS has no additional credit cost. Credit updates must be server-controlled and must not allow the balance to become negative.
 
-The normal client profile contract may read credits and read/update `tts_method`, but must not permit the client to arbitrarily set its own credit balance.
+User Settings also exposes user-manageable saved Butler preferences using the existing authoritative preference/User Context persistence. The API must support listing the relevant saved preferences and deleting them individually. Deletion removes/updates the authoritative record; do not create a duplicate client-preference store. Only preference records intended for user management are exposed through this list—do not automatically expose routines, temporary/one-time planning context, upcoming-event context, or internal metadata.
+
+The normal client user/profile contract may read credits and read/update `tts_method`, but must not permit the client to arbitrarily set its own credit balance.
 
 ---
 
