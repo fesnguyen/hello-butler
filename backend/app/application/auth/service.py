@@ -40,7 +40,13 @@ class AuthService:
             raise AuthConflict("Email is already registered")
 
         user_id = uuid.uuid4()
-        session.add(UserModel(id=user_id, email=email))
+        session.add(
+            UserModel(
+                id=user_id,
+                email=email,
+                credits=self._settings.butler_initial_credits,
+            )
+        )
         identity = AuthIdentityModel(
             user_id=user_id,
             provider="password",
@@ -105,6 +111,7 @@ class AuthService:
                     id=user_id,
                     email=email,
                     display_name=name if isinstance(name, str) else None,
+                    credits=self._settings.butler_initial_credits,
                 )
             )
             identity = AuthIdentityModel(

@@ -4,6 +4,7 @@ from app.application.push import PushService
 from app.application.push.changes import DailyPlanChanges
 from app.core.config import Settings
 from app.core.database import AsyncSessionLocal
+from app.infrastructure.ai.kokoro_provider import KokoroButlerVoiceProvider
 from app.infrastructure.ai.openai_provider import (
     OpenAIButlerProvider,
     OpenAIButlerVoiceProvider,
@@ -46,6 +47,10 @@ def butler_request_service(settings: Settings) -> ButlerRequestService:
         model=settings.butler_tts_model,
         voice=settings.butler_audio_voice,
     )
+    open_source_voice_provider = KokoroButlerVoiceProvider(
+        language=settings.butler_kokoro_language,
+        voice=settings.butler_kokoro_voice,
+    )
     butler = ButlerService(
         settings=settings,
         session_factory=AsyncSessionLocal,
@@ -58,4 +63,5 @@ def butler_request_service(settings: Settings) -> ButlerRequestService:
         butler=butler,
         push=push_service(settings),
         voice_provider=voice_provider,
+        open_source_voice_provider=open_source_voice_provider,
     )

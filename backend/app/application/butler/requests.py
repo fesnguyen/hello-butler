@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.butler.contracts import (
@@ -18,9 +18,10 @@ from app.application.butler.contracts import (
     InteractionMode,
 )
 from app.application.butler.service import ButlerService
+from app.application.credits import consume_credits
 from app.application.push.service import PushService
 from app.core.config import Settings
-from app.infrastructure.db.models import ButlerRequestModel
+from app.infrastructure.db.models import ButlerRequestModel, UserModel
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,9 @@ class ButlerRequestResult(BaseModel):
     response_audio_url: str | None = None
     response_audio_mime_type: str | None = None
     response_audio_duration_ms: int | None = None
-    changed_entities: list[ChangedEntity] = Field(default_factory=list)
+    changed_entities: list[ChangedEntity] = Field(
+        default_factory=lambda: list[ChangedEntity]()
+    )
     requires_follow_up: bool = False
     created_at: datetime
     completed_at: datetime | None = None
@@ -61,12 +64,14 @@ class ButlerRequestService:
         butler: ButlerService,
         push: PushService,
         voice_provider: ButlerVoiceProvider | None = None,
+        open_source_voice_provider: ButlerVoiceProvider | None = None,
     ) -> None:
         self._settings = settings
         self._sessions = session_factory
         self._butler = butler
         self._push = push
         self._voice_provider = voice_provider
+        self._open_source_voice_provider = open_source_voice_provider
         self._processing: set[uuid.UUID] = set()
         self._lock = asyncio.Lock()
 
@@ -158,6 +163,7 @@ class ButlerRequestService:
             audio_path = Path(request.input_audio_path) if request.input_audio_path else None
             if request.input_source == "audio" and audio_path is None:
                 raise RuntimeError("Accepted audio request has no input asset")
+            await self._charge_reasoning(request.id, request.user_id)
             result = await self._butler.handle(
                 request_id=request.id,
                 user_id=request.user_id,
@@ -167,7 +173,7 @@ class ButlerRequestService:
                 audio_mime_type=request.input_audio_mime_type,
             )
             response_audio_path, audio_type = await self._synthesize_response_audio(
-                request.id, result.response
+                request.id, request.user_id, result.response
             )
             await self._complete(request.id, result, response_audio_path, audio_type)
             try:
@@ -198,12 +204,13 @@ class ButlerRequestService:
                 self._processing.discard(request_id)
 
     async def _synthesize_response_audio(
-        self, request_id: uuid.UUID, response_text: str
+        self, request_id: uuid.UUID, user_id: uuid.UUID, response_text: str
     ) -> tuple[Path | None, str | None]:
         if not self._settings.butler_voice_enabled:
             logger.info("Butler voice skipped request_id=%s cause=voice_disabled", request_id)
             return None, None
-        if self._voice_provider is None:
+        provider, charged = await self._voice_provider_for(request_id, user_id)
+        if provider is None:
             logger.warning(
                 "Response audio unavailable request_id=%s cause=tts_unavailable; "
                 "canonical text/action preserved",
@@ -211,10 +218,21 @@ class ButlerRequestService:
             )
             return None, None
         try:
-            speech = await self._voice_provider.synthesize(
-                text=response_text, request_id=request_id
-            )
+            speech = await provider.synthesize(text=response_text, request_id=request_id)
         except Exception as exc:
+            if charged:
+                await self._refund_openai_tts(request_id, user_id)
+            fallback = self._open_source_voice_provider
+            if charged and fallback is not None and fallback is not provider:
+                try:
+                    speech = await fallback.synthesize(text=response_text, request_id=request_id)
+                    return await self._response_audio(request_id, speech.audio, speech.mime_type)
+                except Exception:
+                    logger.warning(
+                        "Kokoro fallback failed request_id=%s; canonical text preserved",
+                        request_id,
+                        exc_info=True,
+                    )
             logger.warning(
                 "Response audio unavailable request_id=%s cause=tts_failed "
                 "error_type=%s; canonical text/action preserved",
@@ -224,6 +242,52 @@ class ButlerRequestService:
             )
             return None, None
         return await self._response_audio(request_id, speech.audio, speech.mime_type)
+
+    async def _charge_reasoning(self, request_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        cost = self._settings.butler_reasoning_credit_cost
+        async with self._sessions() as session, session.begin():
+            request = await session.get(ButlerRequestModel, request_id, with_for_update=True)
+            if request is None or request.reasoning_credit_charged:
+                return
+            await consume_credits(session, user_id, cost)
+            request.reasoning_credit_charged = True
+
+    async def _voice_provider_for(
+        self, request_id: uuid.UUID, user_id: uuid.UUID
+    ) -> tuple[ButlerVoiceProvider | None, bool]:
+        async with self._sessions() as session, session.begin():
+            request = await session.get(ButlerRequestModel, request_id, with_for_update=True)
+            if request is None:
+                return None, False
+            user = await session.get(UserModel, user_id, with_for_update=True)
+            if user is None:
+                return None, False
+            if user.tts_method != "OPENAI":
+                return self._open_source_voice_provider or self._voice_provider, False
+            cost = self._settings.butler_openai_tts_credit_cost
+            if cost and user.credits < cost:
+                logger.info("OpenAI TTS fell back to Kokoro user_id=%s cause=credits", user_id)
+                return self._open_source_voice_provider, False
+            if request.tts_credit_charged:
+                return self._voice_provider, False
+            if cost:
+                user.credits -= cost
+                request.tts_credit_charged = True
+            return self._voice_provider, cost > 0
+
+    async def _refund_openai_tts(self, request_id: uuid.UUID, user_id: uuid.UUID) -> None:
+        cost = self._settings.butler_openai_tts_credit_cost
+        if not cost:
+            return
+        async with self._sessions() as session, session.begin():
+            request = await session.get(ButlerRequestModel, request_id, with_for_update=True)
+            if request is not None and request.tts_credit_charged:
+                await session.execute(
+                    update(UserModel)
+                    .where(UserModel.id == user_id)
+                    .values(credits=UserModel.credits + cost)
+                )
+                request.tts_credit_charged = False
 
     async def _claim(self, request_id: uuid.UUID) -> ButlerRequestModel | None:
         stale = datetime.now(UTC) - timedelta(

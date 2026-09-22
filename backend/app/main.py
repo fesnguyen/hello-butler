@@ -10,6 +10,7 @@ from app.api.butler import router as butler_router
 from app.api.planning import router as planning_router
 from app.api.push import router as push_router
 from app.api.sync import router as sync_router
+from app.api.user_settings import router as user_settings_router
 from app.application.planning.scheduler import NightlyPlanningScheduler
 from app.core.config import get_settings
 from app.core.lifecycle import butler_request_service
@@ -59,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(planning_router)
     app.include_router(push_router)
     app.include_router(sync_router)
+    app.include_router(user_settings_router)
 
     return app
 

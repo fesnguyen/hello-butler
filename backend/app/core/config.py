@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     butler_audio_model: str = "gpt-audio-1.5"
     butler_tts_model: str = "gpt-4o-mini-tts"
     butler_audio_voice: str = "alloy"
+    butler_kokoro_language: str = "a"
+    butler_kokoro_voice: str = "af_heart"
+    butler_initial_credits: int = Field(default=100, ge=0)
+    butler_reasoning_credit_cost: int = Field(default=1, ge=0)
+    butler_openai_tts_credit_cost: int = Field(default=1, ge=0)
     butler_voice_enabled: bool = True
     butler_audio_root: str = "data/butler_audio"
     butler_max_input_audio_bytes: int = 15 * 1024 * 1024

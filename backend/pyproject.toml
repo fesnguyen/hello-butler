@@ -11,10 +11,13 @@ dependencies = [
     "firebase-admin>=7.1.0",
     "google-auth>=2.57.0",
     "langgraph>=1.2.11",
+    "kokoro>=0.9.4",
+    "numpy>=2.2.0",
     "openai>=3.7.0",
     "pydantic-settings>=2.5.2",
     "pyjwt>=2.13.0",
     "requests>=2.34.2",
+    "soundfile>=0.13.1",
     "sqlalchemy[asyncio]>=2.0.35",
     "tzdata>=2026.4",
 ]

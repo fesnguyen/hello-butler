@@ -45,7 +45,11 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
+fun MainScreen(
+    viewModel: MainViewModel,
+    onUserSettings: () -> Unit,
+    onLogout: () -> Unit,
+) {
     val state by viewModel.state.collectAsState()
     val events by viewModel.events.collectAsState()
     val upcomingEvents by viewModel.upcomingEvents.collectAsState()
@@ -163,6 +167,7 @@ fun MainScreen(viewModel: MainViewModel, onLogout: () -> Unit) {
                 },
                 onRecreateToday = viewModel::recreateTodayPlan,
                 recreatingToday = state.recreatingToday,
+                onUserSettings = onUserSettings,
                 onLogout = onLogout,
             )
         },
@@ -297,6 +302,7 @@ private fun TodayHeader(
     onAddEvent: () -> Unit,
     onRecreateToday: () -> Unit,
     recreatingToday: Boolean,
+    onUserSettings: () -> Unit,
     onLogout: () -> Unit,
 ) {
     val today = remember { LocalDate.now() }
@@ -319,8 +325,10 @@ private fun TodayHeader(
             Box {
                 IconButton(onClick = { accountMenuOpen = true }) { Icon(Icons.Outlined.AccountCircle, "Account menu") }
                 DropdownMenu(expanded = accountMenuOpen, onDismissRequest = { accountMenuOpen = false }) {
-                    DropdownMenuItem(text = { Text("Profile") }, onClick = {}, enabled = false)
-                    DropdownMenuItem(text = { Text("Settings") }, onClick = {}, enabled = false)
+                    DropdownMenuItem(
+                        text = { Text("User Settings") },
+                        onClick = { accountMenuOpen = false; onUserSettings() },
+                    )
                     HorizontalDivider()
                     DropdownMenuItem(
                         text = { Text(if (recreatingToday) "Recreating today's plan…" else "Recreate today's plan") },

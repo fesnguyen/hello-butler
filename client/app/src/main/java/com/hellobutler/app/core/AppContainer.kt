@@ -10,8 +10,10 @@ import com.hellobutler.app.data.remote.ButlerApi
 import com.hellobutler.app.data.remote.PlanningApi
 import com.hellobutler.app.data.remote.PushApi
 import com.hellobutler.app.data.remote.SyncApi
+import com.hellobutler.app.data.remote.UserSettingsApi
 import com.hellobutler.app.data.repository.ButlerRepository
 import com.hellobutler.app.data.repository.DailyEventRepository
+import com.hellobutler.app.data.repository.UserSettingsRepository
 import com.hellobutler.app.execution.DailyEventScheduler
 import com.hellobutler.app.sync.PushRegistrationRepository
 import com.hellobutler.app.sync.PushRegistrationWorker
@@ -61,5 +63,8 @@ class AppContainer(context: Context) {
     val butlerRepository = ButlerRepository(
         context.applicationContext, database, retrofit.create(ButlerApi::class.java),
         authRepository, dailyEventRepository,
+    )
+    val userSettingsRepository = UserSettingsRepository(
+        retrofit.create(UserSettingsApi::class.java), authRepository,
     )
 }

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from app.api.auth import AuthenticatedUser, get_authenticated_user
 from app.application.butler import ButlerAIUnavailableError
+from app.application.credits import InsufficientCreditsError
 from app.application.planning import (
     DayPlanningService,
     EveningPreparationResult,
@@ -68,6 +69,8 @@ async def prepare_day(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Planning AI is unavailable"
         ) from exc
+    except InsufficientCreditsError as exc:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(exc)) from exc
     except PlanningValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
 
@@ -96,5 +99,7 @@ async def prepare_evening(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "Evening preparation AI is unavailable"
         ) from exc
+    except InsufficientCreditsError as exc:
+        raise HTTPException(status.HTTP_402_PAYMENT_REQUIRED, str(exc)) from exc
     except PlanningValidationError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
