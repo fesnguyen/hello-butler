@@ -1,7 +1,7 @@
 # Personal Butler
 
 **Document:** Project Overview  
-**Version:** 1.6  
+**Version:** 1.7  
 **Status:** Source of Truth
 
 ---
@@ -405,6 +405,40 @@ Three controls: Order / Talk / Text
 ```
 
 The backend should preserve the richest user input available. For Order/Talk, that means the original audio remains available to the AI reasoning path instead of being discarded after a separate transcription step.
+
+---
+
+## Profile, Credits, and TTS Preference
+
+User-facing application settings belong to the user's Profile rather than a separate Settings/configuration model. The initial editable setting is the preferred TTS method:
+
+```text
+Profile
+├── Credits            read-only on the client
+└── TTS Method         editable
+    ├── OPEN_SOURCE
+    └── OPENAI
+```
+
+Credits are Hello Butler product credits, not raw OpenAI input/output token counts. Paid Butler operations such as AI interaction and planning require available credits and consume credits according to backend policy. The backend is authoritative for credit checks and deductions; the client only displays the balance.
+
+Response text remains canonical. TTS is a separate optional speech-generation step. The backend keeps the existing OpenAI TTS path and adds an open-source TTS path, initially Kokoro.
+
+```text
+canonical Butler response text
+        ↓
+read Profile.tts_method
+        ├── OPEN_SOURCE → Kokoro/open-source TTS → no additional credits
+        └── OPENAI
+              ├── credits > 0 → OpenAI TTS → additional credit cost
+              └── credits <= 0 → Kokoro/open-source TTS
+```
+
+Running out of credits must **not** overwrite the stored `OPENAI` preference. The fallback is runtime-only so OpenAI TTS becomes effective again if the user later has credits. Open-source TTS is only a speech fallback; it does not replace the paid AI reasoning/planning model. If paid Butler reasoning has insufficient credits, handle that explicitly rather than treating TTS fallback as a reasoning fallback.
+
+TTS failure must not invalidate an otherwise successful Butler interaction. The canonical response text remains usable even when response audio cannot be generated.
+
+The Android client merges settings into Profile: show the current credit balance as read-only and allow the user to edit the TTS method. Do not maintain a duplicate standalone Settings surface for these preferences.
 
 ---
 
