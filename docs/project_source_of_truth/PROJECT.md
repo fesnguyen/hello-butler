@@ -408,9 +408,9 @@ The backend should preserve the richest user input available. For Order/Talk, th
 
 ---
 
-## Profile, Credits, and TTS Preference
+## User Settings, Credits, TTS, and Preferences
 
-User-facing application settings belong to the user's Profile rather than a separate Settings/configuration model. The initial editable setting is the preferred TTS method:
+The client menu/surface is named **User Settings** (replacing the previous Profile name). Backend user/profile persistence remains the authoritative account/configuration model; do not create a separate generic settings/configuration table. The initial editable setting is the preferred TTS method:
 
 ```text
 Profile
@@ -427,7 +427,7 @@ Response text remains canonical. TTS is a separate optional speech-generation st
 ```text
 canonical Butler response text
         ↓
-read Profile.tts_method
+read User/Profile.tts_method
         ├── OPEN_SOURCE → Kokoro/open-source TTS → no additional credits
         └── OPENAI
               ├── credits > 0 → OpenAI TTS → additional credit cost
@@ -438,7 +438,11 @@ Running out of credits must **not** overwrite the stored `OPENAI` preference. Th
 
 TTS failure must not invalidate an otherwise successful Butler interaction. The canonical response text remains usable even when response audio cannot be generated.
 
-The Android client merges settings into Profile: show the current credit balance as read-only and allow the user to edit the TTS method. Do not maintain a duplicate standalone Settings surface for these preferences.
+The Android client exposes these controls through **User Settings**: show the current credit balance as read-only and allow the user to edit the TTS method.
+
+User Settings also exposes the user's saved Butler preferences derived from the existing preference/User Context source of truth. Display preferences as a compact list with **one preference per line**, truncating long content with an ellipsis. Tapping a preference opens a detail popup/dialog showing the full content and a delete action. The user can delete saved preferences individually. Deletion must remove/update the authoritative backend preference/User Context rather than maintaining a client-only copy. Require normal confirmation for destructive deletion and refresh/reconcile the list after success.
+
+This preference list is for user-manageable saved preferences (similar in spirit to reviewing remembered preferences), not every User Context record. Do not expose unrelated routines, temporary planning context, upcoming-event context, or internal metadata merely because they share persistence infrastructure.
 
 ---
 
