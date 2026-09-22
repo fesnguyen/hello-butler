@@ -1,6 +1,6 @@
 # Client Architecture
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -90,7 +90,7 @@ WorkManager + AlarmManager when exact execution is required
 Android microphone recording + audio playback/routing + notifications
 ```
 
-Local Android STT is not part of the normal Butler architecture. Order/Talk send recorded audio to the backend. Text sends typed text directly. Local TTS may remain only where an intentional offline/prepared fallback requires it.
+Local Android STT is not part of the normal Butler architecture. Order/Talk send recorded audio to the backend. Text sends typed text directly. Android native TTS is not the normal Butler voice fallback. Backend-selected OpenAI or open-source TTS provides Butler speech.
 
 ---
 
@@ -279,6 +279,27 @@ Direct event edits remain local-first and bypass AI.
 Backend authority includes server conversation text, User Context, Daily Plans/Events, request/result text, speech transcription, and temporary server audio metadata.
 
 Client ownership includes local recording before upload, typed composer state, temporary delivery state, Room/cache, local response audio, playback routing, notification state, pending work, and device execution.
+
+---
+
+# Profile, Credits, and TTS Settings
+
+Application settings are presented inside the existing Profile surface; do not maintain a separate Settings screen for these preferences.
+
+```text
+Profile
+├── existing account/profile information
+├── Credits        read-only
+└── TTS Method     editable
+    ├── Open Source
+    └── OpenAI
+```
+
+The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
+
+The UI should explain that Open Source speech does not add TTS credit cost while OpenAI speech consumes additional credits. A zero balance does not prevent selecting OpenAI and does not rewrite the preference: the backend resolves OpenAI to open-source TTS at runtime while credits are unavailable.
+
+Response playback remains based on backend-generated audio. Android native TTS is not the fallback for normal Butler speech; if backend TTS is unavailable, canonical response text remains usable.
 
 ---
 
