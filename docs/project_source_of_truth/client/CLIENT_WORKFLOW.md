@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.5  
+**Version:** 1.6  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -244,6 +244,27 @@ Order/Talk recordings can be queued for later upload. Typed requests can be queu
 Direct Daily Event edits remain deterministic/local-first and bypass Butler AI: update Room, update UI, queue sync, then reconcile with backend.
 
 Upcoming Events provide comparable modify/reschedule/skip/remove controls, but the operation targets their source User Context rather than creating/updating a separate Upcoming Event record. Recurring items must allow the backend/domain behavior to distinguish one-occurrence changes from changes to the recurring rule.
+
+---
+
+# Profile, Credits, and TTS Settings
+
+Application settings are presented inside the existing Profile surface; do not maintain a separate Settings screen for these preferences.
+
+```text
+Profile
+├── existing account/profile information
+├── Credits        read-only
+└── TTS Method     editable
+    ├── Open Source
+    └── OpenAI
+```
+
+The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
+
+The UI should explain that Open Source speech does not add TTS credit cost while OpenAI speech consumes additional credits. A zero balance does not prevent selecting OpenAI and does not rewrite the preference: the backend resolves OpenAI to open-source TTS at runtime while credits are unavailable.
+
+Response playback remains based on backend-generated audio. Android native TTS is not the fallback for normal Butler speech; if backend TTS is unavailable, canonical response text remains usable.
 
 ---
 
