@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -44,6 +44,8 @@ class ButlerRequestModel(TimestampMixin, Base):
         JSONB, default=list, nullable=False
     )
     requires_follow_up: Mapped[bool] = mapped_column(default=False, nullable=False)
+    reasoning_credit_charged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    tts_credit_charged: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     failure_reason: Mapped[str | None] = mapped_column(Text)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     input_audio_delete_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

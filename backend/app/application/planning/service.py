@@ -8,6 +8,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.application.credits import consume_credits
 from app.application.planning.contracts import (
     DayPlanningAIProvider,
     DayPlanningInput,
@@ -48,6 +49,8 @@ class DayPlanningService:
         target_date: date,
         morning_brief_time: time | None = None,
     ) -> PreparedDayResult:
+        async with self._session_factory() as session, session.begin():
+            await consume_credits(session, user_id, self._settings.butler_reasoning_credit_cost)
         planning_input = await self._load_input(user_id, target_date)
         proposal = await self._ai.plan_day(planning_input)
         proposed = self._normalize(proposal, planning_input.known_events)
