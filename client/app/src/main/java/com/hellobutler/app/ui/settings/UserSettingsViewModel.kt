@@ -36,8 +36,16 @@ class UserSettingsViewModel(private val repository: UserSettingsDataSource) : Vi
 
     fun refresh() = viewModelScope.launch {
         _state.update { it.copy(loading = true, error = null) }
-        runCatching(repository::get).fold(::setCanonical) { error ->
-            _state.update { it.copy(loading = false, error = error.message) }
+        try {
+            val settings = repository.get()
+            setCanonical(settings)
+        } catch (error: Exception) {
+            _state.update {
+                it.copy(
+                    loading = false,
+                    error = error.message,
+                )
+            }
         }
     }
 
