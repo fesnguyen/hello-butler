@@ -1,6 +1,6 @@
 # Backend Architecture
 
-**Version:** 1.8  
+**Version:** 1.9  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -24,7 +24,7 @@ Domain
 Infrastructure
 ```
 
-API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, the multimodal AI provider, push, audio storage, and other integrations.
+API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, the multimodal AI provider, TTS providers, push, audio storage, and other integrations.
 
 ---
 
@@ -45,17 +45,18 @@ API owns transport/authentication. Application owns orchestration and transactio
                   ↓
        load complete context
                   ↓
-     ONE multimodal AI call
+     interaction AI call
                   ↓
        complete AI result
                   ↓
        validate/apply changes
                   ↓
-       canonical result
-          text + audio
+       canonical text result
+                  ↓
+       asynchronous TTS
 ```
 
-Do not create separate Butler brains for audio and text. Order/Talk preserves the original recorded audio through the single multimodal call. Text uses the same product behavior with typed text as input.
+Do not create separate Butler brains for audio and text. Order/Talk preserves the original recorded audio through the interaction call. Text uses the same product behavior with typed text as input.
 
 ---
 
@@ -74,34 +75,19 @@ Both input endpoints return quickly with `202 Accepted` and a stable `request_id
 
 ---
 
-# Single-Call Multimodal Contract
+# Interaction AI Contract
 
-For every normal Butler interaction, the backend must gather enough authoritative context before invoking the AI provider so that one multimodal API request can produce the complete proposed interaction result.
+For every normal Butler interaction, the backend gathers enough authoritative context before invoking the AI provider so one interaction call can understand the input, propose supported mutations, and finalize canonical response text.
 
-For Order/Talk the request contains:
+For Order/Talk the request contains the original recorded audio plus relevant textual context: Butler instructions, interaction mode, recent relevant conversation, User Context/preferences, relevant Daily Plan/Events, identifiers required for mutation, and current time/timezone. Text uses typed text instead of recorded audio.
 
-```text
-original recorded audio
-+
-complete relevant textual context
-├── Butler instructions
-├── interaction mode
-├── newest relevant conversation
-├── User Context / preferences
-├── current/relevant Daily Plan and Events
-├── identifiers/details required to propose mutations
-└── now / timezone
-```
-
-For Text, typed text replaces the recorded audio while the same relevant Butler context is supplied.
-
-The normal request path must make **one OpenAI/multimodal provider API call per Butler interaction**. Do not split normal processing into separate transcription, reasoning, and response-audio generation calls.
+The interaction call is responsible for understanding/reasoning, not speech synthesis. TTS is a separate provider boundary invoked after canonical response text exists. TTS must not reason, rewrite, or paraphrase the response.
 
 ---
 
 # AI Result Contract
 
-The single multimodal call returns one complete proposed result:
+The interaction AI result contains:
 
 ```text
 AI result
@@ -112,15 +98,10 @@ AI result
 │   ├── Daily Event add / update / remove / skip / other supported mutation
 │   ├── User Context / preference change
 │   └── none when no state change is required
-├── Butler response text
-└── Butler response audio matching that response text
+└── Butler response text
 ```
 
-Response text and response audio are two representations of the same Butler message. The provider contract must require the spoken audio to match the returned canonical response text rather than independently elaborating or changing the answer.
-
-The model is trusted to understand the supplied context and propose the complete interaction in one call. Application/domain code remains authoritative for state: it validates supported updates and performs persistence. The AI must not write directly to PostgreSQL.
-
-This design deliberately accepts greater reliance on the multimodal model in exchange for lower latency, lower provider-call overhead/cost, and removal of semantic drift between a separately generated response and response audio.
+Application/domain code remains authoritative for state: it validates supported updates and performs persistence. The AI must not write directly to PostgreSQL.
 
 ---
 
@@ -135,41 +116,43 @@ completed
 failed
 ```
 
+`completed` means the canonical Butler text result is ready. Optional response audio may still be preparing.
+
 Normal processing is:
 
 ```text
 accepted request
       ↓
-load original input
+load original input + relevant context
       ↓
-load complete relevant Butler context
+interaction AI call
       ↓
-ONE multimodal API call
+receive transcript + proposed updates + response text
       ↓
-receive transcript + proposed updates + response text + matching audio
-      ↓
-validate proposed updates
-      ↓
-apply/persist supported state changes
-      ↓
-normalize/store returned response audio when required by its transport format
+validate/apply supported state changes
       ↓
 persist canonical conversation/result metadata
       ↓
-mark completed
+mark completed + notify client
       ↓
-FCM completed(request_id)
+client can show text
+      │
+      └── TTS continues asynchronously
+              ↓
+          encode/store audio
+              ↓
+          audio becomes ready
 ```
 
-There is no second AI call after domain mutation to rewrite or synthesize the response.
+TTS failure must not turn an already completed Butler interaction into a failed request.
 
 ---
 
 # Mutation Semantics
 
-The single AI call must have enough preloaded state to propose the intended mutation without requiring an AI round trip after execution.
+The AI call must have enough preloaded state to propose the intended mutation without requiring another reasoning round trip after execution.
 
-The backend validates the proposal before applying it. If a proposed mutation is invalid or cannot safely be applied, normal software error/reconciliation behavior handles that condition; the backend must not silently invent a different AI response through a second provider call.
+The backend validates the proposal before applying it. If a proposed mutation is invalid or cannot safely be applied, normal software error/reconciliation behavior handles that condition.
 
 Important mutations remain idempotent where retry is possible.
 
@@ -184,7 +167,7 @@ request_id
 input_source
 user_message_text
 Butler response text
-Butler response audio reference
+response audio state/reference when available
 changed entity metadata when relevant
 completion timestamp
 ```
@@ -193,30 +176,29 @@ One completed request produces one user conversation message and one Butler conv
 
 ---
 
-# Response Audio Provider Selection and Delivery
+# Shared Response Audio Service
 
-Canonical Butler response text is finalized before speech generation. TTS is a separate provider boundary and must not reason, rewrite, or paraphrase the response.
-
-The backend supports two TTS methods stored on the user's Profile:
+All Butler speech uses the same backend TTS service:
 
 ```text
-OPEN_SOURCE → Kokoro/open-source provider
-OPENAI      → existing OpenAI TTS provider
+Conversation response ─┐
+Morning Brief ─────────┼──> shared TTS service
+Good Night Summary ────┘
+                              ↓
+                     User/Profile.tts_method
+                      ├── OPEN_SOURCE → Kokoro
+                      └── OPENAI
+                            ├── credits > 0 → OpenAI TTS
+                            └── credits <= 0 → Kokoro
 ```
 
-Effective provider selection is:
-
-```text
-User/Profile.tts_method
-      ├── OPEN_SOURCE → Kokoro → no TTS credit charge
-      └── OPENAI
-            ├── credits > 0 → OpenAI TTS → deduct additional credits
-            └── credits <= 0 → Kokoro fallback
-```
+Do not duplicate TTS provider selection, credit handling, encoding, or storage rules in conversation or planning code.
 
 The runtime fallback must not modify the stored `OPENAI` preference. Provider-specific implementation remains in Infrastructure behind the TTS boundary; application orchestration selects the provider and owns credit policy.
 
-Both providers must produce audio compatible with the existing backend/client audio transport contract. Generated audio is stored temporarily, exposed through the existing authenticated response-audio path, and cached by the client. TTS failure must not turn a successfully reasoned Butler interaction into a 500 response; canonical text remains valid.
+Both providers must produce audio compatible with the existing backend/client audio transport contract. Generated audio is stored temporarily, exposed through the authenticated audio path, and cached by the client.
+
+Response audio has an independent lifecycle such as `pending → processing → ready | unavailable`. The exact persistence shape may reuse existing request/event metadata; a new table is not required by this decision.
 
 ---
 
@@ -247,7 +229,7 @@ Audio is not the permanent server conversation record.
 
 # Push and Result Fetch
 
-FCM is a wake-up signal, not canonical content. Result fetch and authenticated audio download remain idempotent/retryable. Push failure must not roll back a completed request.
+FCM is a wake-up signal, not canonical content. Result fetch and authenticated audio download remain idempotent/retryable. Push failure must not roll back a completed request. Audio readiness is reconciled separately so the client can receive text before speech is ready.
 
 ---
 
@@ -263,7 +245,7 @@ Only context whose applicable time range is active today or in the future is eli
 
 Upcoming Event mutations resolve to the underlying User Context. Update/reschedule/skip/remove must preserve a single source of truth and distinguish occurrence-level exceptions from changes/removal of an entire recurring rule.
 
-Morning Brief and Good Night Summary remain proactive-speech exceptions at the client presentation layer. Ordinary Butler responses remain silent by default until the user selects playback.
+Morning Brief and Good Night Summary use the same shared backend TTS service and the user's TTS method. Their backend-generated audio should be available for the client to cache before scheduled playback when practical. Ordinary Butler responses remain silent by default until the user selects playback.
 
 ---
 
@@ -280,13 +262,14 @@ PostgreSQL remains authoritative for users/profile data including credits and TT
 ```text
 Rich input + complete relevant context
               ↓
-      ONE multimodal AI call
+       interaction AI call
               ↓
  transcript + proposed updates
  + canonical response text
- + matching response audio
               ↓
- validate/apply → persist → deliver
+ validate/apply → persist → deliver text
+              ↓
+       asynchronous shared TTS
 ```
 
-One Butler interaction should normally require one multimodal provider call.
+Canonical text delivery must not wait for optional speech generation.
