@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.6  
+**Version:** 1.7  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -111,7 +111,7 @@ backend accepts → Sent
       ↓
 shared Butler processing completes
       ↓
-Butler response appended
+Butler response appended immediately
 ```
 
 Text uses no microphone, no local STT, no backend STT, and no intermediate server-generated draft.
@@ -122,18 +122,18 @@ The user can edit freely before pressing Send. Once sent, the typed message foll
 
 # One Shared Result Experience
 
-Whether input was audio or typed text, completion results in:
+Whether input was audio or typed text, completion results in canonical text first:
 
 ```text
 You
 <transcript OR submitted text>
 
-Butler · <audio duration>
+Butler
 <canonical response text>
-[speaker icon] [private-listen icon]
+[audio may still be pending]
 ```
 
-The Butler response becomes normal conversation history. There is only one canonical response.
+The Butler response becomes normal conversation history immediately. When backend audio becomes ready, the client downloads/caches it and enables the existing speaker/private-listen controls.
 
 ---
 
@@ -155,12 +155,12 @@ GET canonical result
           ↓
 Room persistence
           ↓
-start audio cache download
+show text immediately
           ↓
-active conversation OR notification
+reconcile/download audio when ready
 ```
 
-The same completion path applies to audio and text requests.
+The same completion path applies to audio and text requests. Request completion does not wait for TTS completion.
 
 ---
 
@@ -180,7 +180,7 @@ Hello Butler
 [speaker icon] [private-listen icon] [Open in App]
 ```
 
-Audio download starts immediately after completion fetch. The notification may appear before caching finishes; selecting playback waits for the active download if necessary.
+The notification may appear before speech is ready. Playback reconciles/downloads backend audio when available.
 
 ---
 
@@ -197,16 +197,22 @@ Both actions use the same cached Butler response audio.
 These are proactive-speech exceptions:
 
 ```text
+backend prepares content
+   ↓
+shared backend TTS uses user's TTS method
+   ↓
+client downloads/caches audio
+   ↓
 content due
    ↓
-notification/execution surface
-   ↓
-automatically Speak Aloud
+automatically play cached audio
    ↓
 Stop available immediately
    ↓
 Open in App retained
 ```
+
+Use the same backend OpenAI/Kokoro TTS selection as normal Butler speech. Do not use Android native `TextToSpeech`/`LocalTextToSpeech` for Morning Brief or Good Night Summary. WorkManager/AlarmManager remain responsible for background reconciliation and scheduled execution, not speech synthesis.
 
 Ordinary Butler messages do not auto-speak.
 
@@ -275,7 +281,7 @@ The client fetches and displays the backend-authoritative credit balance. It mus
 
 The UI should explain that Open Source speech does not add TTS credit cost while OpenAI speech consumes additional credits. A zero balance does not prevent selecting OpenAI and does not rewrite the preference: the backend resolves OpenAI to open-source TTS at runtime while credits are unavailable.
 
-Response playback remains based on backend-generated audio. Android native TTS is not the fallback for normal Butler speech; if backend TTS is unavailable, canonical response text remains usable.
+Response playback remains based on backend-generated audio. Android native TTS is not the fallback for Butler speech; if backend TTS is unavailable, canonical response text remains usable.
 
 ---
 
