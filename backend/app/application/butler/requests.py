@@ -8,20 +8,20 @@ from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, select, update
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.butler.contracts import (
     ButlerResult,
-    ButlerVoiceProvider,
     ChangedEntity,
     InteractionMode,
 )
 from app.application.butler.service import ButlerService
 from app.application.credits import consume_credits
 from app.application.push.service import PushService
+from app.application.speech import SpeechService
 from app.core.config import Settings
-from app.infrastructure.db.models import ButlerRequestModel, UserModel
+from app.infrastructure.db.models import ButlerRequestModel
 
 logger = logging.getLogger(__name__)
 
@@ -38,12 +38,11 @@ class ButlerRequestResult(BaseModel):
     interaction_mode: str
     user_message_text: str | None = None
     response_text: str | None = None
+    audio_status: str = "unavailable"
     response_audio_url: str | None = None
     response_audio_mime_type: str | None = None
     response_audio_duration_ms: int | None = None
-    changed_entities: list[ChangedEntity] = Field(
-        default_factory=lambda: list[ChangedEntity]()
-    )
+    changed_entities: list[ChangedEntity] = Field(default_factory=lambda: list[ChangedEntity]())
     requires_follow_up: bool = False
     created_at: datetime
     completed_at: datetime | None = None
@@ -63,15 +62,13 @@ class ButlerRequestService:
         session_factory: async_sessionmaker[AsyncSession],
         butler: ButlerService,
         push: PushService,
-        voice_provider: ButlerVoiceProvider | None = None,
-        open_source_voice_provider: ButlerVoiceProvider | None = None,
+        speech: SpeechService,
     ) -> None:
         self._settings = settings
         self._sessions = session_factory
         self._butler = butler
         self._push = push
-        self._voice_provider = voice_provider
-        self._open_source_voice_provider = open_source_voice_provider
+        self._speech = speech
         self._processing: set[uuid.UUID] = set()
         self._lock = asyncio.Lock()
 
@@ -172,10 +169,7 @@ class ButlerRequestService:
                 audio_path=audio_path,
                 audio_mime_type=request.input_audio_mime_type,
             )
-            response_audio_path, audio_type = await self._synthesize_response_audio(
-                request.id, request.user_id, result.response
-            )
-            await self._complete(request.id, result, response_audio_path, audio_type)
+            await self._complete(request.id, result)
             try:
                 await self._delete_file(request.input_audio_path)
                 await self._clear_input_path(request.id)
@@ -191,9 +185,12 @@ class ButlerRequestService:
                     "maintenance cleanup retained",
                     request.id,
                 )
-            await self._push.butler_request_state(
-                request.user_id, "butler_request_completed", request.id
-            )
+            try:
+                await self._push.butler_request_state(
+                    request.user_id, "butler_request_completed", request.id
+                )
+            finally:
+                asyncio.create_task(self._speech.generate("request", request.id))
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -203,46 +200,6 @@ class ButlerRequestService:
             async with self._lock:
                 self._processing.discard(request_id)
 
-    async def _synthesize_response_audio(
-        self, request_id: uuid.UUID, user_id: uuid.UUID, response_text: str
-    ) -> tuple[Path | None, str | None]:
-        if not self._settings.butler_voice_enabled:
-            logger.info("Butler voice skipped request_id=%s cause=voice_disabled", request_id)
-            return None, None
-        provider, charged = await self._voice_provider_for(request_id, user_id)
-        if provider is None:
-            logger.warning(
-                "Response audio unavailable request_id=%s cause=tts_unavailable; "
-                "canonical text/action preserved",
-                request_id,
-            )
-            return None, None
-        try:
-            speech = await provider.synthesize(text=response_text, request_id=request_id)
-        except Exception as exc:
-            if charged:
-                await self._refund_openai_tts(request_id, user_id)
-            fallback = self._open_source_voice_provider
-            if charged and fallback is not None and fallback is not provider:
-                try:
-                    speech = await fallback.synthesize(text=response_text, request_id=request_id)
-                    return await self._response_audio(request_id, speech.audio, speech.mime_type)
-                except Exception:
-                    logger.warning(
-                        "Kokoro fallback failed request_id=%s; canonical text preserved",
-                        request_id,
-                        exc_info=True,
-                    )
-            logger.warning(
-                "Response audio unavailable request_id=%s cause=tts_failed "
-                "error_type=%s; canonical text/action preserved",
-                request_id,
-                type(exc).__name__,
-                exc_info=True,
-            )
-            return None, None
-        return await self._response_audio(request_id, speech.audio, speech.mime_type)
-
     async def _charge_reasoning(self, request_id: uuid.UUID, user_id: uuid.UUID) -> None:
         cost = self._settings.butler_reasoning_credit_cost
         async with self._sessions() as session, session.begin():
@@ -251,43 +208,6 @@ class ButlerRequestService:
                 return
             await consume_credits(session, user_id, cost)
             request.reasoning_credit_charged = True
-
-    async def _voice_provider_for(
-        self, request_id: uuid.UUID, user_id: uuid.UUID
-    ) -> tuple[ButlerVoiceProvider | None, bool]:
-        async with self._sessions() as session, session.begin():
-            request = await session.get(ButlerRequestModel, request_id, with_for_update=True)
-            if request is None:
-                return None, False
-            user = await session.get(UserModel, user_id, with_for_update=True)
-            if user is None:
-                return None, False
-            if user.tts_method != "OPENAI":
-                return self._open_source_voice_provider or self._voice_provider, False
-            cost = self._settings.butler_openai_tts_credit_cost
-            if cost and user.credits < cost:
-                logger.info("OpenAI TTS fell back to Kokoro user_id=%s cause=credits", user_id)
-                return self._open_source_voice_provider, False
-            if request.tts_credit_charged:
-                return self._voice_provider, False
-            if cost:
-                user.credits -= cost
-                request.tts_credit_charged = True
-            return self._voice_provider, cost > 0
-
-    async def _refund_openai_tts(self, request_id: uuid.UUID, user_id: uuid.UUID) -> None:
-        cost = self._settings.butler_openai_tts_credit_cost
-        if not cost:
-            return
-        async with self._sessions() as session, session.begin():
-            request = await session.get(ButlerRequestModel, request_id, with_for_update=True)
-            if request is not None and request.tts_credit_charged:
-                await session.execute(
-                    update(UserModel)
-                    .where(UserModel.id == user_id)
-                    .values(credits=UserModel.credits + cost)
-                )
-                request.tts_credit_charged = False
 
     async def _claim(self, request_id: uuid.UUID) -> ButlerRequestModel | None:
         stale = datetime.now(UTC) - timedelta(
@@ -305,154 +225,10 @@ class ButlerRequestService:
             session.expunge(request)
             return request
 
-    async def _response_audio(
-        self, request_id: uuid.UUID, audio: bytes, mime_type: str
-    ) -> tuple[Path | None, str | None]:
-        path = Path(self._settings.butler_audio_root) / "responses" / f"{request_id}.ogg"
-        if not audio:
-            logger.warning(
-                "Response audio unavailable request_id=%s cause=tts_no_usable_audio; "
-                "canonical text/action preserved",
-                request_id,
-            )
-            return None, None
-        if mime_type != "audio/wav":
-            logger.warning(
-                "Response audio unavailable request_id=%s cause=unsupported_provider_mime "
-                "mime=%s bytes=%d; canonical text/action preserved",
-                request_id,
-                mime_type,
-                len(audio),
-            )
-            return None, None
-        if len(audio) < 12 or audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
-            logger.warning(
-                "Response audio unavailable request_id=%s cause=invalid_tts_wav bytes=%d; "
-                "canonical text/action preserved",
-                request_id,
-                len(audio),
-            )
-            return None, None
-        logger.info(
-            "Response WAV validated request_id=%s bytes=%d",
-            request_id,
-            len(audio),
-        )
-        try:
-            encoded = await self._encode_response_ogg(request_id, audio)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            await asyncio.to_thread(path.write_bytes, encoded)
-            logger.info(
-                "Response audio stored request_id=%s mime=audio/ogg bytes=%d "
-                "path=%s available=true",
-                request_id,
-                len(encoded),
-                path,
-            )
-            return path, "audio/ogg"
-        except (FileNotFoundError, ValueError, OSError) as exc:
-            try:
-                path.unlink(missing_ok=True)
-            except OSError:
-                logger.warning(
-                    "Partial response audio cleanup failed request_id=%s path=%s",
-                    request_id,
-                    path,
-                    exc_info=True,
-                )
-            cause = (
-                "ffmpeg_unavailable"
-                if isinstance(exc, FileNotFoundError)
-                else "storage_failed"
-                if isinstance(exc, OSError)
-                else "wav_to_opus_failed"
-            )
-            logger.warning(
-                "Response audio unavailable request_id=%s cause=%s error_type=%s; "
-                "canonical text/action preserved",
-                request_id,
-                cause,
-                type(exc).__name__,
-                exc_info=True,
-            )
-            return None, None
-
-    async def _encode_response_ogg(self, request_id: uuid.UUID, wav: bytes) -> bytes:
-        try:
-            process = await asyncio.create_subprocess_exec(
-                "ffmpeg",
-                "-v",
-                "error",
-                "-f",
-                "wav",
-                "-i",
-                "pipe:0",
-                "-map_metadata",
-                "-1",
-                "-c:a",
-                "libopus",
-                "-b:a",
-                "32k",
-                "-vbr",
-                "on",
-                "-f",
-                "ogg",
-                "pipe:1",
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        except FileNotFoundError:
-            logger.error(
-                "Response conversion failed request_id=%s cause=ffmpeg_unavailable wav_bytes=%d",
-                request_id,
-                len(wav),
-            )
-            raise
-        except OSError as exc:
-            logger.error(
-                "Response conversion failed request_id=%s cause=ffmpeg_start_failed error_type=%s",
-                request_id,
-                type(exc).__name__,
-            )
-            raise ValueError("Response audio encoder could not start") from exc
-        encoded, stderr = await process.communicate(wav)
-        if process.returncode != 0 or not encoded:
-            logger.warning(
-                "Response conversion failed request_id=%s cause=wav_to_opus_failed "
-                "wav_bytes=%d exit_code=%s stderr=%s",
-                request_id,
-                len(wav),
-                process.returncode,
-                stderr.decode(errors="replace")[:500],
-            )
-            raise ValueError("Response WAV could not be encoded as Ogg/Opus")
-        if not self._is_ogg_opus(encoded):
-            logger.warning(
-                "Response conversion failed request_id=%s cause=invalid_encoded_ogg bytes=%d",
-                request_id,
-                len(encoded),
-            )
-            raise ValueError("Encoded response is not valid Ogg/Opus")
-        logger.info(
-            "Response audio converted request_id=%s format=wav_to_ogg_opus "
-            "wav_bytes=%d opus_bytes=%d",
-            request_id,
-            len(wav),
-            len(encoded),
-        )
-        return encoded
-
-    @staticmethod
-    def _is_ogg_opus(data: bytes) -> bool:
-        return len(data) >= 32 and data[:4] == b"OggS" and b"OpusHead" in data[:256]
-
     async def _complete(
         self,
         request_id: uuid.UUID,
         result: ButlerResult,
-        audio_path: Path | None,
-        audio_type: str | None,
     ) -> None:
         now = datetime.now(UTC)
         async with self._sessions() as session, session.begin():
@@ -461,15 +237,11 @@ class ButlerRequestService:
                 return
             request.user_message_text = result.user_message_text
             request.response_text = result.response
-            request.response_audio_path = str(audio_path) if audio_path else None
-            request.response_audio_mime_type = audio_type
+            request.audio_status = (
+                "pending" if self._settings.butler_voice_enabled else "unavailable"
+            )
             if request.input_audio_path:
                 request.input_audio_delete_after = now
-            request.response_audio_delete_after = (
-                now + timedelta(days=self._settings.butler_response_audio_retention_days)
-                if audio_path
-                else None
-            )
             request.changed_entities = [
                 item.model_dump(mode="json") for item in result.changed_entities
             ]
@@ -514,8 +286,9 @@ class ButlerRequestService:
             interaction_mode=request.interaction_mode,
             user_message_text=request.user_message_text,
             response_text=request.response_text,
+            audio_status=request.audio_status,
             response_audio_url=f"/api/butler/requests/{request.id}/audio"
-            if request.response_audio_path
+            if request.audio_status == "ready" and request.response_audio_path
             else None,
             response_audio_mime_type=request.response_audio_mime_type,
             response_audio_duration_ms=request.response_audio_duration_ms,
@@ -530,7 +303,7 @@ class ButlerRequestService:
                 ["Response audio is unavailable; the text response is still complete."]
                 if request.status == "completed"
                 and request.response_text
-                and not request.response_audio_path
+                and request.audio_status == "unavailable"
                 and self._settings.butler_voice_enabled
                 else []
             ),
@@ -644,6 +417,7 @@ class ButlerRequestService:
                         )
                         request.response_audio_path = None
                         request.response_audio_delete_after = None
+                        request.audio_status = "unavailable"
 
     @staticmethod
     async def _delete_file(path: str | None) -> None:

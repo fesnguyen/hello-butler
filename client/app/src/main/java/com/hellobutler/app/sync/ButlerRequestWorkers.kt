@@ -48,7 +48,10 @@ class ButlerAudioWorker(appContext: Context, params: WorkerParameters) : Corouti
         val requestId = inputData.getString(REQUEST_ID) ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
-        return runCatching { container.butlerRepository.ensureAudio(requestId); Result.success() }.getOrElse { Result.retry() }
+        return runCatching {
+            if (container.butlerRepository.ensureAudio(requestId) != null ||
+                container.butlerRepository.audioUnavailable(requestId)) Result.success() else Result.retry()
+        }.getOrElse { Result.retry() }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {

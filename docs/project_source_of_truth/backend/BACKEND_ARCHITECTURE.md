@@ -273,3 +273,7 @@ Rich input + complete relevant context
 ```
 
 Canonical text delivery must not wait for optional speech generation.
+
+---
+
+Implementation: `app.application.speech.SpeechService` owns provider selection, credit reserve/refund, WAV validation, Ogg/Opus encoding, and temporary storage. `ButlerRequestModel.audio_status` and `DailyEventModel.audio_status` track independent speech readiness. Maintenance recovers pending/stale speech; scheduled summaries expose an authenticated event-audio endpoint.

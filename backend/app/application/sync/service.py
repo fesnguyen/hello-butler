@@ -148,6 +148,13 @@ class DailyEventSyncService:
 
     @staticmethod
     def _apply_mutation(row: DailyEventModel, value: DailyEventMutation) -> None:
+        if row.event_type in ("morning_brief", "good_night_summary") and (
+            row.content != value.content or row.speak_aloud != value.speak_aloud
+        ):
+            row.audio_status = "pending" if value.speak_aloud else "unavailable"
+            row.response_audio_path = None
+            row.response_audio_mime_type = None
+            row.response_audio_delete_after = None
         row.event_date = value.event_date
         row.title = value.title.strip()
         row.description = value.description

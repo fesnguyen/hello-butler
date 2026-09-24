@@ -178,6 +178,7 @@ class EveningPreparationService:
                     origin="planner",
                     planner_key="good_night_summary",
                 )
+                summary.audio_status = "pending"
             else:
                 changed = (
                     summary.content != content
@@ -185,6 +186,10 @@ class EveningPreparationService:
                 )
                 if changed:
                     summary.version += 1
+                    summary.audio_status = "pending"
+                    summary.response_audio_path = None
+                    summary.response_audio_mime_type = None
+                    summary.response_audio_delete_after = None
             summary.daily_plan_id = plan.id
             summary.description = "Butler's reflection on your actual day"
             summary.start_time = self._settings.good_night_summary_time

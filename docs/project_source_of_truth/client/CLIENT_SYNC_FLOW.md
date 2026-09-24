@@ -216,3 +216,7 @@ Use stable request/message identifiers and idempotent Room upserts so one backen
 # User Experience Rule
 
 The user sees simple messages and delivery states. Audio/text transport, FCM, WorkManager, synchronization, and caching remain implementation details.
+
+---
+
+When `audio_status` is pending, store text and enqueue an audio worker. The worker re-reads the result until ready or unavailable, then caches the authenticated Ogg/Opus file. Playback actions wait briefly for pending audio. Scheduled speech fetches the authenticated event audio and leaves the local playback claim unset if no asset is ready.

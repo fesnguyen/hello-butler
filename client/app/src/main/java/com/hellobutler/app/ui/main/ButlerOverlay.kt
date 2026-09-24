@@ -111,7 +111,7 @@ private fun ConversationBubble(message: ConversationMessageEntity, onPlay: (requ
                     when (message.deliveryState) { "sending" -> "Sending…"; "sent" -> "Sent • ${messageTime(message.createdAt)}"; "failed" -> "Waiting for connection"; else -> message.deliveryState },
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f),
                 )
-                if (!fromUser && message.responseAudioUrl != null) Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                if (!fromUser && (message.responseAudioUrl != null || message.audioCacheState == "pending" || message.audioCacheState == "cached")) Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     IconButton(onClick = { onPlay(message.requestId, false) }) { Icon(Icons.Outlined.VolumeUp, "Play Butler response aloud") }
                     IconButton(onClick = { onPlay(message.requestId, true) }) { Icon(Icons.Outlined.Call, "Listen privately through the earpiece") }
                 }

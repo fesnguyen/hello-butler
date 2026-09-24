@@ -14,6 +14,7 @@ from app.application.butler.requests import ButlerRequestService
 from app.application.butler.service import ButlerService
 from app.application.push.changes import DailyPlanChanges
 from app.application.push.service import PushService
+from app.application.speech import SpeechService
 from app.core.config import Settings
 from app.infrastructure.db.base import Base
 from app.infrastructure.db.models import (
@@ -93,7 +94,7 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
             session_factory=self.sessions,
             butler=butler,
             push=push,
-            voice_provider=voice,
+            speech=SpeechService(settings, self.sessions, voice, voice),
         )
         request_id = uuid.uuid4()
         exact = "  Add exercise.  "
@@ -108,11 +109,12 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(failed.status, "failed")
 
         with patch.object(
-            service,
-            "_encode_response_ogg",
-            AsyncMock(return_value=b"OggS" + b"0" * 24 + b"OpusHead"),
+            service._speech,
+            "_store",
+            AsyncMock(return_value=Path(self.directory.name) / "response.ogg"),
         ):
             await asyncio.gather(service.process(request_id), service.process(request_id))
+            await asyncio.sleep(0.1)
 
         async with self.sessions() as session:
             request = await session.get(ButlerRequestModel, request_id)
@@ -121,9 +123,8 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request.status, "completed")
         self.assertEqual(request.user_message_text, exact)
         self.assertEqual(request.response_text, "Done. I added Exercise today.")
+        self.assertEqual(request.audio_status, "ready")
         self.assertEqual(request.response_audio_mime_type, "audio/ogg")
-        self.assertTrue(request.response_audio_path.endswith(".ogg"))
-        self.assertTrue(Path(request.response_audio_path).is_file())
         self.assertEqual(event_count, 1)
         self.assertEqual(len(messages), 2)
         self.assertEqual({item.role for item in messages}, {"user", "butler"})
@@ -162,18 +163,19 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
                 changes=DailyPlanChanges(self.sessions, push),
             ),
             push=push,
-            voice_provider=voice,
+            speech=SpeechService(settings, self.sessions, voice, voice),
         )
         request_id = uuid.uuid4()
         await service.accept_text(
             request_id=request_id, user_id=self.user_id, message="What is planned?"
         )
         with patch.object(
-            service,
-            "_encode_response_ogg",
+            service._speech,
+            "_store",
             AsyncMock(side_effect=ValueError("encoder failed")),
         ):
             await service.process(request_id)
+            await asyncio.sleep(0.1)
 
         result = await service.result(self.user_id, request_id)
         self.assertEqual(result.status, "completed")
@@ -209,13 +211,14 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
                         changes=DailyPlanChanges(self.sessions, push),
                     ),
                     push=push,
-                    voice_provider=voice,
+                    speech=SpeechService(settings, self.sessions, voice, voice),
                 )
                 request_id = uuid.uuid4()
                 await service.accept_text(
                     request_id=request_id, user_id=self.user_id, message="Hello"
                 )
                 await service.process(request_id)
+                await asyncio.sleep(0.1)
 
                 result = await service.result(self.user_id, request_id)
                 self.assertEqual(result.status, "completed")
@@ -247,7 +250,7 @@ class ButlerRequestTests(unittest.IsolatedAsyncioTestCase):
                 changes=DailyPlanChanges(self.sessions, push),
             ),
             push=push,
-            voice_provider=voice,
+            speech=SpeechService(settings, self.sessions, voice, voice),
         )
         input_path = Path(self.directory.name) / "pending.ogg"
         input_path.write_bytes(b"OggS" + b"0" * 24 + b"OpusHead")

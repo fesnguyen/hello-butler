@@ -40,6 +40,7 @@ class ButlerRequestModel(TimestampMixin, Base):
     response_audio_path: Mapped[str | None] = mapped_column(Text)
     response_audio_mime_type: Mapped[str | None] = mapped_column(String(120))
     response_audio_duration_ms: Mapped[int | None] = mapped_column()
+    audio_status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)
     changed_entities: Mapped[list[dict[str, object]]] = mapped_column(
         JSONB, default=list, nullable=False
     )

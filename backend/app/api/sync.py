@@ -1,9 +1,11 @@
 import uuid
 from collections.abc import Sequence
 from datetime import date, datetime
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -26,6 +28,26 @@ router = APIRouter(prefix="/api/sync", tags=["sync"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 AuthenticatedUserDep = Annotated[AuthenticatedUser, Depends(get_authenticated_user)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+@router.get("/events/{event_id}/audio")
+async def event_audio(
+    event_id: uuid.UUID, user: AuthenticatedUserDep, session: SessionDep
+) -> FileResponse:
+    event = await session.scalar(
+        select(DailyEventModel).where(
+            DailyEventModel.id == event_id,
+            DailyEventModel.user_id == user.id,
+            DailyEventModel.deleted_at.is_(None),
+            DailyEventModel.event_type.in_(("morning_brief", "good_night_summary")),
+            DailyEventModel.speak_aloud.is_(True),
+            DailyEventModel.audio_status == "ready",
+        )
+    )
+    path = Path(event.response_audio_path) if event and event.response_audio_path else None
+    if path is None or not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Speech is not ready")
+    return FileResponse(path, media_type="audio/ogg", filename=f"butler-event-{event_id}.ogg")
 
 
 class SyncEvent(BaseModel):

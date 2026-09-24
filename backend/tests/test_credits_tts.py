@@ -1,15 +1,21 @@
+import asyncio
 import tempfile
 import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-from app.application.butler.contracts import ButlerSpeech
+from app.application.butler.contracts import ButlerResult, ButlerSpeech
 from app.application.butler.requests import ButlerRequestService
-from app.application.credits import InsufficientCreditsError
+from app.application.speech import SpeechService
 from app.core.config import Settings
 from app.infrastructure.db.base import Base
-from app.infrastructure.db.models import ButlerRequestModel, UserModel
+from app.infrastructure.db.models import (
+    ButlerRequestModel,
+    DailyEventModel,
+    DailyPlanModel,
+    UserModel,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
@@ -20,111 +26,129 @@ def sqlite_jsonb(type_, compiler, **kwargs):
     return "JSON"
 
 
-class CreditTtsTests(unittest.IsolatedAsyncioTestCase):
+class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.engine = create_async_engine(
-            f"sqlite+aiosqlite:///{Path(self.directory.name) / 'credits.db'}"
+            f"sqlite+aiosqlite:///{Path(self.directory.name) / 'test.db'}"
         )
         async with self.engine.begin() as connection:
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.settings = Settings(
-            jwt_secret="test-only-secret-32-characters-long",
-            butler_reasoning_credit_cost=1,
-            butler_openai_tts_credit_cost=1,
+            jwt_secret="test-only-secret-32-characters-long", butler_openai_tts_credit_cost=1
         )
-        self.openai = AsyncMock()
-        self.kokoro = AsyncMock()
-        self.service = ButlerRequestService(
-            settings=self.settings,
-            session_factory=self.sessions,
-            butler=AsyncMock(),
-            push=AsyncMock(),
-            voice_provider=self.openai,
-            open_source_voice_provider=self.kokoro,
+        self.openai, self.kokoro = AsyncMock(), AsyncMock()
+        self.speech = SpeechService(self.settings, self.sessions, self.openai, self.kokoro)
+        self.speech._store = AsyncMock(return_value=Path("response.ogg"))
+        self.kokoro.synthesize.return_value = ButlerSpeech(
+            audio=b"RIFF0000WAVE", mime_type="audio/wav"
+        )
+        self.openai.synthesize.return_value = ButlerSpeech(
+            audio=b"RIFF0000WAVE", mime_type="audio/wav"
         )
 
     async def asyncTearDown(self):
         await self.engine.dispose()
         self.directory.cleanup()
 
-    async def _create(self, credits: int, method: str) -> tuple[uuid.UUID, uuid.UUID]:
-        user_id, request_id = uuid.uuid4(), uuid.uuid4()
+    async def create(self, method, credits, kind="request", event_type="morning_brief"):
+        user_id, owner_id = uuid.uuid4(), uuid.uuid4()
         async with self.sessions() as session, session.begin():
             session.add(UserModel(id=user_id, credits=credits, tts_method=method))
-            session.add(
-                ButlerRequestModel(
-                    id=request_id,
-                    user_id=user_id,
-                    input_source="text",
-                    interaction_mode="talk",
+            if kind == "request":
+                session.add(
+                    ButlerRequestModel(
+                        id=owner_id,
+                        user_id=user_id,
+                        input_source="text",
+                        interaction_mode="talk",
+                        status="completed",
+                        response_text="Canonical text",
+                        audio_status="pending",
+                    )
                 )
-            )
-        return user_id, request_id
+            else:
+                plan_id = uuid.uuid4()
+                from datetime import date
 
-    async def test_open_source_uses_kokoro_without_tts_charge(self):
-        user_id, request_id = await self._create(3, "OPEN_SOURCE")
-        provider, charged = await self.service._voice_provider_for(request_id, user_id)
-        self.assertIs(provider, self.kokoro)
-        self.assertFalse(charged)
-        async with self.sessions() as session:
-            self.assertEqual((await session.get(UserModel, user_id)).credits, 3)
+                session.add(DailyPlanModel(id=plan_id, user_id=user_id, plan_date=date.today()))
+                session.add(
+                    DailyEventModel(
+                        id=owner_id,
+                        user_id=user_id,
+                        daily_plan_id=plan_id,
+                        event_date=date.today(),
+                        title="Butler summary",
+                        event_type=event_type,
+                        content="Prepared morning text",
+                        speak_aloud=True,
+                        audio_status="pending",
+                    )
+                )
+        return user_id, owner_id
 
-    async def test_openai_uses_credit_then_falls_back_without_changing_preference(self):
-        paid_user, paid_request = await self._create(1, "OPENAI")
-        provider, charged = await self.service._voice_provider_for(paid_request, paid_user)
-        self.assertIs(provider, self.openai)
-        self.assertTrue(charged)
-        async with self.sessions() as session:
-            paid = await session.get(UserModel, paid_user)
-            self.assertEqual(paid.credits, 0)
-            self.assertEqual(paid.tts_method, "OPENAI")
+    async def test_shared_selection_applies_to_requests_and_events(self):
+        for kind in ("request", "event"):
+            for method, credits, use_openai in (
+                ("OPEN_SOURCE", 3, False),
+                ("OPENAI", 2, True),
+                ("OPENAI", 0, False),
+            ):
+                self.openai.reset_mock()
+                self.kokoro.reset_mock()
+                user_id, owner_id = await self.create(method, credits, kind)
+                await self.speech.generate(kind, owner_id)
+                async with self.sessions() as session:
+                    user = await session.get(UserModel, user_id)
+                    row = await session.get(self.speech._model(kind), owner_id)
+                self.assertEqual(row.audio_status, "ready")
+                self.assertEqual(user.credits, credits - int(use_openai))
+                self.assertEqual(user.tts_method, method)
+                (self.openai if use_openai else self.kokoro).synthesize.assert_awaited_once()
 
-        fallback_user, fallback_request = await self._create(0, "OPENAI")
-        provider, charged = await self.service._voice_provider_for(fallback_request, fallback_user)
-        self.assertIs(provider, self.kokoro)
-        self.assertFalse(charged)
-        async with self.sessions() as session:
-            fallback = await session.get(UserModel, fallback_user)
-            self.assertEqual(fallback.credits, 0)
-            self.assertEqual(fallback.tts_method, "OPENAI")
-
-    async def test_reasoning_charge_is_idempotent_and_never_negative(self):
-        user_id, request_id = await self._create(1, "OPEN_SOURCE")
-        await self.service._charge_reasoning(request_id, user_id)
-        await self.service._charge_reasoning(request_id, user_id)
-        async with self.sessions() as session:
-            self.assertEqual((await session.get(UserModel, user_id)).credits, 0)
-
-        empty_user, empty_request = await self._create(0, "OPEN_SOURCE")
-        with self.assertRaises(InsufficientCreditsError):
-            await self.service._charge_reasoning(empty_request, empty_user)
-        async with self.sessions() as session:
-            self.assertEqual((await session.get(UserModel, empty_user)).credits, 0)
-
-    async def test_openai_failure_refunds_tts_credit_and_uses_kokoro(self):
-        user_id, request_id = await self._create(2, "OPENAI")
+    async def test_openai_failure_refunds_and_falls_back_for_event(self):
+        user_id, owner_id = await self.create("OPENAI", 2, "event", "good_night_summary")
         self.openai.synthesize.side_effect = RuntimeError("OpenAI unavailable")
-        self.kokoro.synthesize.return_value = ButlerSpeech(
-            audio=b"RIFF0000WAVEaudio", mime_type="audio/wav"
-        )
-        self.service._response_audio = AsyncMock(return_value=(Path("response.ogg"), "audio/ogg"))
-
-        path, mime_type = await self.service._synthesize_response_audio(
-            request_id, user_id, "Canonical response"
-        )
-
-        self.assertEqual(path, Path("response.ogg"))
-        self.assertEqual(mime_type, "audio/ogg")
-        self.kokoro.synthesize.assert_awaited_once_with(
-            text="Canonical response", request_id=request_id
-        )
+        await self.speech.generate("event", owner_id)
         async with self.sessions() as session:
             user = await session.get(UserModel, user_id)
-            request = await session.get(ButlerRequestModel, request_id)
+            event = await session.get(DailyEventModel, owner_id)
         self.assertEqual(user.credits, 2)
-        self.assertFalse(request.tts_credit_charged)
+        self.assertFalse(event.tts_credit_charged)
+        self.assertEqual(event.audio_status, "ready")
+        self.kokoro.synthesize.assert_awaited_once_with(
+            text="Prepared morning text", request_id=owner_id
+        )
+
+    async def test_text_completes_while_speech_is_blocked(self):
+        user_id, owner_id = uuid.uuid4(), uuid.uuid4()
+        async with self.sessions() as session, session.begin():
+            session.add(UserModel(id=user_id, credits=3))
+        blocked = asyncio.Event()
+
+        async def wait_for_speech(kind, request_id):
+            await blocked.wait()
+
+        self.speech.generate = AsyncMock(side_effect=wait_for_speech)
+        butler, push = AsyncMock(), AsyncMock()
+        butler.handle.return_value = ButlerResult(response="Text now", user_message_text="Hello")
+        service = ButlerRequestService(
+            settings=self.settings,
+            session_factory=self.sessions,
+            butler=butler,
+            push=push,
+            speech=self.speech,
+        )
+        await service.accept_text(request_id=owner_id, user_id=user_id, message="Hello")
+        await service.process(owner_id)
+        result = await service.result(user_id, owner_id)
+        self.assertEqual(result.status, "completed")
+        self.assertEqual(result.response_text, "Text now")
+        self.assertEqual(result.audio_status, "pending")
+        self.assertEqual(result.warnings, [])
+        blocked.set()
+        await asyncio.sleep(0)
 
 
 if __name__ == "__main__":
