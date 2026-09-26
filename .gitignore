@@ -248,3 +248,6 @@ Thumbs.db
 
 # Backend data directory
 /backend/data/
+
+# env files
+.env.*
