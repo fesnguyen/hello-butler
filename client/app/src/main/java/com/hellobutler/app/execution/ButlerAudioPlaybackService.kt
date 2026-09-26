@@ -24,6 +24,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
 
 class ButlerAudioPlaybackService : Service() {
@@ -50,7 +52,15 @@ class ButlerAudioPlaybackService : Service() {
         job = scope.launch {
             val file = runCatching {
                 withContext(Dispatchers.IO) {
-                    (application as ButlerApplication).container.butlerRepository.ensureAudio(requestId)
+                    withTimeoutOrNull(120_000) {
+                        val repository = (application as ButlerApplication).container.butlerRepository
+                        var audio = repository.ensureAudio(requestId)
+                        while (audio == null && !repository.audioUnavailable(requestId)) {
+                            delay(2_000)
+                            audio = repository.ensureAudio(requestId)
+                        }
+                        audio
+                    }
                 }
             }.onFailure { Log.e(TAG, "Playback audio unavailable request_id=$requestId", it) }.getOrNull()
             if (file == null) { finish(); return@launch }

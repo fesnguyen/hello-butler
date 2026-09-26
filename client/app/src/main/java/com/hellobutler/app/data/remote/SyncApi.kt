@@ -9,6 +9,8 @@ import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
 import retrofit2.http.Body
+import retrofit2.http.Streaming
+import okhttp3.ResponseBody
 
 @Serializable
 data class SyncPlanDto(
@@ -122,6 +124,12 @@ data class UpcomingMutationResultDto(
 )
 
 interface SyncApi {
+    @Streaming
+    @GET("api/sync/events/{eventId}/audio")
+    suspend fun eventAudio(
+        @Header("Authorization") authorization: String,
+        @Path("eventId") eventId: String,
+    ): Response<ResponseBody>
     @POST("api/sync/events")
     suspend fun syncEvents(
         @Header("Authorization") authorization: String,

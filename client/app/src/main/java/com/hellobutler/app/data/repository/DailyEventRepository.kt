@@ -22,6 +22,8 @@ import com.hellobutler.app.data.remote.UpcomingEventDto
 import com.hellobutler.app.data.remote.UpcomingEventMutationDto
 import com.hellobutler.app.execution.DailyEventScheduler
 import com.hellobutler.app.sync.DailySyncWorker
+import com.hellobutler.app.speech.isOggOpusContainer
+import java.io.File
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
@@ -51,6 +53,27 @@ class DailyEventRepository(
     val upcomingEvents = _upcomingEvents.asStateFlow()
 
     fun observeDate(date: String): Flow<List<DailyEventEntity>> = dao.observeDate(date)
+
+    suspend fun speechAudio(eventId: String, version: Int): File? {
+        val target = File(File(context.cacheDir, "event_speech").apply { mkdirs() }, "$eventId-$version.ogg")
+        if (target.isOggOpusContainer()) return target
+        val response = authorized { token -> api.eventAudio("Bearer $token", eventId) }
+        if (response.code() == 404) return null // Text is available; speech is still pending or unavailable.
+        if (!response.isSuccessful) throw ApiException("Event speech failed (${response.code()})")
+        val partial = File(target.path + ".part")
+        try {
+            val body = response.body() ?: return null
+            body.use { source -> source.byteStream().use { input -> partial.outputStream().use { output -> input.copyTo(output) } } }
+            if (!partial.isOggOpusContainer()) throw ApiException("Invalid event speech audio")
+            if (!partial.renameTo(target)) {
+                partial.copyTo(target, overwrite = true)
+                partial.delete()
+            }
+            return target
+        } finally {
+            partial.delete()
+        }
+    }
 
     suspend fun update(requested: DailyEventEntity) = syncMutex.withLock {
         val current = dao.get(requested.id)
@@ -261,6 +284,7 @@ class DailyEventRepository(
     }
 
     suspend fun clear() = syncMutex.withLock {
+        File(context.cacheDir, "event_speech").deleteRecursively()
         dao.pendingSpokenEvents().forEach(scheduler::cancel)
         database.withTransaction {
             pending.deleteAll()

@@ -127,9 +127,7 @@ class ButlerRepository(
         result.warnings.forEach { warning -> Log.w(TAG, "Butler request warning request_id=$requestId warning=$warning") }
         ButlerNotification.showCompleted(context, result)
         request.localAudioPath?.let { File(it).delete() }
-        if (result.responseAudioUrl != null) {
-            runCatching { ensureAudio(requestId) }.onFailure { ButlerAudioWorker.enqueue(context, requestId) }
-        }
+        if (result.audioStatus in setOf("pending", "processing", "ready")) ButlerAudioWorker.enqueue(context, requestId)
         synchronizeChanges(result)
         return true
     }
@@ -138,6 +136,7 @@ class ButlerRepository(
         val completedAt = result.completedAt ?: Instant.now().toString()
         database.withTransaction {
             val existingUser = dao.message(request.requestId, "user")
+            val existingButler = dao.message(request.requestId, "butler")
             dao.upsertMessage(
                 ConversationMessageEntity(
                     id = "${request.requestId}:user", requestId = request.requestId, role = "user",
@@ -149,9 +148,18 @@ class ButlerRepository(
                 ConversationMessageEntity(
                     id = "${request.requestId}:butler", requestId = request.requestId, role = "butler",
                     text = result.responseText.orEmpty(), createdAt = completedAt, deliveryState = "completed", inputSource = request.inputSource,
-                    responseAudioUrl = result.responseAudioUrl, responseAudioMimeType = result.responseAudioMimeType,
+                    responseAudioUrl = result.responseAudioUrl ?: existingButler?.responseAudioUrl?.takeIf {
+                        existingButler?.localAudioPath?.let(::File)?.isFile == true
+                    },
+                    responseAudioMimeType = result.responseAudioMimeType ?: existingButler?.responseAudioMimeType,
                     responseAudioDurationMs = result.responseAudioDurationMs,
-                    audioCacheState = if (result.responseAudioUrl == null) "unavailable" else "pending",
+                    audioCacheState = when {
+                        existingButler?.localAudioPath?.let(::File)?.isFile == true -> "cached"
+                        result.audioStatus in setOf("pending", "processing") -> "pending"
+                        result.responseAudioUrl != null -> "pending"
+                        else -> "unavailable"
+                    },
+                    localAudioPath = existingButler?.localAudioPath?.takeIf { File(it).isFile },
                 )
             )
             dao.upsertRequest(request.copy(status = "completed", localAudioPath = null, lastError = null))
@@ -159,7 +167,20 @@ class ButlerRepository(
     }
 
     suspend fun ensureAudio(requestId: String): File? = audioLocks.getOrPut(requestId) { Mutex() }.withLock {
-        val message = dao.message(requestId, "butler") ?: return@withLock null
+        var message = dao.message(requestId, "butler") ?: return@withLock null
+        message.localAudioPath?.let(::File)?.takeIf { it.isFile && it.hasExpectedSignature(it.extension.lowercase()) }
+            ?.let { return@withLock it }
+        if (message.responseAudioUrl == null && message.audioCacheState == "pending") {
+            val result = authorized { token -> api.result(token, requestId) }
+            if (result.audioStatus == "unavailable") {
+                dao.updateAudio(requestId, "unavailable", null)
+                return@withLock null
+            }
+            if (result.responseAudioUrl == null) return@withLock null
+            dao.upsertMessage(message.copy(responseAudioUrl = result.responseAudioUrl,
+                responseAudioMimeType = result.responseAudioMimeType, audioCacheState = "pending"))
+            message = dao.message(requestId, "butler") ?: return@withLock null
+        }
         if (message.responseAudioUrl == null) return@withLock null
         val expectedExtension = responseAudioExtension(message.responseAudioMimeType)
         message.localAudioPath?.let(::File)?.takeIf(File::isFile)?.let { cached ->
@@ -205,6 +226,9 @@ class ButlerRepository(
         }
     }
 
+    suspend fun audioUnavailable(requestId: String): Boolean =
+        dao.message(requestId, "butler")?.audioCacheState in setOf("unavailable", "none")
+
     private fun responseAudioExtension(mimeType: String?): String = when (mimeType?.substringBefore(';')?.lowercase()) {
         "audio/wav", "audio/x-wav", "audio/wave" -> "wav"
         "audio/mpeg" -> "mp3"
@@ -248,7 +272,7 @@ class ButlerRepository(
             )
             persistCompleted(local, result)
         }
-        results.takeLast(5).filter { it.responseAudioUrl != null }.forEach { ButlerAudioWorker.enqueue(context, it.requestId) }
+        results.takeLast(5).filter { it.audioStatus in setOf("pending", "processing", "ready") }.forEach { ButlerAudioWorker.enqueue(context, it.requestId) }
     }
 
     suspend fun clear() {

@@ -32,7 +32,7 @@ object ButlerNotification {
             .setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Hello Butler")
             .setContentText(result.responseText).setStyle(NotificationCompat.BigTextStyle().bigText(result.responseText))
             .setContentIntent(open).setAutoCancel(true).setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-        if (result.responseAudioUrl != null) {
+        if (result.audioStatus in setOf("pending", "processing", "ready")) {
             builder.addAction(android.R.drawable.ic_lock_silent_mode_off, "Play aloud", ButlerAudioPlaybackService.intent(context, result.requestId, false))
                 .addAction(android.R.drawable.sym_call_incoming, "Listen privately", ButlerAudioPlaybackService.intent(context, result.requestId, true))
         }

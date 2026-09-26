@@ -308,3 +308,7 @@ Persist + deliver canonical text
       ↓
 Shared TTS asynchronously
 ```
+
+---
+
+The request is marked `completed` and its completion push is sent before `SpeechService.generate` begins. Maintenance recovers pending or stale speech tasks after restart. A pending event audio request returns 404 until the authenticated Ogg/Opus asset is ready.

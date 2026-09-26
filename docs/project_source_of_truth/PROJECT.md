@@ -122,14 +122,14 @@ canonical result
         ├── user transcript / understood utterance text
         ├── structured intent / action decision when needed
         ├── Butler response text
-        └── Butler response audio
+        └── Butler response audio generated later from canonical text
 ```
 
 The normal architecture must **not** reduce Order/Talk to a standalone STT result and then use that transcript as the only semantic input to a text-only Butler model.
 
 A transcript is still required for conversation history and display, but it is an output/artifact of the multimodal interaction, not the sole reasoning boundary.
 
-The normal backend path must also not be modeled as `STT → text-only reasoning → separate TTS` when an audio-capable multimodal model/API can accept the original audio plus text context and produce the Butler text + audio result.
+Original audio and text context go into one understanding call; the separate optional TTS call receives only the finalized canonical text.
 
 ---
 
@@ -148,7 +148,7 @@ backend combines typed text + Butler context
    ↓
 shared Butler reasoning/application behavior
    ↓
-canonical Butler response text + audio
+canonical Butler response text; optional audio follows asynchronously
 ```
 
 Text does not record audio and does not use STT.
@@ -169,7 +169,7 @@ one Butler message
 
 For audio input, the user message is the model-produced transcript/understood utterance text. For text input, it is the exact submitted text.
 
-The Butler message contains canonical response text and associated response audio.
+The Butler message contains canonical response text; associated audio is added when the shared TTS service finishes.
 
 There is no separate in-app response and notification response. A notification is only another presentation surface for the same Butler message.
 
@@ -177,64 +177,31 @@ There is no separate in-app response and notification response. A notification i
 
 ## Asynchronous Request Lifecycle
 
-The async transport architecture remains unchanged:
-
 ```text
-POST audio OR POST text
+POST audio OR POST text → 202 + request_id
       ↓
-backend creates durable request
+AI processes the original input and Butler context
       ↓
-202 + request_id
+validate/apply domain actions and persist canonical conversation text
       ↓
-backend continues asynchronously
+mark request completed + FCM completed(request_id)
       ↓
-load Butler context
+client fetches and displays text immediately
       ↓
-AI processing
-      ├── audio request: original audio + text context
-      └── text request: typed text + text context
+shared backend TTS prepares audio asynchronously
       ↓
-apply validated domain actions when needed
+audio status: pending → processing → ready | unavailable
       ↓
-final canonical response text + audio
-      ↓
-persist result text / metadata
-      ↓
-save response audio temporarily on backend
-      ↓
-FCM completed(request_id)
-      ↓
-client fetches canonical text/result metadata
-      ↓
-client immediately downloads response audio
-      ↓
-Room + local audio cache
+client reconciles, downloads, and caches Ogg/Opus when ready
 ```
 
-FCM is a wake-up/completion signal, not the canonical response payload and not an audio transport.
+Text completion is independent of speech preparation. FCM is a wake-up signal, not a canonical response or audio transport. A TTS failure leaves the completed text and actions intact.
 
 ---
 
 ## Response Delivery Rule
 
-The backend must persist the completed text result and make the response audio available for authenticated download.
-
-Conceptually:
-
-```text
-AI returns text + audio
-      ↓
-backend commits canonical text result
-backend stores temporary audio asset
-      ↓
-client is notified / fetches result
-      ↓
-client receives response text + audio-ready reference
-      ↓
-client downloads audio immediately
-```
-
-The text result must remain usable even if response-audio download is delayed. The audio asset is retention-limited on the backend and long-lived primarily in the client's local cache.
+The authenticated result exposes canonical text and an independent `audio_status`. It includes an audio URL only when speech is ready. The client renders completed text before downloading audio and retries pending audio in the background. Backend audio is temporary; the client's cache supports later playback.
 
 ---
 
@@ -255,7 +222,7 @@ The text result must remain usable even if response-audio download is delayed. T
                          ↓
               GET canonical result
                          ↓
-          Room + immediate audio cache
+          Room text + audio reconciliation
 ```
 
 Foreground/background only changes how Android executes work. It must not change the product result.
@@ -299,7 +266,7 @@ speaker icon → play aloud
 phone icon   → private/call-style listening
 ```
 
-The client starts fetching/caching response audio immediately after completion. If playback is selected before download finishes, wait for the in-progress download and play when ready.
+The client shows completed text immediately and starts audio reconciliation. It downloads and caches speech when the backend reports it ready. If playback is selected while speech is pending, wait for readiness before playing.
 
 ---
 

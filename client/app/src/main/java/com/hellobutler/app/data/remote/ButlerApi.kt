@@ -37,6 +37,7 @@ data class ButlerResultDto(
     @SerialName("created_at") val createdAt: String,
     @SerialName("user_message_text") val userMessageText: String? = null,
     @SerialName("response_text") val responseText: String? = null,
+    @SerialName("audio_status") val audioStatus: String = "unavailable",
     @SerialName("response_audio_url") val responseAudioUrl: String? = null,
     @SerialName("response_audio_mime_type") val responseAudioMimeType: String? = null,
     @SerialName("response_audio_duration_ms") val responseAudioDurationMs: Int? = null,

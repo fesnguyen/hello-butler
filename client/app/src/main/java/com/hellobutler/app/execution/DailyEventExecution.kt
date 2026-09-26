@@ -12,6 +12,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.media.MediaPlayer
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.hellobutler.app.MainActivity
@@ -34,6 +35,9 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 import kotlinx.coroutines.withTimeoutOrNull
 
 object SpeechPlaybackState {
@@ -74,7 +78,7 @@ class ScheduleRestoreReceiver : BroadcastReceiver() {
 class SpeechForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var playback: Job? = null
-    private var tts: LocalTextToSpeech? = null
+    private var player: MediaPlayer? = null
     private var activeStartId = 0
     private var wakeLock: PowerManager.WakeLock? = null
 
@@ -108,7 +112,7 @@ class SpeechForegroundService : Service() {
             .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HelloButler:ScheduledSpeech")
             .apply { acquire(130_000) } // Bound CPU wake time while the locked device initializes TTS.
         playback?.cancel()
-        tts?.stop()
+        releasePlayer()
         playback = scope.launch {
             try {
                 speak(eventId)
@@ -130,6 +134,14 @@ class SpeechForegroundService : Service() {
         if (event == null || !event.isDueForSpeech()) {
             return
         }
+        val audio = withTimeoutOrNull(120_000) {
+            var file: java.io.File? = null
+            while (file == null) {
+                file = container.dailyEventRepository.speechAudio(eventId, event.version)
+                if (file == null) delay(2_000)
+            }
+            file
+        } ?: return // Leave the text and playback claim intact when speech fails.
         if (dao.claimPlayback(
                 event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(),
                 event.content.orEmpty(), event.version,
@@ -141,21 +153,40 @@ class SpeechForegroundService : Service() {
         getSystemService(NotificationManager::class.java).notify(
             NOTIFICATION_ID, notification(event.title)
         )
-        val player = LocalTextToSpeech(applicationContext)
-        tts = player
-        val spoken = withTimeoutOrNull(120_000) { player.speak(event.content.orEmpty()) } ?: false
-        if (!spoken) Log.w("HelloButlerTTS", "Local TTS could not play event ${event.id}")
+        suspendCancellableCoroutine<Unit> { continuation ->
+            val media = MediaPlayer()
+            player = media
+            media.setOnPreparedListener { it.start() }
+            media.setOnCompletionListener { if (continuation.isActive) continuation.resume(Unit) }
+            media.setOnErrorListener { _, _, _ ->
+                if (continuation.isActive) continuation.resume(Unit)
+                true
+            }
+            continuation.invokeOnCancellation {
+                if (player === media) {
+                    player = null
+                    runCatching { media.release() }
+                }
+            }
+            try {
+                media.setDataSource(audio.absolutePath)
+                media.prepareAsync()
+            } catch (error: Exception) {
+                if (player === media) player = null
+                runCatching { media.release() }
+                if (continuation.isActive) continuation.resume(Unit)
+                Log.w("HelloButlerTTS", "Event audio playback failed", error)
+            }
+        }
     }
 
     private fun stopSpeech() {
-        tts?.stop()
         playback?.cancel()
         finish(null)
     }
 
     private fun finish(startId: Int?) {
-        tts?.stop()
-        tts = null
+        releasePlayer()
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
         SpeechPlaybackState.setSpeaking(false)
@@ -201,13 +232,19 @@ class SpeechForegroundService : Service() {
     override fun onDestroy() {
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
-        tts?.stop()
+        releasePlayer()
         scope.cancel()
         SpeechPlaybackState.setSpeaking(false)
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
+
+    private fun releasePlayer() {
+        val current = player
+        player = null
+        if (current != null) runCatching { current.release() }
+    }
 
     companion object {
         private const val CHANNEL_ID = "butler_speech"

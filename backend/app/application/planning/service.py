@@ -294,6 +294,11 @@ class DayPlanningService:
             brief.duration_minutes = None
             brief.scheduled_precision = "exact"
             brief.content = brief_content
+            if brief_changed or not brief_exists:
+                brief.audio_status = "pending"
+                brief.response_audio_path = None
+                brief.response_audio_mime_type = None
+                brief.response_audio_delete_after = None
             brief.reminder_minutes_before = None
             brief.speak_aloud = True
             brief.sort_order = 0
