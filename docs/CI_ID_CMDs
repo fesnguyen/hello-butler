@@ -1,0 +1,351 @@
+# Hello Butler — Dev & Deployment Hand Note
+
+## Environment
+
+DEV:
+`.env.dev`
+
+PROD:
+`.env.production`
+
+Never commit either.
+
+`.gitignore`:
+`.env`
+`.env.*`
+`!.env.example`
+
+
+# Architecture
+
+DEV:
+`Local FastAPI :8001 → Docker Postgres :5433 → DEV volume`
+
+PROD:
+`Internet → Cloudflare → localhost:8000 → Docker Backend → Docker Postgres :5432 → PROD volume`
+
+Same `postgres:16` image, separate Compose projects/containers/volumes.
+
+
+# DEV — Start PostgreSQL
+
+From repo root:
+
+`docker compose -p hello-butler-dev --env-file .env.dev up -d postgres`
+
+Check:
+
+`docker compose -p hello-butler-dev --env-file .env.dev ps`
+
+Logs:
+
+`docker compose -p hello-butler-dev --env-file .env.dev logs -f postgres`
+
+Stop:
+
+`docker compose -p hello-butler-dev --env-file .env.dev down`
+
+DEV volume:
+`hello-butler-dev_postgres_data`
+
+
+# DEV — Run Backend
+
+VS Code / Uvicorn args:
+
+    "args": [
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8001",
+        "--env-file",
+        "../.env.dev"
+    ]
+
+Backend:
+`http://localhost:8001`
+
+Swagger:
+`http://localhost:8001/docs`
+
+
+# DEV — Alembic
+
+From `backend/`:
+
+Upgrade:
+
+`uv run --env-file ../.env.dev alembic upgrade head`
+
+Check:
+
+`uv run --env-file ../.env.dev alembic current`
+
+
+# PROD — Build
+
+From repo root:
+
+`docker compose -p hello-butler-prod --env-file .env.production build backend`
+
+Or build + start:
+
+`docker compose -p hello-butler-prod --env-file .env.production up -d --build`
+
+Rebuild when:
+- source code changes
+- dependencies change
+- Dockerfile changes
+
+NO rebuild for:
+- `.env.production` changes
+- normal `compose.yaml` config changes
+
+
+# PROD — Alembic
+
+Upgrade:
+
+`docker compose -p hello-butler-prod --env-file .env.production run --rm backend uv run --no-sync alembic upgrade head`
+
+Check:
+
+`docker compose -p hello-butler-prod --env-file .env.production run --rm backend uv run --no-sync alembic current`
+
+
+# PROD — Start
+
+`docker compose -p hello-butler-prod --env-file .env.production up -d`
+
+Check:
+
+`docker compose -p hello-butler-prod --env-file .env.production ps`
+
+Logs:
+
+`docker compose -p hello-butler-prod --env-file .env.production logs -f backend`
+
+Stop:
+
+`docker compose -p hello-butler-prod --env-file .env.production down`
+
+Never use `down -v` unless intentionally deleting DB data.
+
+PROD volume:
+`hello-butler-prod_postgres_data`
+
+
+# PROD — Env Changed Only
+
+Recreate backend:
+
+`docker compose -p hello-butler-prod --env-file .env.production up -d --no-deps --force-recreate backend`
+
+No rebuild required.
+
+
+# PROD — New Code From main
+
+`git checkout main`
+
+`git pull`
+
+Build:
+
+`docker compose -p hello-butler-prod --env-file .env.production build backend`
+
+Migrate:
+
+`docker compose -p hello-butler-prod --env-file .env.production run --rm backend uv run --no-sync alembic upgrade head`
+
+Deploy:
+
+`docker compose -p hello-butler-prod --env-file .env.production up -d`
+
+Verify:
+
+`docker compose -p hello-butler-prod --env-file .env.production ps`
+
+`docker compose -p hello-butler-prod --env-file .env.production logs --tail 100 backend`
+
+
+# Docker — Useful
+
+Running:
+
+`docker ps`
+
+All containers:
+
+`docker ps -a`
+
+Images:
+
+`docker images`
+
+Volumes:
+
+`docker volume ls`
+
+Compose resolved config:
+
+`docker compose -p hello-butler-prod --env-file .env.production config`
+
+WARNING: `config` prints resolved secrets. Do not share its output.
+
+
+# Docker Restart
+
+In `compose.yaml`:
+
+`restart: unless-stopped`
+
+Used for:
+- backend
+- postgres
+
+Container crash → restart
+Docker restart → restart
+Manual stop → stays stopped
+
+
+# Cloudflare — Quick Tunnel
+
+Production backend must be running on:
+
+`http://localhost:8000`
+
+Start temporary tunnel:
+
+`cloudflared tunnel --url http://localhost:8000`
+
+Returns:
+
+`https://xxxxx.trycloudflare.com`
+
+Test:
+
+`https://xxxxx.trycloudflare.com/docs`
+
+Keep terminal running.
+
+Quick Tunnel URL changes when recreated.
+
+
+# Cloudflare — Check
+
+Version:
+
+`cloudflared --version`
+
+Current tested version:
+`2026.9.1`
+
+
+# WSL / Docker Desktop
+
+Check WSL:
+
+`wsl --list`
+
+Expected:
+- `Ubuntu-24.04`
+- `docker-desktop`
+
+Check Docker engine:
+
+`docker ps`
+
+Docker Desktop manages its own `docker-desktop` WSL distribution.
+
+
+# Ports
+
+`8000` → PROD backend / Cloudflare
+
+`8001` → DEV backend
+
+`5432` → PostgreSQL inside Docker network
+
+`5433` → DEV PostgreSQL exposed to Windows
+
+
+# Database Addresses
+
+DEV local backend:
+
+`localhost:5433`
+
+PROD Docker backend:
+
+`postgres:5432`
+
+
+# Env Relationship
+
+`.env.dev`
+→ DEV Postgres config
+→ DEV FastAPI config
+
+`.env.production`
+→ PROD Postgres config
+→ PROD Docker backend config
+
+Compose `${VAR}` requires:
+
+`--env-file .env.dev`
+
+or:
+
+`--env-file .env.production`
+
+Backend Docker also receives production env through:
+
+    env_file:
+      - ./.env.production
+
+
+# Production Deployment Flow
+
+`main`
+↓
+`build image`
+↓
+`alembic upgrade head`
+↓
+`docker compose up -d`
+↓
+`check ps`
+↓
+`check logs`
+↓
+`health test`
+↓
+`Cloudflare → production :8000`
+
+
+# DON'T
+
+Don't commit `.env.dev` / `.env.production`.
+
+Don't use PROD DB for development.
+
+Don't run DEV backend on `8000`.
+
+Don't use `docker compose down -v` on PROD.
+
+Don't expose/share `docker compose config` output.
+
+Don't rebuild image for env-only changes.
+
+
+# TODO
+
+- Docker/Desktop auto-start after Windows reboot
+- PostgreSQL backup + restore
+- Production backend health check
+- Permanent URL/domain
+- Permanent Cloudflare Tunnel
+- CI/CD: main → test → build → migrate → deploy → health check
+- Full reboot/recovery test
