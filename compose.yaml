@@ -1,10 +1,11 @@
 services:
   postgres:
     image: postgres:16
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: hello_butler
-      POSTGRES_USER: hello_butler
-      POSTGRES_PASSWORD: hello_butler
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
@@ -18,10 +19,9 @@ services:
   backend:
     build:
       context: ./backend
+    restart: unless-stopped
     env_file:
-      - ./backend/.env
-    environment:
-      DATABASE_URL: postgresql+asyncpg://hello_butler:hello_butler@postgres:5432/hello_butler
+      - ./.env.production
     ports:
       - "8000:8000"
     depends_on:
