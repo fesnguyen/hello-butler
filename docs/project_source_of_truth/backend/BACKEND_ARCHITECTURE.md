@@ -1,68 +1,41 @@
 # Backend Architecture
 
-**Version:** 1.9  
+**Version:** 2.0  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
 ---
 
-# Purpose
+# Purpose and Pattern
 
-The backend owns Butler intelligence, authoritative server state, asynchronous request processing, multimodal AI orchestration, conversation persistence, response-audio handling, authentication, planning, and synchronization.
-
----
-
-# Architectural Pattern
+The backend owns Butler intelligence, authoritative server state, asynchronous request processing, conversation persistence, planning, TTS, authentication, and synchronization.
 
 ```text
-API
- ↓
-Application
- ↓
-Domain
- ↑
-Infrastructure
+API → Application → Domain
+          ↑
+    Infrastructure
 ```
 
-API owns transport/authentication. Application owns orchestration and transaction boundaries. Domain owns product concepts/rules. Infrastructure owns PostgreSQL, the multimodal AI provider, TTS providers, push, audio storage, and other integrations.
+API owns transport/authentication. Application owns orchestration/transactions. Domain owns product rules. Infrastructure owns PostgreSQL, AI/TTS providers, push, and audio storage.
 
 ---
 
-# Two Ingress APIs, One Butler Product Workflow
+# One Butler Workflow
 
 ```text
-                 API
-          ┌───────┴───────┐
-          │               │
-      AUDIO INPUT      TEXT INPUT
-      Order/Talk          Text
-          │               │
-   POST audio API    POST text API
-          │               │
-          └───────┬───────┘
-                  ↓
-          Butler application
-                  ↓
-       load complete context
-                  ↓
-     interaction AI call
-                  ↓
-       complete AI result
-                  ↓
-       validate/apply changes
-                  ↓
-       canonical text result
-                  ↓
-       asynchronous TTS
+Audio (Order/Talk) ─┐
+                    ├→ Butler application → context → interaction AI
+Text ───────────────┘                         ↓
+                                      validate/apply mutations
+                                             ↓
+                                      canonical text result
+                                             ↓
+                                      asynchronous TTS
 ```
 
-Do not create separate Butler brains for audio and text. Order/Talk preserves the original recorded audio through the interaction call. Text uses the same product behavior with typed text as input.
+Order/Talk preserves original recorded audio through the interaction call. Text uses submitted text directly. Do not create separate reasoning systems for input modes.
 
----
-
-# Primary API Boundaries
-
-Conceptually:
+Conceptual request boundaries remain:
 
 ```text
 POST /api/butler/requests/audio
@@ -71,209 +44,153 @@ GET  /api/butler/requests/{request_id}
 GET  /api/butler/requests/{request_id}/audio
 ```
 
-Both input endpoints return quickly with `202 Accepted` and a stable `request_id`, then continue through the same asynchronous request/result lifecycle.
-
 ---
 
-# Interaction AI Contract
+# Interaction Contract
 
-For every normal Butler interaction, the backend gathers enough authoritative context before invoking the AI provider so one interaction call can understand the input, propose supported mutations, and finalize canonical response text.
+Before the AI call, load relevant authoritative context: recent conversation, User Context/preferences, relevant Daily Plan/Events, current time/timezone, interaction mode, and identifiers needed for supported mutations.
 
-For Order/Talk the request contains the original recorded audio plus relevant textual context: Butler instructions, interaction mode, recent relevant conversation, User Context/preferences, relevant Daily Plan/Events, identifiers required for mutation, and current time/timezone. Text uses typed text instead of recorded audio.
-
-The interaction call is responsible for understanding/reasoning, not speech synthesis. TTS is a separate provider boundary invoked after canonical response text exists. TTS must not reason, rewrite, or paraphrase the response.
-
----
-
-# AI Result Contract
-
-The interaction AI result contains:
+The result contains:
 
 ```text
-AI result
-├── user_message_text
-│   ├── audio source → transcript / understood utterance text
-│   └── text source  → submitted text
-├── proposed_updates
-│   ├── Daily Event add / update / remove / skip / other supported mutation
-│   ├── User Context / preference change
-│   └── none when no state change is required
-└── Butler response text
+user_message_text
+proposed supported mutation (or none)
+canonical Butler response_text
 ```
 
-Application/domain code remains authoritative for state: it validates supported updates and performs persistence. The AI must not write directly to PostgreSQL.
+Application/domain code validates and persists mutations. The AI never writes directly to PostgreSQL.
+
+One completed request produces one user conversation message and one Butler message. For audio, user text is the transcript/understood utterance; for Text, it is the submitted text.
 
 ---
 
-# Request Lifecycle
-
-Both transports share durable states:
+# Request and Audio Lifecycle
 
 ```text
-accepted
-processing
-completed
-failed
+accepted → processing → completed | failed
 ```
 
-`completed` means the canonical Butler text result is ready. Optional response audio may still be preparing.
-
-Normal processing is:
+`completed` means canonical text/actions are ready; optional speech may still be preparing.
 
 ```text
-accepted request
+interaction complete
       ↓
-load original input + relevant context
-      ↓
-interaction AI call
-      ↓
-receive transcript + proposed updates + response text
-      ↓
-validate/apply supported state changes
-      ↓
-persist canonical conversation/result metadata
+persist text/actions
       ↓
 mark completed + notify client
       ↓
-client can show text
-      │
-      └── TTS continues asynchronously
-              ↓
-          encode/store audio
-              ↓
-          audio becomes ready
+asynchronous shared TTS
+      ↓
+pending → processing → ready | unavailable
 ```
 
-TTS failure must not turn an already completed Butler interaction into a failed request.
+TTS failure never turns an already successful Butler interaction into a failed request.
 
 ---
 
-# Mutation Semantics
+# Shared TTS Service
 
-The AI call must have enough preloaded state to propose the intended mutation without requiring another reasoning round trip after execution.
-
-The backend validates the proposal before applying it. If a proposed mutation is invalid or cannot safely be applied, normal software error/reconciliation behavior handles that condition.
-
-Important mutations remain idempotent where retry is possible.
-
----
-
-# Canonical Result Contract
-
-A completed request conceptually contains:
+Conversation responses, Morning Brief, and Good Night Summary use the same service:
 
 ```text
-request_id
-input_source
-user_message_text
-Butler response text
-response audio state/reference when available
-changed entity metadata when relevant
-completion timestamp
+canonical text
+      ↓
+User/Profile.tts_method
+├── OPEN_SOURCE → Kokoro
+└── OPENAI
+      ├── credits available → OpenAI TTS
+      └── insufficient credits → Kokoro runtime fallback
 ```
 
-One completed request produces one user conversation message and one Butler conversation message. Notification and in-app presentation are surfaces for that same result.
+Do not duplicate provider selection, credit reserve/refund, encoding, storage, or failure policy in feature-specific code. Runtime fallback does not modify the stored TTS preference.
+
+Generated speech remains compatible with the authenticated Ogg/Opus transport/cache contract. Client Listen Aloud and Phone Listen are two playback routes for the same generated asset; the backend does not generate separate audio for each route.
+
+Current implementation boundary: `app.application.speech.SpeechService` owns provider selection, credit reserve/refund, WAV validation, Ogg/Opus encoding, and temporary storage. Request/event audio status tracks speech readiness independently from canonical text.
 
 ---
 
-# Shared Response Audio Service
+# User/Profile, Credits, and User Context
 
-All Butler speech uses the same backend TTS service:
+Profile/settings persistence owns application configuration such as credits and TTS method. User Context owns Butler knowledge about the user's life. Do not create a generic settings table for current scope.
+
+Credits are backend-authoritative Hello Butler product credits. The client cannot set its own balance. OpenAI TTS has an additional credit cost; Kokoro does not.
+
+---
+
+# Notes and Preferences
+
+User Settings exposes user-manageable **Notes & Preferences** through the existing User Context/preference persistence. Do **not** add a standalone Note table or duplicate preference store.
+
+A manageable saved item has:
 
 ```text
-Conversation response ─┐
-Morning Brief ─────────┼──> shared TTS service
-Good Night Summary ────┘
-                              ↓
-                     User/Profile.tts_method
-                      ├── OPEN_SOURCE → Kokoro
-                      └── OPENAI
-                            ├── credits > 0 → OpenAI TTS
-                            └── credits <= 0 → Kokoro
+stable identity
+text / description
+preference semantics (yes/no)
+normal User Context metadata required by existing architecture
 ```
 
-Do not duplicate TTS provider selection, credit handling, encoding, or storage rules in conversation or planning code.
+The exact persistence representation may use an existing type/category or a minimal extension to User Context. Preserve existing architecture rather than creating a parallel entity solely to support the UI.
 
-The runtime fallback must not modify the stored `OPENAI` preference. Provider-specific implementation remains in Infrastructure behind the TTS boundary; application orchestration selects the provider and owns credit policy.
+Semantics are important:
 
-Both providers must produce audio compatible with the existing backend/client audio transport contract. Generated audio is stored temporarily, exposed through the authenticated audio path, and cached by the client.
+- a **preference** may be included as personalization/planning context when relevant;
+- an ordinary **note** is saved/retrievable information and must not automatically be treated as a personalization preference.
 
-Response audio has an independent lifecycle such as `pending → processing → ready | unavailable`. The exact persistence shape may reuse existing request/event metadata; a new table is not required by this decision.
+The API/application boundary must support listing user-manageable saved items and adding, editing, deleting, or changing preference semantics. These operations mutate authoritative User Context.
 
----
+Conversation actions such as `remember_user_context` / `update_user_context` that create or change a user-manageable preference must be visible through the same listing/sync contract. User Settings must therefore not rely on a separate profile-only preference collection.
 
-# User Settings and Credits
-
-The client-facing destination is named **User Settings**. Do not create a separate UserConfig/settings table for the current scope. Extend the existing user/profile persistence and API model with the credit balance and TTS preference. Profile settings are distinct from User Context: User Context describes the user's life and planning context, while Profile controls application behavior.
-
-Credits are Hello Butler product credits, not raw provider token counts. Backend application logic is authoritative for checking and deducting credits. Paid Butler reasoning/planning requires sufficient credits. OpenAI TTS has an additional credit cost; Kokoro/open-source TTS has no additional credit cost. Credit updates must be server-controlled and must not allow the balance to become negative.
-
-User Settings also exposes user-manageable saved Butler preferences using the existing authoritative preference/User Context persistence. The API must support listing the relevant saved preferences and deleting them individually. Deletion removes/updates the authoritative record; do not create a duplicate client-preference store. Only preference records intended for user management are exposed through this list—do not automatically expose routines, temporary/one-time planning context, upcoming-event context, or internal metadata.
-
-The normal client user/profile contract may read credits and read/update `tts_method`, but must not permit the client to arbitrarily set its own credit balance.
+The user-manageable projection excludes routines, temporary/one-time planning context, Upcoming Events, and internal metadata unless product semantics explicitly classify the record as a manageable note/preference.
 
 ---
 
-# Conversation Persistence
+# Synchronization Contract
+
+Backend state is authoritative. The client may cache a user-manageable notes/preferences projection in Room, but reconciliation must converge with User Context.
+
+After relevant conversational mutations, the result/sync metadata should give the client enough information to trigger reconciliation without guessing from response prose. Direct settings mutations return enough stable identity/state for idempotent reconciliation.
+
+Protected endpoints derive identity from verified authentication; client-provided `user_id` is never authority.
+
+---
+
+# Planning and Upcoming Events
+
+Daily Plan / Daily Event lifecycle remains authoritative. Upcoming Events are derived projections of actionable User Context, not persisted domain entities.
+
+Upcoming Events are one planning input among routines, preferences, constraints, existing events, and other context. Mutations resolve to underlying User Context and distinguish occurrence-level exceptions from recurring-rule changes.
+
+Morning Brief and Good Night Summary use the shared TTS service. Ordinary Butler responses remain silent until client playback is selected.
+
+---
+
+# Conversation and Push
 
 Backend conversation text is durable:
 
 ```text
-role=user   → transcript/understood utterance OR submitted typed text
+role=user   → transcript/understood utterance OR submitted text
 role=butler → canonical response text
 ```
 
-Audio is not the permanent server conversation record.
-
----
-
-# Push and Result Fetch
-
-FCM is a wake-up signal, not canonical content. Result fetch and authenticated audio download remain idempotent/retryable. Push failure must not roll back a completed request. Audio readiness is reconciled separately so the client can receive text before speech is ready.
-
----
-
-# Planning, Upcoming Events, and Proactive Speech
-
-The Daily Plan / Daily Event lifecycle remains authoritative.
-
-Upcoming Events are derived projections of actionable User Context, not persisted domain entities. **Do not add an `UpcomingEvent` table/model.** User Context remains authoritative; derive the current/future Upcoming representation when needed for planning or presentation.
-
-Upcoming Events are one planning input among routines, preferences, constraints, existing events, and other relevant User Context. They are not future Daily Plans. Planning may use an Upcoming Event without materializing it as a Daily Event. Daily routines are recurring planning context and are not Upcoming Events.
-
-Only context whose applicable time range is active today or in the future is eligible for Upcoming presentation. For example, "Diet for a week starting September 22" may project an Upcoming Event spanning September 22–28 without requiring a generic Diet Daily Event on every day.
-
-Upcoming Event mutations resolve to the underlying User Context. Update/reschedule/skip/remove must preserve a single source of truth and distinguish occurrence-level exceptions from changes/removal of an entire recurring rule.
-
-Morning Brief and Good Night Summary use the same shared backend TTS service and the user's TTS method. Their backend-generated audio should be available for the client to cache before scheduled playback when practical. Ordinary Butler responses remain silent by default until the user selects playback.
-
----
-
-# Authentication and Persistence
-
-Protected endpoints derive identity from verified authentication; client-provided `user_id` is never authority.
-
-PostgreSQL remains authoritative for users/profile data including credits and TTS preference, User Context, conversation text, Daily Plans/Events, request/result metadata, devices, and synchronization metadata. Temporary audio assets may live outside PostgreSQL with referenced metadata.
+Audio is temporary server data. FCM is a wake-up signal, not canonical content. Result fetch and audio download remain idempotent/retryable; push failure does not roll back a completed request.
 
 ---
 
 # Guiding Rule
 
 ```text
-Rich input + complete relevant context
-              ↓
-       interaction AI call
-              ↓
- transcript + proposed updates
- + canonical response text
-              ↓
- validate/apply → persist → deliver text
-              ↓
-       asynchronous shared TTS
+rich input + authoritative context
+            ↓
+     interaction AI
+            ↓
+validated mutation + canonical text
+            ↓
+       persist/deliver
+            ↓
+ asynchronous shared TTS
 ```
 
-Canonical text delivery must not wait for optional speech generation.
-
----
-
-Implementation: `app.application.speech.SpeechService` owns provider selection, credit reserve/refund, WAV validation, Ogg/Opus encoding, and temporary storage. `ButlerRequestModel.audio_status` and `DailyEventModel.audio_status` track independent speech readiness. Maintenance recovers pending/stale speech; scheduled summaries expose an authenticated event-audio endpoint.
+Keep one authoritative model for each concept, and do not make canonical text delivery wait for optional speech.
