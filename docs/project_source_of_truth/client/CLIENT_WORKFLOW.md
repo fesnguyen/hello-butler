@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.7  
+**Version:** 1.8  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -12,7 +12,6 @@ Hello Butler has one primary product screen:
 
 ```text
 MainScreen
-│
 ├── DailyEventList
 ├── UpcomingDivider
 ├── UpcomingEventList
@@ -23,268 +22,159 @@ MainScreen
     └── Text
 ```
 
-Butler interaction happens over the user's day. There is no separate conversation screen.
+Butler interaction happens over the user's day; there is no separate conversation screen. Upcoming Events appear below Daily Plan and are derived from active/future User Context. They are planning input, not persisted future Daily Plans, and ordinary routines do not appear in Upcoming.
 
-The event surface is ordered as Daily Plan first, then a prominent Upcoming divider, then Upcoming Events derived from active/future User Context. Upcoming Events must not be mixed into today's Daily Event list.
-
-```text
-Daily Plan
-  ├── Daily Event
-  └── Daily Event
-
-════════ Upcoming ════════
-
-Upcoming
-  ├── future/current time-bounded context
-  └── future/current recurring occurrences
-```
-
-Do not display ordinary daily routines in the Upcoming section. Do not assume every Upcoming Event will become a Daily Event; it is planning input and user-visible future context, not a pre-generated Daily Plan.
-
-
-When `Open in App` is selected from a notification, open Main Screen and show the Butler conversation overlay from the bottom at roughly 60–70% screen height as appropriate to the current UI.
+`Open in App` from a notification opens Main Screen with the Butler conversation overlay visible.
 
 ---
 
 # Conversation Overlay
 
-Recent conversation remains visible while the user interacts. Messages should be visually compact and close together.
+Conversation remains visible while the user interacts. Messages stay compact.
 
-For Butler audio responses, duration belongs beside the role/title, for example:
+A Butler message renders canonical text immediately. Response audio may still be preparing.
+
+## Playback controls
+
+Under a Butler response, show two compact horizontal controls rather than tiny bare icons:
 
 ```text
-Butler · 0:08
-Got it. I've moved your meeting to 4 PM.
-[ speaker icon ] [ private-listen icon ]
+[ 🔊 Listen Aloud ]   [ ☎ Phone Listen ]
 ```
 
-Playback icons sit directly under the response text rather than in a large separate action area.
+They should have comfortable touch targets while remaining visually subordinate to the message.
+
+Both controls use the same response audio and have three user-visible states:
+
+```text
+Loading → Ready → Speaking / Stop ■
+```
+
+- **Loading:** speech is pending/downloading/caching. Show progress and prevent duplicate playback requests.
+- **Ready:** show the normal route icon/action.
+- **Speaking:** replace the active route's normal action with a square Stop action; Stop ends playback immediately.
+
+Speaker uses the normal outward route. Phone Listen uses private/call-style routing; it is not a realtime/network call. Only one route plays at a time. Selecting the other route while speaking stops/switches the current playback rather than overlapping it.
 
 ---
 
-# Order / Talk Recording
+# Order / Talk / Text
+
+Order and Talk use press-and-hold recording:
 
 ```text
-press and hold Order or Talk
-        ↓
-small recording animation in user's message area
-        ↓
-conversation remains readable
-        ↓
-release
-        ↓
-local outgoing entry = Sending...
-        ↓
-compressed audio upload
+press and hold → record → release → Sending… → Sent • <time> → reconcile transcript/result
 ```
 
-No extra End button or `Release to send` instruction is required.
+No extra End button or historical user-audio playback is required. Conversation remains readable while recording.
 
-After backend acceptance/handling:
-
-```text
-Sending... → Sent • <time>
-```
-
-After completion, replace the temporary content with the backend transcript. Do not show historical playback for the user's own audio.
+Text uses direct typed composition and no STT. The submitted text appears immediately and follows the same asynchronous result lifecycle as Order/Talk.
 
 ---
 
-# Text Workflow
+# Completion and Sync
 
-Text is now direct typed composition.
-
-```text
-tap Text
-      ↓
-text composer appears/enables inside existing conversation overlay
-      ↓
-user types or edits
-      ↓
-Send
-      ↓
-exact typed text appears as user's message
-      ↓
-request state = Sending...
-      ↓
-backend accepts → Sent
-      ↓
-shared Butler processing completes
-      ↓
-Butler response appended immediately
-```
-
-Text uses no microphone, no local STT, no backend STT, and no intermediate server-generated draft.
-
-The user can edit freely before pressing Send. Once sent, the typed message follows the same asynchronous request/result lifecycle as Order/Talk.
-
----
-
-# One Shared Result Experience
-
-Whether input was audio or typed text, completion results in canonical text first:
-
-```text
-You
-<transcript OR submitted text>
-
-Butler
-<canonical response text>
-[audio may still be pending]
-```
-
-The Butler response becomes normal conversation history immediately. When backend audio becomes ready, the client downloads/caches it and enables the existing speaker/private-listen controls.
-
----
-
-# FCM Completion Flow
+Whether input was audio or text, completion produces canonical text first:
 
 ```text
 FCM completed(request_id)
-          │
-    ┌─────┴─────┐
-    │           │
-foreground   background
-    │           │
-coroutine    WorkManager
-repository
-    │           │
-    └─────┬─────┘
-          ↓
+      ↓
+foreground repository OR background WorkManager
+      ↓
 GET canonical result
-          ↓
+      ↓
 Room persistence
-          ↓
+      ↓
 show text immediately
-          ↓
-reconcile/download audio when ready
+      ↓
+reconcile/download audio independently
 ```
 
-The same completion path applies to audio and text requests. Request completion does not wait for TTS completion.
+FCM is a wake-up signal, not canonical content. Request completion does not wait for TTS. Foreground/background execution must converge on the same Room state and must not duplicate conversation messages.
 
----
-
-# Foreground vs Background
-
-If foreground, persist the result and update the active conversation.
-
-If background/closed, persist the same result and show a notification with the same Butler response text. Opening later must not generate a second response.
-
----
-
-# Ordinary Butler Notification
-
-```text
-Hello Butler
-<canonical response text>
-[speaker icon] [private-listen icon] [Open in App]
-```
-
-The notification may appear before speech is ready. Playback reconciles/downloads backend audio when available.
-
----
-
-# Playback
-
-Speaker icon plays outward through the normal speaker route. Phone icon provides private/call-style listening; it is not a real network call or realtime Butler session.
-
-Both actions use the same cached Butler response audio.
+Ordinary notifications show the same Butler text plus playback actions and `Open in App`. Playback can enter Loading while speech is not ready.
 
 ---
 
 # Morning Brief / Good Night Summary
 
-These are proactive-speech exceptions:
+Both use the shared backend TTS service and the user's TTS method. When due, they may auto-start Listen Aloud and must expose Stop immediately. Do not use Android native TTS as a Butler speech fallback.
 
-```text
-backend prepares content
-   ↓
-shared backend TTS uses user's TTS method
-   ↓
-client downloads/caches audio
-   ↓
-content due
-   ↓
-automatically play cached audio
-   ↓
-Stop available immediately
-   ↓
-Open in App retained
-```
-
-Use the same backend OpenAI/Kokoro TTS selection as normal Butler speech. Do not use Android native `TextToSpeech`/`LocalTextToSpeech` for Morning Brief or Good Night Summary. WorkManager/AlarmManager remain responsible for background reconciliation and scheduled execution, not speech synthesis.
-
-Ordinary Butler messages do not auto-speak.
+Ordinary Butler messages remain silent until the user selects playback.
 
 ---
 
-# Instant Startup
+# Events
+
+Direct Daily Event edits remain deterministic/local-first:
 
 ```text
-user taps app icon
-      ↓
-render usable Main Screen shell
-      ↓
-Order/Talk recording + Text composer interaction available immediately
-      ↓
-background loading continues
-      ├── Room
-      ├── plan sync
-      ├── conversation sync
-      ├── pending responses
-      └── reconciliation
+Room → immediate UI → pending sync → backend reconciliation → Room
 ```
 
-Do not make interaction wait for full synchronization.
+Upcoming Event modify/reschedule/skip/remove actions target their source User Context. Do not create a separate authoritative Upcoming Event record. Recurring context must distinguish occurrence-level changes from rule-level changes.
 
 ---
 
-# Offline
+# User Settings
 
-Order/Talk recordings can be queued for later upload. Typed requests can be queued similarly when network is unavailable. The UI keeps pending state understandable without requiring the user to remain in the app.
+The destination is **User Settings**, containing account information, credits, TTS selection, and **Notes & Preferences**.
+
+Credits are backend-authoritative and read-only on the client. TTS method is editable through the existing profile/settings contract. Android does not calculate/deduct credits.
+
+## Notes & Preferences
+
+Use one user-manageable list backed by the existing authoritative User Context/preference persistence:
+
+```text
+Notes & Preferences                         [ + Add ]
+
+Preference
+I love going to the beach when I have a day off.
+
+Note
+Remember to ask John about the old laptop.
+```
+
+A saved item has required description/text and an **Is preference** switch. No title is required in the current design.
+
+Adding/editing opens a compact editor with:
+
+```text
+Description
+[................................]
+
+Is preference   [ on/off ]
+
+[Save]
+```
+
+A preference may influence Butler personalization/planning when relevant. An ordinary note remains saved/retrievable but is not automatically treated as a personalization preference.
+
+Users can add, edit, delete, and change the preference status of an item. These actions mutate backend-authoritative User Context; do not maintain a separate client-only notes/preferences store. Only user-manageable notes/preferences are listed—exclude routines, temporary/one-time planning context, Upcoming Events, and internal metadata.
+
+## Preference synchronization
+
+A preference remembered through conversation must appear in User Settings without manual refresh. Likewise, direct User Settings mutations must affect the context Butler subsequently receives.
+
+```text
+conversation mutation ─┐
+                      ├→ backend User Context → repository sync → Room → User Settings
+settings mutation ─────┘
+```
+
+Use the normal repository/Room reconciliation pattern and idempotent upserts. Trigger/queue reconciliation after relevant successful Butler mutations and during normal startup/background sync so the list converges even after process/network interruption.
 
 ---
 
-# Direct Event Configuration
+# Startup and Offline
 
-Direct Daily Event edits remain deterministic/local-first and bypass Butler AI: update Room, update UI, queue sync, then reconcile with backend.
+Render a usable Main Screen and enable Order/Talk/Text before full synchronization completes. Background work loads Room-backed data, syncs plans/context/conversation, fetches pending responses, and reconciles audio.
 
-Upcoming Events provide comparable modify/reschedule/skip/remove controls, but the operation targets their source User Context rather than creating/updating a separate Upcoming Event record. Recurring items must allow the backend/domain behavior to distinguish one-occurrence changes from changes to the recurring rule.
-
----
-
-# User Settings, Credits, TTS, and Preferences
-
-Rename the previous **Profile** menu/destination to **User Settings**. Account information, credits, TTS selection, and user-manageable saved Butler preferences are presented there.
-
-```text
-Profile
-├── existing account/profile information
-├── Credits        read-only
-└── TTS Method     editable
-    ├── Open Source
-    └── OpenAI
-```
-
-Saved preferences are presented as a compact list:
-
-```text
-Preferences
-Prefers concise morning briefs...
-Avoid meetings before 9 AM...
-Usually exercises after work...
-```
-
-Each preference occupies one line and truncates overflow with an ellipsis. Tapping a row opens a detail popup/dialog with the complete preference. The dialog provides an individual Delete action; deletion is confirmed, sent to the backend authoritative preference/User Context mutation path, and the list is refreshed/reconciled after success. Only user-manageable saved preferences belong here, not all User Context categories.
-
-The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
-
-The UI should explain that Open Source speech does not add TTS credit cost while OpenAI speech consumes additional credits. A zero balance does not prevent selecting OpenAI and does not rewrite the preference: the backend resolves OpenAI to open-source TTS at runtime while credits are unavailable.
-
-Response playback remains based on backend-generated audio. Android native TTS is not the fallback for Butler speech; if backend TTS is unavailable, canonical response text remains usable.
+Pending audio/text uploads and direct mutations may be queued for WorkManager retry. Correctness must not depend on manual Refresh.
 
 ---
 
 # Guiding UI Principle
 
-Butler should feel continuously present without becoming visually heavy. Audio and typed input differ only in how the user sends the message; the conversation, completion, notification, response audio, and history experience remain unified.
+Butler should feel continuously present without becoming visually heavy. Keep controls comfortably tappable, keep canonical text available before optional speech, and expose one coherent saved-context experience instead of separate disconnected preference/note stores.
