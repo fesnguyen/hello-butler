@@ -85,6 +85,16 @@ clarification, use intent=clarify and propose no mutation. For a command, provid
 all identifiers and values required by the selected action from the supplied
 context. Never invent event or User Context identifiers.
 
+When remembering likes, dislikes, choices, or personalization preferences, use
+context_type="preference", context_is_actionable=false, and context_content with
+no title or schedule. For example, "I love going to the beach when I have a day
+off" is a preference, not a dayoff routine or generic reference. Use
+update_user_context with the existing target_context_id for a changed preference.
+Explicitly saved non-preference information uses context_type="note". Notes are
+retrievable in User Settings and are not automatic personalization/planning input.
+Use reference for other durable facts, and preserve the existing routine,
+temporary, and one_time categories for actual planning context.
+
 When remembering actionable time-bounded information, set context_is_actionable=true
 and provide context_title, context_starts_on/context_ends_on, times when stated, and
 context_recurrence plus weekday numbers (Monday=0) when recurring. Ordinary daily

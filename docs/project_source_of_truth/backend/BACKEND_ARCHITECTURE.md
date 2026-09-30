@@ -144,6 +144,11 @@ Conversation actions such as `remember_user_context` / `update_user_context` tha
 
 The user-manageable projection excludes routines, temporary/one-time planning context, Upcoming Events, and internal metadata unless product semantics explicitly classify the record as a manageable note/preference.
 
+Implementation uses the existing string `context_type`: `preference` or `note`, with non-actionable records only. No PostgreSQL schema change is required. `GET /api/user-settings/saved-context` returns this projection; `PUT /saved-context/{id}` accepts content, is_preference, and base_version (0 for creation); `DELETE /saved-context/{id}?base_version=…` soft-deletes. UUIDs are stable, create retries are idempotent, and stale conflicting edits return 409. The legacy account preference-deletion contract remains compatible with older clients.
+
+Ordinary notes are excluded from automatic interaction/day-planning/evening context loading and remain retrievable through User Settings. Existing generic `reference` rows are not guessed to be preferences or reclassified automatically; an explicit Butler update can classify a known record as a preference.
+
+
 ---
 
 # Synchronization Contract

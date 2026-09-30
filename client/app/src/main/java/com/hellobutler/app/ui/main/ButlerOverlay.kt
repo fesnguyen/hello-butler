@@ -11,6 +11,11 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import com.hellobutler.app.execution.ButlerPlayback
+import com.hellobutler.app.execution.PlaybackPhase
+import com.hellobutler.app.execution.playbackPhase
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -27,6 +32,7 @@ fun ButlerConversationOverlay(
     onDraftChanged: (String) -> Unit,
     onSendText: () -> Unit,
     onPlay: (requestId: String, private: Boolean) -> Unit,
+    onStop: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -60,7 +66,7 @@ fun ButlerConversationOverlay(
                 contentPadding = PaddingValues(bottom = 4.dp),
             ) {
                 items(visibleMessages, key = { it.id }) {
-                    ConversationBubble(it, onPlay)
+                    ConversationBubble(it, onPlay, onStop)
                 }
 
                 if (state.recording) {
@@ -97,7 +103,8 @@ private fun RecordingBubble() {
 }
 
 @Composable
-private fun ConversationBubble(message: ConversationMessageEntity, onPlay: (requestId: String, private: Boolean) -> Unit) {
+private fun ConversationBubble(message: ConversationMessageEntity, onPlay: (requestId: String, private: Boolean) -> Unit, onStop: () -> Unit) {
+    val playback by ButlerPlayback.state.collectAsState()
     val fromUser = message.role == "user"
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (fromUser) Arrangement.End else Arrangement.Start) {
         Surface(Modifier.widthIn(max = 290.dp), shape = RoundedCornerShape(18.dp), color = if (fromUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant) {
@@ -111,10 +118,33 @@ private fun ConversationBubble(message: ConversationMessageEntity, onPlay: (requ
                     when (message.deliveryState) { "sending" -> "Sending…"; "sent" -> "Sent • ${messageTime(message.createdAt)}"; "failed" -> "Waiting for connection"; else -> message.deliveryState },
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .7f),
                 )
-                if (!fromUser && (message.responseAudioUrl != null || message.audioCacheState == "pending" || message.audioCacheState == "cached")) Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    IconButton(onClick = { onPlay(message.requestId, false) }) { Icon(Icons.Outlined.VolumeUp, "Play Butler response aloud") }
-                    IconButton(onClick = { onPlay(message.requestId, true) }) { Icon(Icons.Outlined.Call, "Listen privately through the earpiece") }
+                if (!fromUser && message.audioCacheState !in setOf("none", "unavailable")) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        listOf(false, true).forEach { private ->
+                            val phase = playbackPhase(message.requestId, private, message.audioCacheState, playback)
+                            TextButton(
+                                onClick = { if (phase == PlaybackPhase.SPEAKING) onStop() else onPlay(message.requestId, private) },
+                                enabled = phase != PlaybackPhase.LOADING,
+                                modifier = Modifier.heightIn(min = 48.dp).weight(1f),
+                                contentPadding = PaddingValues(horizontal = 6.dp, vertical = 4.dp),
+                            ) {
+                                if (phase == PlaybackPhase.LOADING) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                else Icon(when {
+                                    phase == PlaybackPhase.SPEAKING -> Icons.Outlined.Stop
+                                    private -> Icons.Outlined.Call
+                                    else -> Icons.Outlined.VolumeUp
+                                }, null, Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text(when (phase) {
+                                    PlaybackPhase.LOADING -> "Loading…"
+                                    PlaybackPhase.SPEAKING -> "Stop"
+                                    else -> if (private) "Phone Listen" else "Listen Aloud"
+                                }, style = MaterialTheme.typography.labelSmall, maxLines = 1)
+                            }
+                        }
+                    }
                 }
+
             }
         }
     }

@@ -47,6 +47,7 @@ class AppContainer(context: Context) {
             context.stopService(android.content.Intent(context, com.hellobutler.app.execution.ButlerAudioPlaybackService::class.java))
             dailyEventRepository.clear()
             butlerRepository.clear()
+            userSettingsRepository.clear()
         },
     )
     val pushApi: PushApi = retrofit.create(PushApi::class.java)
@@ -60,11 +61,11 @@ class AppContainer(context: Context) {
         eventScheduler,
         json,
     )
+    val userSettingsRepository = UserSettingsRepository(
+        retrofit.create(UserSettingsApi::class.java), authRepository, database.savedContextDao(),
+    )
     val butlerRepository = ButlerRepository(
         context.applicationContext, database, retrofit.create(ButlerApi::class.java),
-        authRepository, dailyEventRepository,
-    )
-    val userSettingsRepository = UserSettingsRepository(
-        retrofit.create(UserSettingsApi::class.java), authRepository,
+        authRepository, dailyEventRepository, userSettingsRepository,
     )
 }

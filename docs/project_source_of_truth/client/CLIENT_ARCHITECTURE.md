@@ -244,7 +244,7 @@ Conversation messages keep the UI compact:
 ```text
 Butler · 0:08
 <response text>
-[speaker icon] [phone/private-listen icon]
+[Listen Aloud] [Phone Listen]
 ```
 
 Playback controls stay directly under the response rather than occupying large separate UI areas.
@@ -301,7 +301,9 @@ Profile
     └── OpenAI
 ```
 
-User Settings also shows the user's saved Butler preferences from the backend-authoritative preference/User Context model. Render one preference per line with long content ellipsized. Selecting a row opens a detail dialog/popup with the full preference and an individual Delete action. Confirm destructive deletion, call the backend authoritative delete/mutation path, then reconcile local state. Do not treat unrelated User Context types as editable saved preferences.
+User Settings displays **Notes & Preferences** from the backend's user-manageable User Context projection. Each row has description text and an Is preference switch; Add, edit, and confirmed delete mutate the same backend records. Account/TTS Save does not submit or replace this list.
+
+`UserSettingsRepository` reconciles stable IDs into the Room `saved_context` cache (database version 5, additive 4→5 migration). The screen observes Room. Structured `user_context` changes trigger reconciliation after conversation text is persisted; the existing `DailySyncWorker` also reconciles at startup and periodically. Full snapshots remove absent/deleted records. Logout clears the cache. Mutations require connectivity, retain the editor on failure, and use the same UUID on retry; this cache is not another authoritative persistence model.
 
 The client fetches and displays the backend-authoritative credit balance. It must never calculate, deduct, or directly modify credits. The TTS method is editable and persisted through the profile API.
 

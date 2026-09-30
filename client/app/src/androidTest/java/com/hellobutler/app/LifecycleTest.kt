@@ -9,12 +9,14 @@ import com.hellobutler.app.auth.SecureSessionStore
 import com.hellobutler.app.data.local.ButlerDatabase
 import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.data.remote.*
+import com.hellobutler.app.data.repository.UserSettingsRepository
 import com.hellobutler.app.data.repository.ButlerRepository
 import com.hellobutler.app.data.repository.DailyEventRepository
 import com.hellobutler.app.execution.DailyEventScheduler
 import java.io.File
 import java.time.LocalDate
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
@@ -33,6 +35,8 @@ class LifecycleTest {
     private lateinit var store: SecureSessionStore
     private lateinit var auth: AuthRepository
     private lateinit var events: DailyEventRepository
+    private lateinit var settings: UserSettingsRepository
+    private val settingsApi = FakeUserSettingsApi()
     private val today = LocalDate.now().toString()
 
     @Before
@@ -42,6 +46,7 @@ class LifecycleTest {
         database = Room.inMemoryDatabaseBuilder(context, ButlerDatabase::class.java).build()
         auth = AuthRepository(FakeAuth(), store, {}, {})
         auth.login("test@example.test", "password")
+        settings = UserSettingsRepository(settingsApi, auth, database.savedContextDao())
         events = DailyEventRepository(context, database, UnusedSync(), UnusedPlanning(), auth, DailyEventScheduler(context), Json, enqueueSync = {})
     }
 
@@ -56,7 +61,7 @@ class LifecycleTest {
                 return Response.success(202, ButlerAcceptedDto(request.requestId, "accepted"))
             }
         }
-        val repository = ButlerRepository(context, database, api, auth, events)
+        val repository = ButlerRepository(context, database, api, auth, events, settings)
         val exact = "  Move my meeting to 4 PM.  "
         val requestId = repository.queueText(exact)
         assertEquals(exact, database.butlerConversationDao().message(requestId, "user")?.text)
@@ -73,7 +78,7 @@ class LifecycleTest {
                     createdAt = "2026-09-12T11:59:00Z", userMessageText = "Hello", responseText = "Got it.", completedAt = "2026-09-12T12:00:00Z")
             )
         }
-        val repository = ButlerRepository(context, database, api, auth, events)
+        val repository = ButlerRepository(context, database, api, auth, events, settings)
         val requestId = repository.queueText("Hello")
         assertTrue(repository.reconcile(requestId)); assertTrue(repository.reconcile(requestId))
         assertEquals("Hello", database.butlerConversationDao().message(requestId, "user")?.text)
@@ -81,9 +86,28 @@ class LifecycleTest {
     }
 
     @Test
+    fun changedContextReconcilesEvenWhileTtsIsPendingOrUnavailable() = runBlocking {
+        settingsApi.items = listOf(SavedContextDto("preference-1", "Beach on days off", true, 1))
+        for (audioStatus in listOf("pending", "unavailable")) {
+            val api = object : EmptyButlerApi() {
+                override suspend fun result(authorization: String, requestId: String) = Response.success(
+                    ButlerResultDto(requestId = requestId, status = "completed", inputSource = "text", interactionMode = "talk",
+                        createdAt = "2026-09-30T00:00:00Z", userMessageText = "I love the beach", responseText = "Remembered.",
+                        audioStatus = audioStatus, changedEntities = listOf(ChangedEntityDto("user_context", "preference-1")))
+                )
+            }
+            val repository = ButlerRepository(context, database, api, auth, events, settings)
+            val id = repository.queueText("I love the beach")
+            repository.reconcile(id)
+            assertEquals("Remembered.", database.butlerConversationDao().message(id, "butler")?.text)
+            assertEquals("preference-1", settings.observeContext().first().single().id)
+        }
+    }
+
+    @Test
     fun audioRequestMovesRecordingIntoDurableQueue() = runBlocking {
-        val recording = File(context.cacheDir, "test-recording.m4a").apply { writeBytes(byteArrayOf(1, 2, 3)) }
-        val repository = ButlerRepository(context, database, EmptyButlerApi(), auth, events)
+        val recording = File(context.cacheDir, "test-recording.ogg").apply { writeBytes("OggS".encodeToByteArray() + ByteArray(24) + "OpusHead".encodeToByteArray()) }
+        val repository = ButlerRepository(context, database, EmptyButlerApi(), auth, events, settings)
         val requestId = repository.queueAudio("order", recording)
         val request = database.butlerConversationDao().request(requestId)
         assertNotNull(request); assertTrue(File(request!!.localAudioPath!!).isFile); assertFalse(recording.exists())

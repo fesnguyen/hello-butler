@@ -255,6 +255,7 @@ fun MainScreen(
                         onDraftChanged = viewModel::editDraft,
                         onSendText = viewModel::sendText,
                         onPlay = { requestId, private -> ButlerAudioPlaybackService.play(context, requestId, private) },
+                        onStop = { ButlerAudioPlaybackService.stop(context) },
                         onClose = viewModel::dismissOverlay,
                         modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
                     )

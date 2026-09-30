@@ -19,13 +19,14 @@ class DailySyncWorker(appContext: Context, params: WorkerParameters) : Coroutine
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
         val today = LocalDate.now()
-        return runCatching {
+        val contextSync = runCatching { container.userSettingsRepository.synchronize() }
+        val eventSync = runCatching {
             container.dailyEventRepository.synchronize(
                 listOf(today.toString(), today.plusDays(1).toString()) +
                     inputData.getStringArray("plan_dates").orEmpty().toList()
             )
-            Result.success()
-        }.getOrElse { Result.retry() }
+        }
+        return if (contextSync.isSuccess && eventSync.isSuccess) Result.success() else Result.retry()
     }
 
     companion object {

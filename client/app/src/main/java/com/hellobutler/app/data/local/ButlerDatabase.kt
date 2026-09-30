@@ -8,8 +8,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
 @Database(
-    entities = [DailyPlanEntity::class, DailyEventEntity::class, PendingSyncOperationEntity::class, ButlerRequestEntity::class, ConversationMessageEntity::class],
-    version = 4,
+    entities = [DailyPlanEntity::class, DailyEventEntity::class, PendingSyncOperationEntity::class, ButlerRequestEntity::class, ConversationMessageEntity::class, SavedContextEntity::class],
+    version = 5,
     exportSchema = false,
 )
 abstract class ButlerDatabase : RoomDatabase() {
@@ -17,6 +17,8 @@ abstract class ButlerDatabase : RoomDatabase() {
     abstract fun dailyPlanDao(): DailyPlanDao
     abstract fun pendingSyncOperationDao(): PendingSyncOperationDao
     abstract fun butlerConversationDao(): ButlerConversationDao
+
+    abstract fun savedContextDao(): SavedContextDao
 
     companion object {
         @Volatile private var instance: ButlerDatabase? = null
@@ -26,7 +28,13 @@ abstract class ButlerDatabase : RoomDatabase() {
                 context.applicationContext,
                 ButlerDatabase::class.java,
                 "hello_butler.db",
-            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4).build().also { instance = it }
+            ).addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).build().also { instance = it }
+        }
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS saved_context (id TEXT NOT NULL PRIMARY KEY, content TEXT NOT NULL, isPreference INTEGER NOT NULL, version INTEGER NOT NULL)")
+            }
         }
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {

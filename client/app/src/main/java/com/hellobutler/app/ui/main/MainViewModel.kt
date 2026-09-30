@@ -119,6 +119,7 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     fun refreshPreparedDays() {
         viewModelScope.launch {
             val dates = listOf(LocalDate.now(), LocalDate.now().plusDays(1))
+            eventsRepository.queueSynchronization(dates.map(LocalDate::toString))
             runCatching { eventsRepository.synchronize(dates.map(LocalDate::toString)) }
                 .onFailure { error -> _state.update { it.copy(error = error.message ?: "Plan sync failed") } }
         }

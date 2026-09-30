@@ -46,6 +46,7 @@ class UserContextActions:
                 recurrence=decision.context_recurrence,
                 recurrence_days=decision.context_recurrence_days or [],
             )
+            self._validate_saved_context(entry)
             session.add(entry)
             changed = ChangedEntity(type="user_context", id=entry.id)
             result = ButlerResult(
@@ -102,6 +103,7 @@ class UserContextActions:
                 changed = True
             if not changed:
                 raise ButlerMutationRejectedError("User Context update contains no changes")
+            self._validate_saved_context(entry)
             entry.version += 1
 
             entity = ChangedEntity(type="user_context", id=entry.id)
@@ -111,6 +113,25 @@ class UserContextActions:
             save_action_result(session, state, result)
 
         return {"result": result}
+
+    @staticmethod
+    def _validate_saved_context(entry: UserContextEntryModel) -> None:
+        if entry.context_type not in ("note", "preference"):
+            return
+        if not entry.content.strip():
+            raise ButlerMutationRejectedError("Saved context requires a description")
+        if (
+            entry.is_actionable
+            or entry.starts_on is not None
+            or entry.ends_on is not None
+            or entry.recurrence is not None
+            or entry.start_time is not None
+            or entry.end_time is not None
+        ):
+            raise ButlerMutationRejectedError(
+                "Notes and preferences cannot carry planning schedules"
+            )
+        entry.content = entry.content.strip()
 
     async def mutate_upcoming(self, state: ButlerState) -> ButlerStateUpdate:
         decision = decision_from(state)
