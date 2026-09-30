@@ -1,7 +1,7 @@
 # Personal Butler
 
 **Document:** Project Overview  
-**Version:** 1.7  
+**Version:** 1.8  
 **Status:** Source of Truth
 
 ---
@@ -38,44 +38,17 @@ Good Night Summary
 Prepare Tomorrow
 ```
 
-Daily Events remain the concrete representation of the user's day. User Context describes durable, recurring, temporary, or one-time information that helps Butler prepare and adapt that day.
+Daily Events represent the user's day. User Context stores durable, recurring, temporary, one-time, preference, and note-like information that Butler can use or present as appropriate.
 
 ### Daily Events, Upcoming Events, and routines
 
-An **Upcoming Event** is actionable, time-bounded information projected from User Context for a period that is active today or still in the future. It is not a new persistence entity: do **not** create an `UpcomingEvent` table/model. User Context remains the source of truth.
+An **Upcoming Event** is actionable, time-bounded information projected from User Context for a period active today or in the future. It is not a persistence entity: do **not** create an `UpcomingEvent` table/model.
 
-```text
-User Context
-├── routines / preferences / reference information
-└── actionable time-bounded information
-        ↓
-   Upcoming Events
-        ↓ one planning input among others
-Daily Planning
-├── routines
-├── Upcoming Events
-├── preferences / constraints
-├── existing events
-└── other relevant context
-        ↓
-Daily Plan → Daily Events
-```
+Upcoming Events are one input to Daily Planning, alongside routines, preferences, constraints, existing events, and other relevant context. Not every Upcoming Event becomes a Daily Event, and Daily Plans are not generated only from Upcoming Events.
 
-Upcoming Events are a source for Daily Plan generation, **not pre-generated future Daily Plans**. Not every Upcoming Event must become a Daily Event, and Daily Plans are not generated only from Upcoming Events.
+A daily routine is not an Upcoming Event. Only active/future time-bounded context is displayed as Upcoming. Mutating an Upcoming Event updates its underlying User Context or occurrence/exception semantics rather than creating another authoritative record.
 
-A daily routine is **not** an Upcoming Event. Routines remain recurring planning context; when a routine applies to a day, planning may materialize appropriate Daily Events for that day.
-
-Examples:
-- "Dentist next Tuesday at 15:00" can project one Upcoming Event.
-- "Meet the client every day at 15:00 this week" remains recurring User Context. Today's applicable occurrence may be represented in today's Daily Events while future applicable occurrences are shown as Upcoming Events.
-- "Diet for a week starting September 22" can project one Upcoming Event covering September 22–28. It influences planning while active/relevant but does not require a generic "Diet" Daily Event every day.
-
-Only Upcoming Events whose applicable period is active today or in the future are displayed. Expired items are not shown.
-
-Upcoming Events are user-actionable like Daily Events: they can be modified, rescheduled, skipped when meaningful, or removed. Those operations update the underlying User Context or the appropriate occurrence/exception semantics; they must not create a second authoritative Upcoming Event record. For recurring context, distinguish an occurrence-level change such as "cancel tomorrow's client meeting" from a rule-level change such as "stop these client meetings."
-
-On the Main Screen, Upcoming Events are displayed **below the Daily Plan**, separated from Daily Events by a clear, eye-catching divider/section boundary.
-
+On Main Screen, Upcoming Events appear below Daily Plan behind a clear section boundary.
 
 ---
 
@@ -84,278 +57,179 @@ On the Main Screen, Upcoming Events are displayed **below the Daily Plan**, sepa
 The client exposes three persistent controls:
 
 ```text
-Order
-Talk
-Text
-```
-
-They are three ways to interact with one Butler, not three assistants and not three reasoning systems.
-
-```text
-Order → recorded audio; handle this for me; I may leave immediately
+Order → recorded audio; handle this for me
 Talk  → recorded audio; I am actively talking with Butler
-Text  → typed/editable text; send what I wrote to Butler
+Text  → typed/editable text
 ```
 
-Order and Talk use recorded audio as their normal input transport. Text uses direct typed text and does not record audio or use local STT.
+They are three input modes for one Butler, not separate assistants or reasoning systems. Order/Talk preserve original audio through the multimodal understanding call; Text uses submitted text directly.
 
 ---
 
-## Correct AI Input/Output Contract
+## Butler Interaction Contract
 
-For Order/Talk, the original recorded audio must remain part of the Butler AI input. The backend combines that audio with textual context before calling the audio-capable multimodal model.
-
-```text
-Order / Talk audio
-        +
-textual Butler context
-        ├── recent conversation
-        ├── User Context / preferences
-        ├── relevant Daily Plan / Events
-        ├── now / timezone
-        ├── interaction mode
-        └── Butler instructions
-        ↓
-audio-capable multimodal Butler model
-        ↓
-canonical result
-        ├── user transcript / understood utterance text
-        ├── structured intent / action decision when needed
-        ├── Butler response text
-        └── Butler response audio generated later from canonical text
-```
-
-The normal architecture must **not** reduce Order/Talk to a standalone STT result and then use that transcript as the only semantic input to a text-only Butler model.
-
-A transcript is still required for conversation history and display, but it is an output/artifact of the multimodal interaction, not the sole reasoning boundary.
-
-Original audio and text context go into one understanding call; the separate optional TTS call receives only the finalized canonical text.
-
----
-
-## Text Interaction
-
-Text remains direct composition:
+The backend combines the user's input with relevant Butler context before the understanding call:
 
 ```text
-tap Text
-   ↓
-type/edit text
-   ↓
-Send
-   ↓
-backend combines typed text + Butler context
-   ↓
-shared Butler reasoning/application behavior
-   ↓
-canonical Butler response text; optional audio follows asynchronously
-```
-
-Text does not record audio and does not use STT.
-
-Order/Talk and Text may have different input payloads, but they still share one Butler product behavior, one asynchronous request lifecycle, one domain/action layer, and one canonical result model.
-
----
-
-## One Interaction, One Conversation Result
-
-A completed Butler interaction becomes:
-
-```text
-one user message
+input (original audio OR typed text)
 +
-one Butler message
+recent conversation
+User Context / preferences
+relevant Daily Plan / Events
+now / timezone
+interaction mode
+Butler instructions
+      ↓
+multimodal Butler model
+      ↓
+user_message_text
+supported proposed mutation
+canonical response_text
 ```
 
-For audio input, the user message is the model-produced transcript/understood utterance text. For text input, it is the exact submitted text.
+Application/domain code validates and persists state changes. The AI does not write state directly.
 
-The Butler message contains canonical response text; associated audio is added when the shared TTS service finishes.
+For audio, `user_message_text` is the model-produced transcript/understood utterance. For Text, it is the submitted text. One completed interaction becomes one user message plus one Butler message.
 
-There is no separate in-app response and notification response. A notification is only another presentation surface for the same Butler message.
+TTS is separate from understanding. Canonical response text is persisted and delivered before optional speech finishes.
 
 ---
 
-## Asynchronous Request Lifecycle
+## Asynchronous Request and Speech Lifecycle
 
 ```text
-POST audio OR POST text → 202 + request_id
+POST audio/text → 202 + request_id
       ↓
-AI processes the original input and Butler context
+understand + apply validated actions
       ↓
-validate/apply domain actions and persist canonical conversation text
+persist canonical conversation text
       ↓
-mark request completed + FCM completed(request_id)
+request completed + notify client
       ↓
-client fetches and displays text immediately
+client displays text immediately
       ↓
-shared backend TTS prepares audio asynchronously
+shared backend TTS prepares speech
       ↓
-audio status: pending → processing → ready | unavailable
-      ↓
-client reconciles, downloads, and caches Ogg/Opus when ready
+audio: pending → processing → ready | unavailable
 ```
 
-Text completion is independent of speech preparation. FCM is a wake-up signal, not a canonical response or audio transport. A TTS failure leaves the completed text and actions intact.
+FCM is a wake-up signal, not canonical content or audio transport. TTS failure never invalidates successful text/actions.
 
----
-
-## Response Delivery Rule
-
-The authenticated result exposes canonical text and an independent `audio_status`. It includes an audio URL only when speech is ready. The client renders completed text before downloading audio and retries pending audio in the background. Backend audio is temporary; the client's cache supports later playback.
-
----
-
-## Foreground and Background Completion
-
-```text
-                    FCM completed
-                         │
-            ┌────────────┴────────────┐
-            │                         │
-       app foreground            app background
-            │                         │
-   coroutine / repository         WorkManager
-            │                         │
-            └────────────┬────────────┘
-                         ↓
-                 Retrofit / OkHttp
-                         ↓
-              GET canonical result
-                         ↓
-          Room text + audio reconciliation
-```
-
-Foreground/background only changes how Android executes work. It must not change the product result.
+All Butler-generated speech uses the shared TTS service, including conversation responses, Morning Brief, and Good Night Summary. The stored TTS preference selects Open Source/Kokoro or OpenAI; insufficient OpenAI TTS credits cause a runtime Kokoro fallback without changing the stored preference.
 
 ---
 
 ## Recorded Voice UI
 
-Hello Butler does not use a continuous live-call conversation model for normal interaction.
-
-For Order and Talk:
+Order and Talk use press-and-hold recording:
 
 ```text
-press and hold
-      ↓
-record compressed audio locally
-      ↓
-release
-      ↓
-upload complete audio request
-      ↓
-Sending...
-      ↓
-Sent • <time>
-      ↓
-completed result
-      ↓
-replace temporary user content with transcript
+press and hold → record → release → upload → Sending… → Sent • <time> → reconcile transcript/result
 ```
 
-Conversation history remains visible while recording. The user has no normal need to replay their own recorded request.
+Conversation remains visible while recording. Text uses direct composition and no STT.
 
 ---
 
-## Response Audio
+## Response Audio Controls
 
-A Butler message exposes compact playback actions:
+Each Butler message provides two compact but clearly tappable **horizontal playback controls**:
 
 ```text
-speaker icon → play aloud
-phone icon   → private/call-style listening
+Listen Aloud   → normal speaker route
+Phone Listen   → private/call-style audio route
 ```
 
-The client shows completed text immediately and starts audio reconciliation. It downloads and caches speech when the backend reports it ready. If playback is selected while speech is pending, wait for readiness before playing.
-
----
-
-## Notification Behavior
-
-Ordinary Butler-response notifications contain the same canonical response text and expose:
+The phone action is only a listening route, not a real network call or realtime Butler session. Both actions use the same Butler response audio and each exposes the same user-visible lifecycle:
 
 ```text
-speaker icon
-phone / private-listen icon
-Open in App
+Loading → Ready → Speaking
+                    ↓
+                 [Stop ■]
 ```
 
-`Open in App` opens the single Main Screen with the Butler conversation overlay visible; there is no separate conversation screen.
+- **Loading:** audio is being prepared, fetched, or cached; prevent duplicate playback requests.
+- **Ready:** show the normal playback action.
+- **Speaking:** replace the playback icon/action with a square Stop action that immediately stops playback.
+
+The controls must have a comfortable touch target and be visibly wider than bare icons without turning the message into a large action panel. Only one playback route owns the audio at a time; starting the other route stops/switches the current playback rather than overlapping audio.
+
+Morning Brief and Good Night Summary may auto-start Listen Aloud when due and must expose Stop immediately. Ordinary Butler responses remain silent until playback is selected.
 
 ---
 
-## Morning Brief and Good Night Summary
+## User Settings
 
-Morning Brief and Good Night Summary are proactive-speech exceptions. When due, they automatically begin Speak Aloud playback. The user must always be able to Stop immediately, and the notification retains `Open in App`.
+The client destination is **User Settings**. It contains account information, read-only credits, editable TTS method, and user-manageable saved context.
 
-Ordinary Butler responses remain silent by default.
+Backend profile persistence remains authoritative for account/configuration data. User Context remains authoritative for Butler knowledge about the user's life. Do not create a generic settings table or a separate notes/preferences table for this scope.
 
----
+### Notes and Preferences
 
-## Audio Storage and Retention
+User Settings presents a single manageable saved-context area containing **Notes and Preferences**.
+
+A saved item requires only its text/description. No title is required in the current design. It also carries the semantic distinction of whether it is a preference:
 
 ```text
-Client
-- stores Butler response audio locally for conversation playback
-
-Backend
-- stores uploaded Order/Talk audio only as temporary processing input
-- stores completed Butler response audio long enough for client retrieval/recovery
-- removes old input and response audio regularly
+Saved item
+├── description      required
+└── is preference    yes / no
 ```
 
-Conversation text is the durable cross-device record. After reinstall, old text may be restored while old audio may no longer exist after server retention expires.
+Use the existing User Context/preference persistence and domain boundary. Do **not** create a new `Note` table/entity solely for this feature. If the existing persistence needs a type/flag to distinguish ordinary notes from preferences, extend/reuse that model rather than duplicating storage.
 
----
+Semantics:
 
-## Instant App Startup
+- **Preference:** information about the user's likes, dislikes, habits, or choices that Butler may use for personalization/planning when relevant.
+- **Note:** user-saved information that should remain retrievable/manageable but must not automatically be treated as a personalization preference.
 
-The app must become usable immediately after launch.
+Example: conversationally telling Butler, "I love going to the beach when I have a day off," may create/update a preference. That same authoritative item must appear in User Settings after synchronization.
+
+Users can add a note directly from User Settings, edit/delete saved items, and switch whether an item is a preference. Mutations update the same backend source used by Butler; there is no client-only preference/note store.
+
+Only user-manageable notes/preferences belong in this list. Do not expose routines, temporary planning context, Upcoming Events, or internal metadata merely because they share User Context persistence.
+
+### Preference synchronization
+
+Preferences remembered through Butler conversation and preferences/notes changed directly in User Settings must converge on the same backend state:
 
 ```text
-APP LAUNCH
-    │
-    ├── critical path
-    │     ├── render Main Screen shell
-    │     ├── enable Order/Talk recording immediately
-    │     └── make Text composer available immediately
-    │
-    └── background path
-          ├── load/sync Daily Plan
-          ├── load conversation history
-          ├── fetch pending results
-          └── reconcile other data
+Butler conversation ─┐
+                     ├→ authoritative User Context → sync/API → Room/cache → User Settings
+User Settings ───────┘
 ```
+
+Synchronization requires no manual Refresh. After a successful conversational or direct mutation, the client reconciles the saved-context list using the same repository/cache pattern used elsewhere in the app. Editing/deleting an item from User Settings changes what Butler subsequently sees as authoritative context.
 
 ---
 
-## Backend and Client Boundary
+## Credits and TTS Method
 
-### Backend owns
+Credits are Hello Butler product credits, not raw provider token counts. Backend policy owns checks/deductions; the client only displays balance.
 
-- Butler reasoning
-- multimodal understanding of uploaded Order/Talk audio together with textual context
-- transcript/understood utterance text for audio messages
-- User Context / conversation / Daily Plan context assembly
-- domain action orchestration and validation
-- conversation text history
-- canonical response text + response audio handling
-- temporary response-audio storage and retention
-- completion push publication
+```text
+canonical response text
+        ↓
+User/Profile.tts_method
+        ├── OPEN_SOURCE → Kokoro → no additional TTS credits
+        └── OPENAI
+              ├── credits > 0 → OpenAI TTS
+              └── credits <= 0 → Kokoro runtime fallback
+```
 
-### Client owns
+Running out of credits does not overwrite the stored OpenAI selection. TTS fallback is speech-only and never substitutes for paid reasoning/planning requirements.
 
-- immediate Main Screen UI and conversation overlay
-- Order/Talk compressed-audio recording
-- Text typed composer
-- temporary Sending/Sent state
-- Room/cache
-- local response-audio storage
-- foreground/background result fetch
-- audio playback/routing
-- notifications and actions
-- alarms/local execution
-- offline queues
+---
+
+## Startup, Sync, and Ownership
+
+The app becomes usable immediately: render Main Screen and enable Order/Talk/Text before background synchronization completes. Room is the client's immediate working state; authenticated backend reconciliation is authoritative.
+
+Backend owns Butler reasoning, authoritative persistence, planning, context mutations, conversation text, TTS generation, temporary response audio, and completion push publication.
+
+Client owns immediate UI, recording/composition, Room/cache, synchronization workers, local audio cache/playback/routing, notifications, alarms/local execution, and offline queues.
+
+Conversation text is durable cross-device history. Backend audio is retention-limited; locally cached audio supports later playback.
 
 ---
 
@@ -369,47 +243,10 @@ One day
 One Main Screen
 One conversation overlay
 Three controls: Order / Talk / Text
+One authoritative saved-context system
 ```
 
-The backend should preserve the richest user input available. For Order/Talk, that means the original audio remains available to the AI reasoning path instead of being discarded after a separate transcription step.
-
----
-
-## User Settings, Credits, TTS, and Preferences
-
-The client menu/surface is named **User Settings** (replacing the previous Profile name). Backend user/profile persistence remains the authoritative account/configuration model; do not create a separate generic settings/configuration table. The initial editable setting is the preferred TTS method:
-
-```text
-Profile
-├── Credits            read-only on the client
-└── TTS Method         editable
-    ├── OPEN_SOURCE
-    └── OPENAI
-```
-
-Credits are Hello Butler product credits, not raw OpenAI input/output token counts. Paid Butler operations such as AI interaction and planning require available credits and consume credits according to backend policy. The backend is authoritative for credit checks and deductions; the client only displays the balance.
-
-Response text remains canonical. TTS is a separate optional speech-generation step. The backend keeps the existing OpenAI TTS path and adds an open-source TTS path, initially Kokoro.
-
-```text
-canonical Butler response text
-        ↓
-read User/Profile.tts_method
-        ├── OPEN_SOURCE → Kokoro/open-source TTS → no additional credits
-        └── OPENAI
-              ├── credits > 0 → OpenAI TTS → additional credit cost
-              └── credits <= 0 → Kokoro/open-source TTS
-```
-
-Running out of credits must **not** overwrite the stored `OPENAI` preference. The fallback is runtime-only so OpenAI TTS becomes effective again if the user later has credits. Open-source TTS is only a speech fallback; it does not replace the paid AI reasoning/planning model. If paid Butler reasoning has insufficient credits, handle that explicitly rather than treating TTS fallback as a reasoning fallback.
-
-TTS failure must not invalidate an otherwise successful Butler interaction. The canonical response text remains usable even when response audio cannot be generated.
-
-The Android client exposes these controls through **User Settings**: show the current credit balance as read-only and allow the user to edit the TTS method.
-
-User Settings also exposes the user's saved Butler preferences derived from the existing preference/User Context source of truth. Display preferences as a compact list with **one preference per line**, truncating long content with an ellipsis. Tapping a preference opens a detail popup/dialog showing the full content and a delete action. The user can delete saved preferences individually. Deletion must remove/update the authoritative backend preference/User Context rather than maintaining a client-only copy. Require normal confirmation for destructive deletion and refresh/reconcile the list after success.
-
-This preference list is for user-manageable saved preferences (similar in spirit to reviewing remembered preferences), not every User Context record. Do not expose unrelated routines, temporary planning context, upcoming-event context, or internal metadata merely because they share persistence infrastructure.
+Preserve rich input, keep canonical text independent of optional speech, and avoid duplicate persistence models when an existing authoritative model already owns the concept.
 
 ---
 
