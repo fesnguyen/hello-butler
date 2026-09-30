@@ -125,9 +125,26 @@ class LifecycleTest {
         override suspend fun logout(request: LogoutRequest): Response<Unit> = Response.success(Unit)
     }
     private class UnusedSync : SyncApi {
-        override suspend fun syncEvents(authorization: String, request: SyncBatchRequestDto): Response<SyncBatchResultDto> = error("unused")
-        override suspend fun dailyPlan(authorization: String, date: String): Response<DailyPlanSnapshotDto> = error("unused")
-        override suspend fun mutateUpcomingEvent(authorization: String, contextId: String, mutation: UpcomingEventMutationDto): Response<UpcomingMutationResultDto> = error("unused")
+        override suspend fun syncEvents(
+            authorization: String,
+            request: SyncBatchRequestDto
+        ): Response<SyncBatchResultDto> = error("unused")
+
+        override suspend fun dailyPlan(
+            authorization: String,
+            date: String
+        ): Response<DailyPlanSnapshotDto> = error("unused")
+
+        override suspend fun mutateUpcomingEvent(
+            authorization: String,
+            contextId: String,
+            mutation: UpcomingEventMutationDto
+        ): Response<UpcomingMutationResultDto> = error("unused")
+
+        override suspend fun eventAudio(
+            authorization: String,
+            eventId: String
+        ): Response<ResponseBody> = error("unused")
     }
     private class UnusedPlanning : PlanningApi {
         override suspend fun prepare(authorization: String, request: PrepareDayRequestDto): Response<ResponseBody> = error("unused")
