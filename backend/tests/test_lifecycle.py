@@ -6,6 +6,7 @@ import unittest
 import uuid
 from datetime import datetime, time, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app.application.butler.contracts import (
@@ -26,6 +27,7 @@ from app.application.push.service import PushService
 from app.application.sync.contracts import DailyEventMutation, EventSyncOperation
 from app.application.sync.service import DailyEventSyncService
 from app.core.config import Settings
+from app.infrastructure.ai.openai_provider import OpenAIButlerProvider
 from app.infrastructure.db.base import Base
 from app.infrastructure.db.models import (
     ConversationMessageModel,
@@ -260,6 +262,73 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
             event = await session.get(DailyEventModel, created.event_id)
         self.assertEqual(event.status, "skipped")
         self.assertEqual(completed.response, canonical)
+
+    async def test_text_and_audio_provider_use_shared_graph_actions_and_history(self):
+        for has_audio in (False, True):
+            with self.subTest(has_audio=has_audio):
+                title = "Audio exercise" if has_audio else "Text exercise"
+                utterance = f"Add {title}"
+                canonical = f"Done. I added {title}."
+                proposal = self.interaction(
+                    utterance,
+                    ButlerDecision(
+                        intent="command", requested_action="create_daily_event", title=title
+                    ),
+                    canonical,
+                )
+                call = SimpleNamespace(
+                    type="function",
+                    function=SimpleNamespace(
+                        name="submit_butler_interaction", arguments=proposal.model_dump_json()
+                    ),
+                )
+                create = AsyncMock(
+                    return_value=SimpleNamespace(
+                        choices=[SimpleNamespace(message=SimpleNamespace(tool_calls=[call]))]
+                    )
+                )
+                ai = OpenAIButlerProvider(
+                    api_key="",
+                    model=self.settings.openai_model,
+                    audio_model=self.settings.butler_audio_model,
+                )
+                ai._client = SimpleNamespace(
+                    chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+                )
+                service = ButlerService(
+                    settings=self.settings,
+                    session_factory=self.sessions,
+                    ai_provider=ai,
+                    changes=self.changes,
+                )
+                source = Path(self.directory.name) / "input.ogg"
+                source.write_bytes(b"OggS" + b"0" * 24 + b"OpusHead")
+                with patch.object(ai, "_wav_audio", AsyncMock(return_value=b"input-wav")) as decode:
+                    result = await service.handle(
+                        user_id=self.user,
+                        interaction_mode="order",
+                        message=None if has_audio else utterance,
+                        audio_path=source if has_audio else None,
+                        audio_mime_type="audio/ogg" if has_audio else None,
+                    )
+                self.assertEqual(
+                    create.await_args.kwargs["model"],
+                    self.settings.butler_audio_model if has_audio else self.settings.openai_model,
+                )
+                self.assertEqual(decode.await_count, int(has_audio))
+                self.assertEqual(
+                    (result.user_message_text, result.response), (utterance, canonical)
+                )
+                async with self.sessions() as session:
+                    event = await session.get(DailyEventModel, result.changed_entities[0].id)
+                    self.assertEqual((event.title, event.origin), (title, "user"))
+                    messages = (await session.scalars(select(ConversationMessageModel))).all()
+                    self.assertIn(
+                        ("user", utterance), [(row.role, row.content) for row in messages]
+                    )
+                    self.assertIn(
+                        ("butler", canonical), [(row.role, row.content) for row in messages]
+                    )
 
     async def test_butler_updates_user_context(self):
         context_id = uuid.uuid4()
