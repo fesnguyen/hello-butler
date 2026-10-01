@@ -68,6 +68,7 @@ class UserSettingsContractTest {
         assertEquals("context-1", item.id)
         assertEquals("A preference", item.content)
         repository.deleteContext(item)
+        assertEquals(item.id to item.version, api.deleted)
         assertTrue(repository.observeContext().first().isEmpty())
         repository.synchronize()
         assertTrue(repository.observeContext().first().isEmpty())
@@ -110,6 +111,7 @@ class UserSettingsContractTest {
 internal class FakeUserSettingsApi : UserSettingsApi {
     var items = emptyList<SavedContextDto>()
     var saved: UserSettingsUpdateDto? = null
+    var deleted: Pair<String, Int>? = null
     override suspend fun get(authorization: String) = Response.success(UserSettingsDto("Name", "user@example.test", 5, "OPEN_SOURCE", emptyList()))
     override suspend fun update(authorization: String, update: UserSettingsUpdateDto): Response<UserSettingsDto> {
         saved = update
@@ -122,6 +124,7 @@ internal class FakeUserSettingsApi : UserSettingsApi {
         return Response.success(item)
     }
     override suspend fun deleteContext(authorization: String, id: String, version: Int): Response<Unit> {
+        deleted = id to version
         items = items.filterNot { it.id == id }
         return Response.success(Unit)
     }

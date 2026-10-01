@@ -166,7 +166,7 @@ Backend profile persistence remains authoritative for account/configuration data
 
 ### Notes and Preferences
 
-User Settings presents a single manageable saved-context area containing **Notes and Preferences**.
+User Settings presents separate **Notes** and **Preferences** sections, in that order, with **Add note** and **Add preference** actions. Each item has compact Edit and confirmed Delete actions.
 
 A saved item requires only its text/description. No title is required in the current design. It also carries the semantic distinction of whether it is a preference:
 
@@ -185,7 +185,9 @@ Semantics:
 
 Example: conversationally telling Butler, "I love going to the beach when I have a day off," may create/update a preference. That same authoritative item must appear in User Settings after synchronization.
 
-Users can add a note directly from User Settings, edit/delete saved items, and switch whether an item is a preference. Mutations update the same backend source used by Butler; there is no client-only preference/note store.
+Adding sets the item type from the chosen section; editing changes its description while preserving its type. Mutations update the same backend source used by Butler; there is no client-only preference/note store.
+
+The main header provides a Notes icon opening a compact, scrollable read-only list of Notes only, including an empty state. Preferences remain in User Settings. The header also shows device-local current time, respecting the device’s 12/24-hour format and updating by the minute while active.
 
 Only user-manageable notes/preferences belong in this list. Do not expose routines, temporary planning context, Upcoming Events, or internal metadata merely because they share User Context persistence.
 

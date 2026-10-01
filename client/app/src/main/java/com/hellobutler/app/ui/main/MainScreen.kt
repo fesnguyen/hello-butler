@@ -21,7 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -39,6 +39,12 @@ import com.hellobutler.app.speech.ButlerAudioRecorder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.UUID
+import java.util.Date
+import java.time.Instant
+import java.time.ZoneId
+import android.text.format.DateFormat
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -54,6 +60,8 @@ fun MainScreen(
     val events by viewModel.events.collectAsState()
     val upcomingEvents by viewModel.upcomingEvents.collectAsState()
     val messages by viewModel.messages.collectAsState()
+    val notes by viewModel.notes.collectAsStateWithLifecycle()
+    var notesOpen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val speaking by SpeechPlaybackState.speaking.collectAsState()
@@ -152,6 +160,7 @@ fun MainScreen(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TodayHeader(
+                onNotes = { notesOpen = true; viewModel.refreshNotes() },
                 onRefresh = viewModel::refreshPreparedDays,
                 onAddEvent = {
                     creatingEvent = true
@@ -291,6 +300,7 @@ fun MainScreen(
             },
         )
     }
+    if (notesOpen) QuickNotesDialog(notes, state.notesLoading, state.notesError) { notesOpen = false }
 }
 
 private const val LISTENING_CUE_DELAY_MILLIS = 100L
@@ -299,6 +309,7 @@ private const val LISTENING_CUE_DURATION_MILLIS = 80
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TodayHeader(
+    onNotes: () -> Unit,
     onRefresh: () -> Unit,
     onAddEvent: () -> Unit,
     onRecreateToday: () -> Unit,
@@ -306,41 +317,43 @@ private fun TodayHeader(
     onUserSettings: () -> Unit,
     onLogout: () -> Unit,
 ) {
-    val today = remember { LocalDate.now() }
+    val context = LocalContext.current
+    val now = rememberHeaderTime()
+    val today = Instant.ofEpochMilli(now).atZone(ZoneId.systemDefault()).toLocalDate()
     var accountMenuOpen by remember { mutableStateOf(false) }
-    TopAppBar(
-        title = {
-            Column {
-                Text(today.format(DateTimeFormatter.ofPattern("EEEE")), style = MaterialTheme.typography.headlineMedium)
-                Text(today.format(DateTimeFormatter.ofPattern("MMMM d")), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    Surface(color = MaterialTheme.colorScheme.background) {
+        Column(Modifier.fillMaxWidth().windowInsetsPadding(WindowInsets.statusBars).padding(horizontal = 16.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(today.format(DateTimeFormatter.ofPattern("EEEE")), Modifier.weight(1f),
+                    style = MaterialTheme.typography.headlineMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(DateFormat.getTimeFormat(context).format(Date(now)),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-        },
-        navigationIcon = {
-            Surface(Modifier.padding(start = 14.dp, end = 6.dp), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
-                Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.primary)
-            }
-        },
-        actions = {
-            IconButton(onClick = onAddEvent) { Icon(Icons.Default.Add, "Add event") }
-            IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh prepared days") }
-            Box {
-                IconButton(onClick = { accountMenuOpen = true }) { Icon(Icons.Outlined.AccountCircle, "Account menu") }
-                DropdownMenu(expanded = accountMenuOpen, onDismissRequest = { accountMenuOpen = false }) {
-                    DropdownMenuItem(
-                        text = { Text("User Settings") },
-                        onClick = { accountMenuOpen = false; onUserSettings() },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text(if (recreatingToday) "Recreating today's plan…" else "Recreate today's plan") },
-                        onClick = { accountMenuOpen = false; onRecreateToday() },
-                        enabled = !recreatingToday,
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(text = { Text("Log out") }, onClick = { accountMenuOpen = false; onLogout() })
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(today.format(DateTimeFormatter.ofPattern("MMMM d")), Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                IconButton(onClick = onNotes) { Icon(Icons.Outlined.Description, "Quick Notes") }
+                IconButton(onClick = onAddEvent) { Icon(Icons.Default.Add, "Add event") }
+                IconButton(onClick = onRefresh) { Icon(Icons.Default.Refresh, "Refresh prepared days") }
+                Box {
+                    IconButton(onClick = { accountMenuOpen = true }) { Icon(Icons.Outlined.AccountCircle, "Account menu") }
+                    DropdownMenu(expanded = accountMenuOpen, onDismissRequest = { accountMenuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("User Settings") },
+                            onClick = { accountMenuOpen = false; onUserSettings() },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(if (recreatingToday) "Recreating today's plan…" else "Recreate today's plan") },
+                            onClick = { accountMenuOpen = false; onRecreateToday() },
+                            enabled = !recreatingToday,
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(text = { Text("Log out") }, onClick = { accountMenuOpen = false; onLogout() })
+                    }
                 }
             }
-        },
-        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
-    )
+        }
+    }
 }

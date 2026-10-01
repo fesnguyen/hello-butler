@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.8  
+**Version:** 1.9
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -25,6 +25,8 @@ MainScreen
 Butler interaction happens over the user's day; there is no separate conversation screen. Upcoming Events appear below Daily Plan and are derived from active/future User Context. They are planning input, not persisted future Daily Plans, and ordinary routines do not appear in Upcoming.
 
 `Open in App` from a notification opens Main Screen with the Butler conversation overlay visible.
+
+The header shows day/date, secondary device-local time, and a Notes icon alongside existing actions. Time follows the device’s 12/24-hour format, updates on resume and each minute while active, and uses no backend call. Quick Notes opens a compact, scrollable read-only dialog of ordinary Notes only. It shows cached content immediately, reconciles through the existing saved-context repository, and provides loading/error and empty states. Long content wraps without truncation.
 
 ---
 
@@ -124,34 +126,23 @@ Credits are backend-authoritative and read-only on the client. TTS method is edi
 
 ## Notes & Preferences
 
-Use one user-manageable list backed by the existing authoritative User Context/preference persistence:
+Use the existing saved-context projection in two sections, Notes first:
 
 ```text
-Notes & Preferences                         [ + Add ]
+Notes                                [ + Add note ]
+<description>                         [Edit] [Delete]
 
-Preference
-I love going to the beach when I have a day off.
-
-Note
-Remember to ask John about the old laptop.
+Preferences                          [ + Add preference ]
+<description>                         [Edit] [Delete]
 ```
 
-A saved item has required description/text and an **Is preference** switch. No title is required in the current design.
+Both Add actions use the same compact Description/Save editor, with no title. Add note sets `is_preference=false`; Add preference sets it to `true`. Editing preserves the item's type. Delete uses the existing confirmation dialog pattern.
 
-Adding/editing opens a compact editor with:
+Use the shared `GET/PUT/DELETE /api/user-settings/saved-context` API: creation retains a new UUID and base version 0 across retries; edit/delete submit the selected version. On conflict the repository refreshes Room and asks the user to reopen the editor. Failed saves retain the editor; direct mutations require connectivity.
 
-```text
-Description
-[................................]
+A preference may influence Butler personalization/planning when relevant. An ordinary note remains saved/retrievable but is not automatically treated as a personalization preference. Only user-manageable notes/preferences are listed—exclude routines, temporary/one-time planning context, Upcoming Events, and internal metadata.
 
-Is preference   [ on/off ]
-
-[Save]
-```
-
-A preference may influence Butler personalization/planning when relevant. An ordinary note remains saved/retrievable but is not automatically treated as a personalization preference.
-
-Users can add, edit, delete, and change the preference status of an item. These actions mutate backend-authoritative User Context; do not maintain a separate client-only notes/preferences store. Only user-manageable notes/preferences are listed—exclude routines, temporary/one-time planning context, Upcoming Events, and internal metadata.
+Quick Notes and both settings sections observe the same Room cache. Successful mutations and Butler reconciliation update all projections without an independent Notes store.
 
 ## Preference synchronization
 

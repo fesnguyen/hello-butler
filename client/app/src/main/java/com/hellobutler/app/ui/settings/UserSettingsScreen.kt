@@ -12,13 +12,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.hellobutler.app.data.local.SavedContextEntity
-import java.util.UUID
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.ui.Alignment
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun UserSettingsScreen(viewModel: UserSettingsViewModel, onBack: () -> Unit) {
     val state by viewModel.state.collectAsState()
     var selectedItem by remember { mutableStateOf<SavedContextEntity?>(null) }
+    var deletingItem by remember { mutableStateOf<SavedContextEntity?>(null) }
     LaunchedEffect(Unit) { viewModel.refresh() }
     Scaffold(
         topBar = {
@@ -75,18 +78,15 @@ fun UserSettingsScreen(viewModel: UserSettingsViewModel, onBack: () -> Unit) {
                     selected = state.ttsMethod == TtsMethod.OPENAI,
                 ) { viewModel.setTtsMethod(TtsMethod.OPENAI) }
             }
-            item {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                    Text("Notes & Preferences", Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
-                    TextButton(onClick = { selectedItem = SavedContextEntity(UUID.randomUUID().toString(), "", false, 0) }) { Text("+ Add") }
-                }
+            item { SavedContextHeading("Notes", "Add note") { selectedItem = viewModel.newItem(false) } }
+            if (state.notes.isEmpty()) item { Text("No saved notes") }
+            items(state.notes, key = SavedContextEntity::id) { item ->
+                SavedContextRow(item, { selectedItem = item }, { deletingItem = item })
             }
-            if (state.items.isEmpty()) item { Text("No saved notes or preferences") }
-            items(state.items, key = SavedContextEntity::id) { item ->
-                Column(Modifier.fillMaxWidth().clickable { selectedItem = item }.padding(vertical = 8.dp)) {
-                    Text(if (item.isPreference) "Preference" else "Note", style = MaterialTheme.typography.labelSmall)
-                    Text(item.content, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+            item { SavedContextHeading("Preferences", "Add preference") { selectedItem = viewModel.newItem(true) } }
+            if (state.preferences.isEmpty()) item { Text("No saved preferences") }
+            items(state.preferences, key = SavedContextEntity::id) { item ->
+                SavedContextRow(item, { selectedItem = item }, { deletingItem = item })
             }
             state.error?.let { error ->
                 item { Text(error, color = MaterialTheme.colorScheme.error) }
@@ -104,47 +104,42 @@ fun UserSettingsScreen(viewModel: UserSettingsViewModel, onBack: () -> Unit) {
     selectedItem?.let { item ->
         key(item.id) {
             var description by remember { mutableStateOf(item.content) }
-            var isPreference by remember { mutableStateOf(item.isPreference) }
-            var confirmDelete by remember { mutableStateOf(false) }
+            val kind = if (item.isPreference) "preference" else "note"
             AlertDialog(
                 onDismissRequest = { if (!state.savingItem) selectedItem = null },
-                title = { Text(if (item.version == 0) "Add note or preference" else "Edit saved item") },
+                title = { Text(if (item.version == 0) "Add $kind" else "Edit $kind") },
                 text = {
                     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedTextField(description, { description = it }, label = { Text("Description") },
                             modifier = Modifier.fillMaxWidth(), minLines = 3, maxLines = 7, enabled = !state.savingItem)
-                        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                            Text("Is preference", Modifier.weight(1f))
-                            Switch(isPreference, { isPreference = it }, enabled = !state.savingItem)
-                        }
                         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                        if (item.version > 0) TextButton(onClick = { confirmDelete = true }, enabled = !state.savingItem) {
-                            Text("Delete", color = MaterialTheme.colorScheme.error)
-                        }
                     }
                 },
                 confirmButton = {
                     TextButton(enabled = description.isNotBlank() && !state.savingItem, onClick = {
-                        viewModel.saveItem(item.id, description, isPreference, item.version) { selectedItem = null }
+                        viewModel.saveItem(item, description) { selectedItem = null }
                     }) { Text(if (state.savingItem) "Saving…" else "Save") }
                 },
                 dismissButton = { TextButton(enabled = !state.savingItem, onClick = { selectedItem = null }) { Text("Cancel") } },
             )
-            if (confirmDelete) AlertDialog(
-                onDismissRequest = { if (!state.savingItem) confirmDelete = false },
-                title = { Text("Delete saved item?") },
-                text = {
-                    Column {
-                        Text("This removes it from Butler's saved context.")
-                        state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    }
-                },
-                confirmButton = { TextButton(enabled = !state.savingItem, onClick = {
-                    viewModel.deleteItem(item) { selectedItem = null }
-                }) { Text("Delete") } },
-                dismissButton = { TextButton(enabled = !state.savingItem, onClick = { confirmDelete = false }) { Text("Cancel") } },
-            )
         }
+    }
+    deletingItem?.let { item ->
+        val kind = if (item.isPreference) "preference" else "note"
+        AlertDialog(
+            onDismissRequest = { if (!state.savingItem) deletingItem = null },
+            title = { Text("Delete $kind?") },
+            text = {
+                Column {
+                    Text("This removes it from Butler's saved context.")
+                    state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                }
+            },
+            confirmButton = { TextButton(enabled = !state.savingItem, onClick = {
+                viewModel.deleteItem(item) { deletingItem = null }
+            }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(enabled = !state.savingItem, onClick = { deletingItem = null }) { Text("Cancel") } },
+        )
     }
 }
 
@@ -158,5 +153,23 @@ private fun TtsChoice(label: String, description: String, selected: Boolean, onC
             Text(label)
             Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
+    }
+}
+
+@Composable
+private fun SavedContextHeading(title: String, addLabel: String, onAdd: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        TextButton(onClick = onAdd) { Text("+ $addLabel") }
+    }
+}
+
+@Composable
+private fun SavedContextRow(item: SavedContextEntity, onEdit: () -> Unit, onDelete: () -> Unit) {
+    val kind = if (item.isPreference) "preference" else "note"
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(item.content, Modifier.weight(1f), maxLines = 3, overflow = TextOverflow.Ellipsis)
+        IconButton(onClick = onEdit) { Icon(Icons.Outlined.Edit, "Edit $kind") }
+        IconButton(onClick = onDelete) { Icon(Icons.Outlined.Delete, "Delete $kind") }
     }
 }

@@ -6,6 +6,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.hellobutler.app.data.local.SavedContextEntity
+import com.hellobutler.app.data.local.notes
+import com.hellobutler.app.data.local.preferences
 import com.hellobutler.app.data.remote.SavedContextUpdateDto
 import com.hellobutler.app.data.remote.UserSettingsDto
 import com.hellobutler.app.data.remote.UserSettingsUpdateDto
@@ -15,6 +17,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 enum class TtsMethod { OPEN_SOURCE, OPENAI }
 
@@ -29,7 +32,10 @@ data class UserSettingsUiState(
     val items: List<SavedContextEntity> = emptyList(),
     val error: String? = null,
     val saved: Boolean = false,
-)
+) {
+    val notes: List<SavedContextEntity> get() = items.notes()
+    val preferences: List<SavedContextEntity> get() = items.preferences()
+}
 
 class UserSettingsViewModel(private val repository: UserSettingsDataSource) : ViewModel() {
     private val _state = MutableStateFlow(UserSettingsUiState())
@@ -54,8 +60,12 @@ class UserSettingsViewModel(private val repository: UserSettingsDataSource) : Vi
     fun setDisplayName(value: String) = _state.update { it.copy(displayName = value, saved = false) }
     fun setTtsMethod(value: TtsMethod) = _state.update { it.copy(ttsMethod = value, saved = false) }
 
-    fun saveItem(id: String, content: String, isPreference: Boolean, version: Int, onSaved: () -> Unit) =
-        mutateItem(onSaved) { repository.saveContext(id, SavedContextUpdateDto(content.trim(), isPreference, version)) }
+    fun newItem(isPreference: Boolean) = SavedContextEntity(UUID.randomUUID().toString(), "", isPreference, 0)
+
+    fun saveItem(item: SavedContextEntity, content: String, onSaved: () -> Unit) =
+        mutateItem(onSaved) {
+            repository.saveContext(item.id, SavedContextUpdateDto(content.trim(), item.isPreference, item.version))
+        }
 
     fun deleteItem(item: SavedContextEntity, onDeleted: () -> Unit) =
         mutateItem(onDeleted) { repository.deleteContext(item) }

@@ -1,6 +1,6 @@
 # Client Architecture
 
-**Version:** 1.7  
+**Version:** 1.8
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -18,6 +18,7 @@ The Android client is the local execution engine for the user's day and the pres
 
 ```text
 Main Screen
+├── header: day/date, local time, Quick Notes, existing actions
 ├── Daily Plan / Daily Event list
 ├── prominent Upcoming divider
 ├── Upcoming Events derived from User Context
@@ -301,7 +302,11 @@ Profile
     └── OpenAI
 ```
 
-User Settings displays **Notes & Preferences** from the backend's user-manageable User Context projection. Each row has description text and an Is preference switch; Add, edit, and confirmed delete mutate the same backend records. Account/TTS Save does not submit or replace this list.
+User Settings separates **Notes** (`is_preference=false`) and **Preferences** (`true`), Notes first, from the backend’s user-manageable User Context projection. Each section has its own Add action; rows expose compact Edit/Delete actions. One description editor serves both types and preserves the selected type on edit. Creation uses a fresh UUID/base version 0; edit/delete use the selected record’s version and the existing conflict reconciliation. Account/TTS Save does not submit or replace these lists.
+
+`MainViewModel` observes the same repository/Room stream, filtered to Notes, for a lightweight Quick Notes dialog. Opening it also reconciles through `UserSettingsRepository`; cached notes remain visible during loading or network failure. Content wraps, supports selection, and scrolls without truncation.
+
+The compact main header shows day/date and device-local time using Android `DateFormat.getTimeFormat`. A lifecycle-bound Compose clock updates on resume and at minute boundaries only while resumed; it makes no backend request. Date derives from the same device clock.
 
 `UserSettingsRepository` reconciles stable IDs into the Room `saved_context` cache (database version 5, additive 4→5 migration). The screen observes Room. Structured `user_context` changes trigger reconciliation after conversation text is persisted; the existing `DailySyncWorker` also reconciles at startup and periodically. Full snapshots remove absent/deleted records. Logout clears the cache. Mutations require connectivity, retain the editor on failure, and use the same UUID on retry; this cache is not another authoritative persistence model.
 

@@ -1,6 +1,6 @@
 # Client Sync Flow
 
-**Version:** 1.6  
+**Version:** 1.7
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `CLIENT_ARCHITECTURE.md`, and `CLIENT_WORKFLOW.md`
 
@@ -102,6 +102,8 @@ User Settings add/edit ─────┘
 ```
 
 After a Butler interaction reports a relevant User Context/preference mutation, schedule or trigger saved-context reconciliation. Direct User Settings add/edit/delete mutations update the backend and reconcile Room after success. Startup/background sync also reconciles the list so interrupted updates converge without manual Refresh.
+
+Quick Notes and User Settings observe the same `saved_context` Room stream. Quick Notes filters Notes only; settings show Notes first and Preferences separately. Opening Quick Notes reconciles through the existing repository while retaining cached content. Version-aware Add/Edit/Delete updates Room after success, so both views reflect the same record.
 
 Use stable identifiers and idempotent Room upserts. Editing/deleting a preference must update what Butler sees on later interactions; an ordinary note must not silently become a personalization preference.
 

@@ -17,6 +17,9 @@ data class SavedContextEntity(
     val version: Int,
 )
 
+internal fun List<SavedContextEntity>.notes() = filterNot { it.isPreference }
+internal fun List<SavedContextEntity>.preferences() = filter { it.isPreference }
+
 @Dao
 abstract class SavedContextDao {
     @Query("SELECT * FROM saved_context ORDER BY id")

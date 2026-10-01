@@ -6,8 +6,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.hellobutler.app.data.local.DailyEventEntity
+import com.hellobutler.app.data.local.notes
 import com.hellobutler.app.data.repository.ButlerRepository
 import com.hellobutler.app.data.repository.DailyEventRepository
+import com.hellobutler.app.data.repository.UserSettingsDataSource
 import com.hellobutler.app.data.remote.UpcomingEventDto
 import java.io.File
 import java.time.LocalDate
@@ -17,6 +19,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 enum class CaptureMode { ORDER, TALK, TEXT }
@@ -32,20 +36,39 @@ data class MainUiState(
     val textDraft: String? = null,
     val recording: Boolean = false,
     val recreatingToday: Boolean = false,
+    val notesLoading: Boolean = false,
+    val notesError: String? = null,
     val error: String? = null,
 )
 
-class MainViewModel(private val butler: ButlerRepository, private val eventsRepository: DailyEventRepository) : ViewModel() {
+class MainViewModel(
+    private val butler: ButlerRepository,
+    private val eventsRepository: DailyEventRepository,
+    private val settingsRepository: UserSettingsDataSource,
+) : ViewModel() {
     private val today = LocalDate.now().toString()
     val events: StateFlow<List<DailyEventEntity>> = eventsRepository.observeDate(today)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val upcomingEvents = eventsRepository.upcomingEvents
     val messages = butler.observeMessages().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val notes = settingsRepository.observeContext().map { items -> items.notes() }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     private val _state = MutableStateFlow(MainUiState())
     val state: StateFlow<MainUiState> = _state.asStateFlow()
 
     init { refreshPreparedDays(); viewModelScope.launch { butler.recover() } }
     fun openConversation() = _state.update { it.copy(overlayVisible = true) }
+
+    fun refreshNotes() = viewModelScope.launch {
+        if (_state.value.notesLoading) return@launch
+        _state.update { it.copy(notesLoading = true, notesError = null) }
+        try {
+            settingsRepository.synchronize()
+        } catch (cancelled: CancellationException) { throw cancelled
+        } catch (error: Exception) {
+            _state.update { it.copy(notesError = "Couldn't update notes. Cached notes are still available.") }
+        } finally { _state.update { it.copy(notesLoading = false) } }
+    }
 
     fun beginRecording(mode: CaptureMode) {
         if (mode == CaptureMode.TEXT || _state.value.recording) return
@@ -126,8 +149,8 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     }
     fun logout(onCleared: () -> Unit) = onCleared()
     companion object {
-        fun factory(butler: ButlerRepository, events: DailyEventRepository): ViewModelProvider.Factory = viewModelFactory {
-            initializer { MainViewModel(butler, events) }
+        fun factory(butler: ButlerRepository, events: DailyEventRepository, settings: UserSettingsDataSource): ViewModelProvider.Factory = viewModelFactory {
+            initializer { MainViewModel(butler, events, settings) }
         }
     }
 }

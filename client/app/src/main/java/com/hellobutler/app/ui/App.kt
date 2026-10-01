@@ -31,7 +31,7 @@ fun HelloButlerApp(container: AppContainer) {
         else -> {
             var userSettingsOpen by remember { mutableStateOf(false) }
             val mainViewModel: MainViewModel = viewModel(
-                factory = MainViewModel.factory(container.butlerRepository, container.dailyEventRepository)
+                factory = MainViewModel.factory(container.butlerRepository, container.dailyEventRepository, container.userSettingsRepository)
             )
             if (userSettingsOpen) {
                 val userSettingsViewModel: UserSettingsViewModel = viewModel(
