@@ -46,9 +46,7 @@ class OpenAIButlerVoiceProvider:
         self._voice = voice
         self._client = AsyncOpenAI(api_key=api_key) if api_key else None
 
-    async def synthesize(
-        self, *, text: str, request_id: uuid.UUID | None = None
-    ) -> ButlerSpeech:
+    async def synthesize(self, *, text: str, request_id: uuid.UUID | None = None) -> ButlerSpeech:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured for TTS")
         started = time.perf_counter()
@@ -143,22 +141,23 @@ class OpenAIButlerProvider:
                 }
             )
 
+        model = self._audio_model if audio_path is not None else self._model
         started = time.perf_counter()
         logger.info(
             "Butler interaction started request_id=%s api=chat_completions model=%s "
             "input_type=%s input_bytes=%d",
             request_id,
-            self._audio_model,
+            model,
             audio_mime_type or "text/plain",
             input_bytes,
         )
         try:
-            proposal = await self._chat_interaction(content)
+            proposal = await self._chat_interaction(content, model=model)
             logger.info(
                 "Butler interaction completed request_id=%s api=chat_completions model=%s "
                 "elapsed_ms=%d action=%s intent=%s",
                 request_id,
-                self._audio_model,
+                model,
                 round((time.perf_counter() - started) * 1000),
                 proposal.decision.requested_action,
                 proposal.decision.intent,
@@ -175,19 +174,19 @@ class OpenAIButlerProvider:
                 "Butler interaction failed request_id=%s api=chat_completions model=%s "
                 "elapsed_ms=%d error_type=%s",
                 request_id,
-                self._audio_model,
+                model,
                 round((time.perf_counter() - started) * 1000),
                 type(exc).__name__,
             )
             raise ButlerAIUnavailableError("Multimodal AI provider request failed") from exc
 
     async def _chat_interaction(
-        self, content: list[dict[str, object]]
+        self, content: list[dict[str, object]], *, model: str
     ) -> ButlerInteractionProposal:
         if self._client is None:
             raise ButlerAIUnavailableError("OpenAI API key is not configured")
         completion = await self._client.chat.completions.create(
-            model=self._audio_model,
+            model=model,
             messages=cast(
                 Any,
                 [

@@ -136,7 +136,7 @@ private fun ConversationBubble(message: ConversationMessageEntity, onPlay: (requ
                                 }, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(4.dp))
                                 Text(when (phase) {
-                                    PlaybackPhase.LOADING -> "Loading…"
+                                    PlaybackPhase.LOADING -> "Preparing audio…"
                                     PlaybackPhase.SPEAKING -> "Stop"
                                     else -> if (private) "Phone Listen" else "Listen Aloud"
                                 }, style = MaterialTheme.typography.labelSmall, maxLines = 1)

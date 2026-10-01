@@ -30,7 +30,7 @@ def context() -> ButlerContext:
 
 class InteractionProviderTests(unittest.IsolatedAsyncioTestCase):
     def provider(self, result: SimpleNamespace) -> tuple[OpenAIButlerProvider, AsyncMock]:
-        provider = OpenAIButlerProvider(api_key="", model="text-model")
+        provider = OpenAIButlerProvider(api_key="", model="text-model", audio_model="audio-model")
         create = AsyncMock(return_value=result)
         provider._client = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(create=create))
@@ -67,11 +67,10 @@ class InteractionProviderTests(unittest.IsolatedAsyncioTestCase):
 
         create.assert_awaited_once()
         kwargs = create.await_args.kwargs
+        self.assertEqual(kwargs["model"], "audio-model")
         self.assertNotIn("modalities", kwargs)
         self.assertNotIn("audio", kwargs)
-        self.assertEqual(
-            kwargs["tool_choice"]["function"]["name"], "submit_butler_interaction"
-        )
+        self.assertEqual(kwargs["tool_choice"]["function"]["name"], "submit_butler_interaction")
         user_content = kwargs["messages"][1]["content"]
         self.assertEqual(
             user_content[1]["input_audio"]["data"],
@@ -101,7 +100,21 @@ class InteractionProviderTests(unittest.IsolatedAsyncioTestCase):
             )
         create.assert_awaited_once()
         decode.assert_not_awaited()
-        self.assertEqual(result.response_text, "You have no events today.")
+        kwargs = create.await_args.kwargs
+        self.assertEqual(kwargs["model"], "text-model")
+        self.assertNotIn("modalities", kwargs)
+        self.assertNotIn("audio", kwargs)
+        self.assertEqual(kwargs["tool_choice"]["function"]["name"], "submit_butler_interaction")
+        self.assertEqual(
+            kwargs["tools"][0]["function"]["parameters"],
+            ButlerInteractionProposal.model_json_schema(),
+        )
+        user_content = kwargs["messages"][1]["content"]
+        self.assertEqual([item["type"] for item in user_content], ["text"])
+        supplied = json.loads(user_content[0]["text"])
+        self.assertEqual(supplied["message"], proposal.user_message_text)
+        self.assertEqual(supplied["context"], context().model_dump(mode="json"))
+        self.assertEqual(result, proposal)
 
     async def test_invalid_ogg_input_fails_before_openai(self):
         provider, create = self.provider(SimpleNamespace())
@@ -127,9 +140,7 @@ class InteractionProviderTests(unittest.IsolatedAsyncioTestCase):
 class VoiceProviderTests(unittest.IsolatedAsyncioTestCase):
     async def test_tts_receives_exact_canonical_text_and_returns_wav(self):
         provider = OpenAIButlerVoiceProvider(api_key="", model="tts-model", voice="alloy")
-        create = AsyncMock(
-            return_value=SimpleNamespace(content=b"RIFF0000WAVEgenerated-audio")
-        )
+        create = AsyncMock(return_value=SimpleNamespace(content=b"RIFF0000WAVEgenerated-audio"))
         provider._client = SimpleNamespace(
             audio=SimpleNamespace(speech=SimpleNamespace(create=create))
         )
