@@ -18,15 +18,17 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.hellobutler.app.ButlerApplication
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 class ButlerAudioPlaybackService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -44,14 +46,16 @@ class ButlerAudioPlaybackService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) { finish(); return START_NOT_STICKY }
         val requestId = intent?.getStringExtra(EXTRA_REQUEST_ID) ?: return START_NOT_STICKY
+        val requestedPrivate = intent.getBooleanExtra(EXTRA_PRIVATE, false)
+        if (activeRequestId == requestId && privateRoute == requestedPrivate) return START_NOT_STICKY
+        releasePlayback() // Stop and release the previous route before acquiring another.
         activeRequestId = requestId
-        privateRoute = intent.getBooleanExtra(EXTRA_PRIVATE, false)
+        privateRoute = requestedPrivate
+        ButlerPlayback.update(ButlerPlaybackState(requestId, requestedPrivate, PlaybackPhase.LOADING))
         startForegroundNow(notification("Preparing audio…"))
-        job?.cancel()
-        player?.release()
         job = scope.launch {
-            val file = runCatching {
-                withContext(Dispatchers.IO) {
+            try {
+                val file = withContext(Dispatchers.IO) {
                     withTimeoutOrNull(120_000) {
                         val repository = (application as ButlerApplication).container.butlerRepository
                         var audio = repository.ensureAudio(requestId)
@@ -62,10 +66,15 @@ class ButlerAudioPlaybackService : Service() {
                         audio
                     }
                 }
-            }.onFailure { Log.e(TAG, "Playback audio unavailable request_id=$requestId", it) }.getOrNull()
-            if (file == null) { finish(); return@launch }
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(if (privateRoute) "Private listening" else "Playing aloud"))
-            play(file.absolutePath)
+                ensureActive() // A stopped/switched download must never restart playback.
+                if (file == null) { finish(); return@launch }
+                play(file.absolutePath)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                Log.e(TAG, "Playback audio unavailable request_id=$requestId", error)
+                finish()
+            }
         }
         return START_NOT_STICKY
     }
@@ -74,8 +83,9 @@ class ButlerAudioPlaybackService : Service() {
         val audio = getSystemService(AudioManager::class.java)
         val attributes = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
             .setUsage(if (privateRoute) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA).build()
-        val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT).setAudioAttributes(attributes)
-            .setOnAudioFocusChangeListener { if (it < 0) finish() }.build()
+        lateinit var focus: AudioFocusRequest
+        focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT).setAudioAttributes(attributes)
+            .setOnAudioFocusChangeListener { if (it < 0 && focusRequest === focus) finish() }.build()
         if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) { finish(); return }
         focusRequest = focus
         audio.mode = if (privateRoute) AudioManager.MODE_IN_COMMUNICATION else AudioManager.MODE_NORMAL
@@ -84,9 +94,16 @@ class ButlerAudioPlaybackService : Service() {
         try {
             player = MediaPlayer().apply {
                 setAudioAttributes(attributes)
-                setOnPreparedListener { it.start() }
-                setOnCompletionListener { finish() }
-                setOnErrorListener { _, what, extra ->
+                setOnPreparedListener {
+                    if (player !== it) return@setOnPreparedListener
+                    it.start()
+                    ButlerPlayback.update(ButlerPlaybackState(activeRequestId, privateRoute, PlaybackPhase.SPEAKING))
+                    getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID,
+                        notification(if (privateRoute) "Private listening" else "Playing aloud"))
+                }
+                setOnCompletionListener { if (player === it) finish() }
+                setOnErrorListener { failedPlayer, what, extra ->
+                    if (player !== failedPlayer) return@setOnErrorListener true
                     Log.w(TAG, "Playback failed request_id=$activeRequestId what=$what extra=$extra")
                     finish()
                     true
@@ -112,7 +129,7 @@ class ButlerAudioPlaybackService : Service() {
         else startForeground(NOTIFICATION_ID, value)
     }
 
-    private fun finish() {
+    private fun releasePlayback() {
         job?.cancel(); job = null
         runCatching { player?.stop() }; player?.release(); player = null
         val audio = getSystemService(AudioManager::class.java)
@@ -121,17 +138,16 @@ class ButlerAudioPlaybackService : Service() {
         audio.isSpeakerphoneOn = false
         audio.mode = AudioManager.MODE_NORMAL
         activeRequestId = null
+        ButlerPlayback.update(ButlerPlaybackState())
+    }
+
+    private fun finish() {
+        releasePlayback()
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
 
     override fun onDestroy() {
-        job?.cancel()
-        player?.release()
-        val audio = getSystemService(AudioManager::class.java)
-        focusRequest?.let(audio::abandonAudioFocusRequest)
-        @Suppress("DEPRECATION")
-        audio.isSpeakerphoneOn = false
-        audio.mode = AudioManager.MODE_NORMAL
+        releasePlayback()
         scope.cancel()
         super.onDestroy()
     }
@@ -151,6 +167,10 @@ class ButlerAudioPlaybackService : Service() {
                 Intent(context, ButlerAudioPlaybackService::class.java).putExtra(EXTRA_REQUEST_ID, requestId).putExtra(EXTRA_PRIVATE, private),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+
+        fun stop(context: Context) {
+            context.startService(Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP))
+        }
 
         fun play(context: Context, requestId: String, private: Boolean) {
             ContextCompat.startForegroundService(context, Intent(context, ButlerAudioPlaybackService::class.java).putExtra(EXTRA_REQUEST_ID, requestId).putExtra(EXTRA_PRIVATE, private))

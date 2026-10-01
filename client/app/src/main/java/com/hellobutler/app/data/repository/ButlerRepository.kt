@@ -39,6 +39,7 @@ class ButlerRepository(
     private val api: ButlerApi,
     private val auth: AuthRepository,
     private val events: DailyEventRepository,
+    private val settings: UserSettingsRepository,
 ) {
     private val dao = database.butlerConversationDao()
     private val audioLocks = ConcurrentHashMap<String, Mutex>()
@@ -287,6 +288,11 @@ class ButlerRepository(
         val today = LocalDate.now()
         val dates = listOf(today.toString(), today.plusDays(1).toString()) + result.changedEntities.flatMap { it.planDates }
         events.queueSynchronization(dates)
+        if (result.changedEntities.any { it.type == "user_context" }) {
+            try { settings.synchronize()
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (_: Exception) { /* DailySyncWorker retries independently of event sync. */ }
+        }
         try {
             events.synchronize(dates)
         } catch (cancelled: CancellationException) {

@@ -106,6 +106,7 @@ class ButlerContextLoader:
             .where(
                 UserContextEntryModel.user_id == user_id,
                 UserContextEntryModel.deleted_at.is_(None),
+                UserContextEntryModel.context_type != "note",
                 or_(
                     UserContextEntryModel.starts_on.is_(None),
                     UserContextEntryModel.starts_on <= today,

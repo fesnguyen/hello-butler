@@ -251,3 +251,6 @@ Thumbs.db
 
 # env files
 .env.*
+
+# Release build outputs
+/client/app/release/
