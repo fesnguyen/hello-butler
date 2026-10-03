@@ -91,7 +91,7 @@ Backend API
 Showcase
 ```
 
-For initial UI development, local mock data is acceptable. Keep it behind a small data/API boundary so it can be replaced by backend calls without rewriting UI components.
+V1 reads persisted content through the aggregate API. Application names, descriptions, source links, media, versions, and downloads are never maintained in React.
 
 ## Database
 
@@ -156,15 +156,9 @@ Keep these tables intentionally small. Add fields only when a real Showcase/Admi
 
 The backend owns database access. Showcase should never connect directly to PostgreSQL.
 
-The public API only needs read operations initially, conceptually:
+V1 exposes `GET /api/showcase/applications`, without authentication. Each application includes `id`, `name`, `description`, nullable `github_url`, ordered `media[]` (`id`, `url`, `display_order`), and nullable `latest_release` (`version`, `download_url`, `published_at`). An empty collection returns `[]`.
 
-```text
-GET applications
-GET application media
-GET application releases/latest release
-```
-
-Exact routes and response models should follow existing backend conventions when implemented.
+Media uses ascending `display_order` then ID. The latest release has the greatest `published_at` at or before the current UTC time; ID breaks ties deterministically. The service uses three bulk queries for a nonempty collection, independent of application count. Links in the API/seed contract use HTTP(S) URLs.
 
 The UI should consume a small typed API layer rather than making fetch calls throughout components.
 
@@ -265,3 +259,84 @@ Build incrementally:
 ```
 
 Keep each step usable and avoid adding infrastructure or fields before they are needed.
+
+## V1 setup and operation
+
+Showcase uses `SHOWCASE_DATABASE_URL`, its own SQLAlchemy metadata/session, and `backend/alembic_showcase.ini`. Butler continues using `DATABASE_URL` and `backend/alembic.ini`; neither migration history contains the other's tables. Settings reject equal database names. There are exactly three Showcase content tables plus Alembic's technical version table. Migrations never run at API startup.
+
+### Development
+
+From the repository root, copy `.env.example` to `.env.dev`, replace the password/JWT placeholders, and keep `POSTGRES_DB=hello_butler_dev` and `SHOWCASE_DB=showcase_dev`. URL-encode special characters in database URL passwords. Existing Butler/Firebase/OpenAI settings continue to apply as documented in [Deployment](../../../DEPLOYMENT.md).
+
+```bash
+docker compose -p hello-butler-dev --env-file .env.dev up -d postgres
+# Required for an existing volume; also safe to repeat on a fresh volume:
+docker compose -p hello-butler-dev --env-file .env.dev exec postgres sh /docker-entrypoint-initdb.d/init-showcase.sh
+cd backend
+uv sync --frozen
+uv run --env-file ../.env.dev alembic upgrade head
+uv run --env-file ../.env.dev alembic -c alembic_showcase.ini upgrade head
+uv run --env-file ../.env.dev python -m app.infrastructure.db.seed_showcase showcase.seed.example.json
+uv run --env-file ../.env.dev fastapi dev app/main.py --port 8001
+```
+
+The mounted PostgreSQL initialization script creates the Showcase database on fresh volumes. The explicit `exec` command handles existing volumes without resetting data. It is idempotent and uses the existing PostgreSQL role. Re-running `up -d postgres` applies the new mount/environment to existing containers. Keep the existing dev/prod Compose project names and volumes; do not delete volumes to initialize Showcase.
+
+In another terminal, from the repository root:
+
+```bash
+cd web/showcase
+# Node 24+; use the pinned packageManager version (pnpm 12.8.1).
+pnpm install --frozen-lockfile
+cp .env.example .env.local
+pnpm dev
+```
+
+The default Vite URL is `http://localhost:5173`. `/api` proxies to `http://localhost:8001`; `SHOWCASE_DEV_API_TARGET` can change that development target. The page shows an intentional typographic cover when no media exists, omits absent source/download links, and handles loading, empty collections, and failed requests with retry.
+
+### Production configuration and migrations
+
+Keep `POSTGRES_DB=hello_butler` and `SHOWCASE_DB=showcase` in `.env.production`. Backend URLs use the Compose hostname `postgres:5432`, ending in `/hello_butler` and `/showcase` respectively. The database names differ; the server and existing PostgreSQL role are shared.
+
+From the repository root:
+
+```bash
+docker compose -p hello-butler-prod --env-file .env.production up -d postgres
+docker compose -p hello-butler-prod --env-file .env.production exec postgres sh /docker-entrypoint-initdb.d/init-showcase.sh
+docker compose -p hello-butler-prod --env-file .env.production build backend
+docker compose -p hello-butler-prod --env-file .env.production run --rm backend uv run --no-sync alembic -c alembic_showcase.ini upgrade head
+```
+
+Butler's existing migration command remains required independently. `alembic -c alembic_showcase.ini current` and `check` inspect the Showcase history/schema. No deployment or GitHub Actions workflow is included in V1.
+
+`VITE_API_BASE_URL` is an optional **build-time** public API origin (for example `https://api.example.com`), without the `/api/showcase` suffix. Empty means same-origin. For same-origin production hosting, the eventual web server must route `/api` to FastAPI; Vite's development proxy is not part of `dist`. For separate origins, configure backend `SHOWCASE_ALLOWED_ORIGINS` as a JSON list of exact frontend origins, e.g. `["https://showcase.example.com"]`. CORS allows public GETs without credentials. Database URLs/credentials belong only in backend environment files, never `VITE_*` variables. Rebuild when the API base URL changes.
+
+### Initial content and future releases
+
+The explicit seed command imports `backend/showcase.seed.example.json`. It contains Hello Butler's stable application UUID, description, public repository link, and empty media/releases. No production artifact URL is invented. Copy/edit the manifest to supply actual media/release metadata. Nested media require `id`, `url`, `display_order`; releases require `id`, `version`, `download_url`, `published_at` (timezone-aware ISO 8601). Each child belongs to its enclosing application.
+
+The importer commits atomically, validates HTTP(S) links, and upserts by UUID. Preserve IDs when updating records; repeated imports do not create duplicates. Missing manifest children are not deleted, so adding a release preserves older releases. It is an operator bootstrap tool, not a public write API. Future Admin/release automation can write the same tables without changing the public API/page.
+
+### Deterministic checks/build
+
+From `backend`, with the appropriate backend environment loaded:
+
+```bash
+uv run --env-file ../.env.dev python -m unittest discover -s tests -v
+uv run ruff check .
+uv run pyright
+uv run --env-file ../.env.dev alembic -c alembic_showcase.ini check
+```
+
+From `web/showcase`:
+
+```bash
+pnpm install --frozen-lockfile
+pnpm test
+pnpm typecheck
+pnpm lint
+pnpm format:check
+pnpm build
+```
+
+The build produces `web/showcase/dist`. React 19, Vite 8, TypeScript 6 (compatible with the ESLint parser), Tailwind 4, and TanStack Query 5 are pinned in `package.json`/`pnpm-lock.yaml`. Only esbuild's required build script is approved in `pnpm-workspace.yaml`. Native cards/links need no shadcn dependency in V1. These commands are non-interactive and ready for future CI; deployment/release publication remain separate follow-up work.

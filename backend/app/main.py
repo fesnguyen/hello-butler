@@ -4,11 +4,13 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.auth import router as auth_router
 from app.api.butler import router as butler_router
 from app.api.planning import router as planning_router
 from app.api.push import router as push_router
+from app.api.showcase import router as showcase_router
 from app.api.sync import router as sync_router
 from app.api.user_settings import router as user_settings_router
 from app.application.planning.scheduler import NightlyPlanningScheduler
@@ -58,6 +60,13 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None]:
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    if settings.showcase_allowed_origins:
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=settings.showcase_allowed_origins,
+            allow_methods=["GET"],
+        )
+    app.include_router(showcase_router)
     app.add_api_route("/health", health, methods=["GET"])
     app.include_router(auth_router)
     app.include_router(butler_router)

@@ -2,8 +2,9 @@ from datetime import time
 from functools import lru_cache
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 
 class Settings(BaseSettings):
@@ -12,6 +13,10 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+asyncpg://hello_butler:hello_butler@localhost:5433/hello_butler"
     )
+    showcase_database_url: str = Field(
+        default="postgresql+asyncpg://hello_butler:hello_butler@localhost:5433/showcase"
+    )
+    showcase_allowed_origins: list[str] = []
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "hello-butler"
@@ -69,6 +74,12 @@ class Settings(BaseSettings):
         except ZoneInfoNotFoundError as exc:
             raise ValueError("butler_default_timezone must be an IANA timezone") from exc
         return value
+
+    @model_validator(mode="after")
+    def require_separate_showcase_database(self) -> "Settings":
+        if make_url(self.database_url).database == make_url(self.showcase_database_url).database:
+            raise ValueError("Showcase must use a separate database from Hello Butler")
+        return self
 
     @property
     def timezone(self) -> ZoneInfo:

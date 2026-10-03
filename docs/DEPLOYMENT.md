@@ -251,3 +251,7 @@ Later automate this with CI/CD after tests pass.
 - Production backend health check
 - Automatic CI/CD from `main`
 - Final reboot/recovery test
+
+## Showcase database
+
+The same PostgreSQL container also holds the separate `showcase_dev` / `showcase` database. Set `SHOWCASE_DB` and backend `SHOWCASE_DATABASE_URL` for each environment. Fresh volumes initialize it automatically; existing volumes need the idempotent init command before independent Showcase migrations. Follow [Showcase setup](project_source_of_truth/web/showcase/SHOWCASE.md#v1-setup-and-operation); preserve the existing dev/prod project names and volumes.
