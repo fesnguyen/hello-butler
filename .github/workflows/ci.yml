@@ -3,15 +3,17 @@ name: Hello Butler CI
 on:
   push:
     branches: [main]
+
   pull_request:
     branches: [main]
+
   workflow_dispatch:
 
 jobs:
 
-  # ─────────────────────────────────────────────
+  # ============================================================
   # Backend
-  # ─────────────────────────────────────────────
+  # ============================================================
   backend:
     name: Backend
     runs-on: [self-hosted, Windows, X64]
@@ -25,33 +27,31 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set PowerShell execution policy
-        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-
-      - name: Show environment
+      - name: Show runner
         run: |
           Write-Host "Runner: $env:COMPUTERNAME"
-          python --version
           uv --version
           docker --version
 
-      - name: Install backend dependencies
+      - name: Sync backend dependencies
         run: uv sync --frozen
+
+      - name: Show Python version
+        run: uv run python --version
 
       - name: Ruff
         run: uv run ruff check .
 
-      - name: Backend tests
+      - name: Run backend tests
         run: uv run python -m unittest discover -s tests -v
 
       - name: Build backend Docker image
-        working-directory: .
-        run: docker build -t hello-butler-backend-ci:${{ github.sha }} ./backend
+        run: docker build -t hello-butler-backend-ci:${{ github.sha }} .
 
 
-  # ─────────────────────────────────────────────
+  # ============================================================
   # Android Client
-  # ─────────────────────────────────────────────
+  # ============================================================
   android:
     name: Android
     runs-on: [self-hosted, Windows, X64]
@@ -65,13 +65,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set PowerShell execution policy
-        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-
-      - name: Show environment
+      - name: Show runner
         run: |
           Write-Host "Runner: $env:COMPUTERNAME"
-          java -version
 
       - name: Run Android tests
         run: .\gradlew.bat test
@@ -85,9 +81,9 @@ jobs:
             Select-Object FullName, Length
 
 
-  # ─────────────────────────────────────────────
+  # ============================================================
   # Showcase
-  # ─────────────────────────────────────────────
+  # ============================================================
   showcase:
     name: Showcase
     runs-on: [self-hosted, Windows, X64]
@@ -101,10 +97,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set PowerShell execution policy
-        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
-
-      - name: Show environment
+      - name: Show runner
         run: |
           Write-Host "Runner: $env:COMPUTERNAME"
           node --version
