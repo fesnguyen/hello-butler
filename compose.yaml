@@ -7,6 +7,8 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       SHOWCASE_DB: ${SHOWCASE_DB:-showcase}
+      SHOWCASE_USER: ${SHOWCASE_USER}
+      SHOWCASE_PASSWORD: ${SHOWCASE_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
