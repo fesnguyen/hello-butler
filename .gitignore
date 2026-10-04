@@ -254,3 +254,9 @@ Thumbs.db
 
 # Release build outputs
 /client/app/release/
+
+# Public configuration examples and frontend dependencies
+!.env.example
+node_modules/
+
+web/showcase/dist-server/

@@ -6,12 +6,16 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      SHOWCASE_DB: ${SHOWCASE_DB:-showcase}
+      SHOWCASE_USER: ${SHOWCASE_USER}
+      SHOWCASE_PASSWORD: ${SHOWCASE_PASSWORD}
     ports:
       - "5433:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./docker/postgres/init-showcase.sh:/docker-entrypoint-initdb.d/init-showcase.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hello_butler -d hello_butler"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 5

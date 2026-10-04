@@ -251,3 +251,7 @@ Later automate this with CI/CD after tests pass.
 - Production backend health check
 - Automatic CI/CD from `main`
 - Final reboot/recovery test
+
+## Showcase database
+
+The same PostgreSQL container hosts an independent Showcase database and role. Showcase owns its server-side access and repeatable schema initialization; Butler's Alembic only manages Butler. Follow [Showcase setup](project_source_of_truth/web/showcase/SHOWCASE.md). Provision existing volumes without resetting or deleting Butler data.

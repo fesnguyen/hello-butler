@@ -199,3 +199,8 @@ validated mutation + canonical text
 ```
 
 Keep one authoritative model for each concept, and do not make canonical text delivery wait for optional speech.
+
+
+# Ecosystem boundary
+
+FastAPI owns only Hello Butler and its database/Alembic history. Showcase owns its PostgreSQL access through its own server-side data layer in `web/showcase`. Future Admin will manage ecosystem databases through its trusted server-side layer. See [Showcase](../web/showcase/SHOWCASE.md).
