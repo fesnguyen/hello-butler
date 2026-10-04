@@ -15,25 +15,28 @@ permissions:
 jobs:
 
   diagnose-runner-environment:
-    runs-on: [self-hosted, Windows, X64]
-    name: Diagnose runner environment
-    shell: powershell
-    run: |
-      Write-Host "=== USER ==="
-      whoami
+  name: Diagnose runner environment
+  runs-on: [self-hosted, Windows, X64]
 
-      Write-Host "=== PATH ==="
-      $env:Path -split ';'
+  steps:
+    - name: Diagnose runner environment
+      shell: powershell
+      run: |
+        Write-Host "=== USER ==="
+        whoami
 
-      Write-Host "=== DOCKER ==="
-      where.exe docker 2>$null
-      Get-Command docker -ErrorAction SilentlyContinue
+        Write-Host "=== PATH ==="
+        $env:Path -split ';'
 
-      Write-Host "=== FILE EXISTS? ==="
-      Test-Path "C:\Users\ADMIN\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe"
+        Write-Host "=== DOCKER ==="
+        where.exe docker 2>$null
+        Get-Command docker -ErrorAction SilentlyContinue
 
-      Write-Host "=== SYSTEM PATH ==="
-      [Environment]::GetEnvironmentVariable("Path", "Machine")
+        Write-Host "=== FILE EXISTS? ==="
+        Test-Path "C:\Users\ADMIN\AppData\Local\Programs\DockerDesktop\resources\bin\docker.exe"
+
+        Write-Host "=== SYSTEM PATH ==="
+        [Environment]::GetEnvironmentVariable("Path", "Machine")
 
   # ============================================================
   # Backend
