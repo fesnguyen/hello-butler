@@ -15,35 +15,35 @@ jobs:
   # ENV Check
   # ============================================================
   runner-env:
-  name: Runner Environment
-  runs-on: [self-hosted, Windows, X64]
+    name: Runner Environment
+    runs-on: [self-hosted, Windows, X64]
 
-  steps:
-    - name: Inspect runner environment
-      shell: powershell
-      run: |
-        Write-Host "=== Identity ==="
-        whoami
-        Write-Host "Computer: $env:COMPUTERNAME"
+    steps:
+      - name: Inspect runner environment
+        shell: powershell
+        run: |
+          Write-Host "=== Identity ==="
+          whoami
+          Write-Host "Computer: $env:COMPUTERNAME"
 
-        Write-Host "`n=== Environment ==="
-        Write-Host "JAVA_HOME=$env:JAVA_HOME"
-        Write-Host "USERPROFILE=$env:USERPROFILE"
-        Write-Host "PATH=$env:PATH"
+          Write-Host "`n=== Environment ==="
+          Write-Host "JAVA_HOME=$env:JAVA_HOME"
+          Write-Host "USERPROFILE=$env:USERPROFILE"
+          Write-Host "PATH=$env:PATH"
 
-        Write-Host "`n=== Commands ==="
-        Get-Command java -ErrorAction SilentlyContinue
-        Get-Command uv -ErrorAction SilentlyContinue
-        Get-Command node -ErrorAction SilentlyContinue
-        Get-Command pnpm -ErrorAction SilentlyContinue
-        Get-Command docker -ErrorAction SilentlyContinue
+          Write-Host "`n=== Commands ==="
+          Get-Command java -ErrorAction SilentlyContinue
+          Get-Command uv -ErrorAction SilentlyContinue
+          Get-Command node -ErrorAction SilentlyContinue
+          Get-Command pnpm -ErrorAction SilentlyContinue
+          Get-Command docker -ErrorAction SilentlyContinue
 
-        Write-Host "`n=== Versions ==="
-        java -version
-        uv --version
-        node --version
-        pnpm --version
-        docker --version
+          Write-Host "`n=== Versions ==="
+          java -version
+          uv --version
+          node --version
+          pnpm --version
+          docker --version
 
   # ============================================================
   # Backend
