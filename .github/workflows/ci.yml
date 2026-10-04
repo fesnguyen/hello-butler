@@ -1,0 +1,120 @@
+name: Hello Butler CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+
+  # ─────────────────────────────────────────────
+  # Backend
+  # ─────────────────────────────────────────────
+  backend:
+    name: Backend
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+        working-directory: backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          Write-Host "Runner: $env:COMPUTERNAME"
+          python --version
+          uv --version
+          docker --version
+
+      - name: Install backend dependencies
+        run: uv sync --frozen
+
+      - name: Ruff
+        run: uv run ruff check .
+
+      - name: Backend tests
+        run: uv run python -m unittest discover -s tests -v
+
+      - name: Build backend Docker image
+        working-directory: .
+        run: docker build -t hello-butler-backend-ci:${{ github.sha }} ./backend
+
+
+  # ─────────────────────────────────────────────
+  # Android Client
+  # ─────────────────────────────────────────────
+  android:
+    name: Android
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+        working-directory: client
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          Write-Host "Runner: $env:COMPUTERNAME"
+          java -version
+
+      - name: Run Android tests
+        run: .\gradlew.bat test
+
+      - name: Build debug APK
+        run: .\gradlew.bat assembleDebug
+
+      - name: Show generated APK
+        run: |
+          Get-ChildItem -Path app\build\outputs\apk -Recurse -Filter *.apk |
+            Select-Object FullName, Length
+
+
+  # ─────────────────────────────────────────────
+  # Showcase
+  # ─────────────────────────────────────────────
+  showcase:
+    name: Showcase
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+        working-directory: web/showcase
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          Write-Host "Runner: $env:COMPUTERNAME"
+          node --version
+          pnpm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test
+        run: pnpm test
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Build
+        run: pnpm build
