@@ -13,9 +13,6 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev || uv sync --no-dev
 
-COPY alembic_showcase.ini ./alembic_showcase.ini
-COPY alembic_showcase ./alembic_showcase
-COPY showcase.seed.example.json ./showcase.seed.example.json
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
 COPY app ./app

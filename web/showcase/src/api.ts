@@ -20,7 +20,7 @@ export interface ShowcaseApplication {
 }
 
 export function applicationsUrl(baseUrl: string): string {
-  return `${baseUrl.replace(/\/+$/, '')}/api/showcase/applications`;
+  return `${baseUrl.replace(/\/+$/, '')}/api/applications`;
 }
 
 export async function fetchApplications(

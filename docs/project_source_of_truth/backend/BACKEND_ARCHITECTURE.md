@@ -201,6 +201,6 @@ validated mutation + canonical text
 Keep one authoritative model for each concept, and do not make canonical text delivery wait for optional speech.
 
 
-# Public Showcase
+# Ecosystem boundary
 
-The public, read-only Showcase is an independent backend boundary: `app.api.showcase` → `ShowcaseService` → `get_showcase_session` → the separate Showcase database. Its metadata and Alembic history never join Butler persistence. `GET /api/showcase/applications` aggregates applications, ordered media, and latest published releases without authentication. See [Showcase Web](../web/showcase/SHOWCASE.md) for schema, configuration, bootstrap, and deterministic migration/build commands. Existing Butler workflows and Android contracts are unchanged.
+FastAPI owns only Hello Butler and its database/Alembic history. Showcase owns its PostgreSQL access through its own server-side data layer in `web/showcase`. Future Admin will manage ecosystem databases through its trusted server-side layer. See [Showcase](../web/showcase/SHOWCASE.md).

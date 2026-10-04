@@ -58,10 +58,10 @@ test('source, ordered media, and latest download are rendered from API data', ()
 });
 
 test('API URL supports same-origin and a configured host', () => {
-  assert.equal(applicationsUrl(''), '/api/showcase/applications');
+  assert.equal(applicationsUrl(''), '/api/applications');
   assert.equal(
     applicationsUrl('https://api.example.com/'),
-    'https://api.example.com/api/showcase/applications',
+    'https://api.example.com/api/applications',
   );
 });
 
@@ -74,10 +74,7 @@ test('fetch returns the aggregate contract and reports HTTP failures', async (t)
   assert.deepEqual(await fetchApplications('https://api.example.com'), [
     application,
   ]);
-  assert.equal(
-    requestedUrl,
-    'https://api.example.com/api/showcase/applications',
-  );
+  assert.equal(requestedUrl, 'https://api.example.com/api/applications');
   t.mock.restoreAll();
   t.mock.method(
     globalThis,

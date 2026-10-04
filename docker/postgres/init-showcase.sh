@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 
+case "${1:-}" in
+    ""|--adopt-legacy) ;;
+    *) echo "Usage: $0 [--adopt-legacy]" >&2; exit 1 ;;
+esac
+
 : "${SHOWCASE_DB:?SHOWCASE_DB is required}"
 : "${SHOWCASE_USER:?SHOWCASE_USER is required}"
 : "${SHOWCASE_PASSWORD:?SHOWCASE_PASSWORD is required}"
@@ -80,3 +85,15 @@ SELECT format(
 SQL
 
 echo "Showcase database '$SHOWCASE_DB' is ready for user '$SHOWCASE_USER'."
+# Explicit compatibility step for content created by the former FastAPI owner.
+# Normal provisioning does not manage application tables.
+if [ "${1:-}" = "--adopt-legacy" ]; then
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$SHOWCASE_DB" \
+        --set=showcase_user="$SHOWCASE_USER" <<'SQL'
+SELECT format('ALTER TABLE public.%I OWNER TO %I', tablename, :'showcase_user')
+FROM pg_tables
+WHERE schemaname = 'public'
+  AND tablename IN ('showcase_applications', 'showcase_media', 'showcase_releases')
+\gexec
+SQL
+fi

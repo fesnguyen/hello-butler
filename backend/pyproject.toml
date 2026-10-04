@@ -49,5 +49,5 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.pyright]
 pythonVersion = "3.12"
 typeCheckingMode = "strict"
-include = ["app", "alembic", "alembic_showcase"]
+include = ["app", "alembic"]
 exclude = [".venv"]

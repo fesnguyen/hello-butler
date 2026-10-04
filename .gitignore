@@ -258,3 +258,5 @@ Thumbs.db
 # Public configuration examples and frontend dependencies
 !.env.example
 node_modules/
+
+web/showcase/dist-server/

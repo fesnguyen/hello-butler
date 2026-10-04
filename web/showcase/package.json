@@ -10,22 +10,29 @@
   "scripts": {
     "dev": "vite",
     "typecheck": "tsc --noEmit",
-    "build": "pnpm typecheck && vite build",
+    "build": "pnpm typecheck && vite build && tsc -p tsconfig.server.json",
     "preview": "vite preview",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --import tsx --test tests/*.test.tsx"
+    "test": "node --env-file-if-exists=../../.env.dev --import tsx --test tests/*.test.ts tests/*.test.tsx",
+    "dev:server": "node --env-file-if-exists=../../.env.dev --import tsx --watch server/index.ts",
+    "db:init": "node --env-file-if-exists=../../.env.dev --import tsx server/init.ts",
+    "db:seed": "node --env-file-if-exists=../../.env.dev --import tsx server/seed.ts",
+    "start": "node dist-server/server/index.js"
   },
   "dependencies": {
     "@tanstack/react-query": "5.104.0",
+    "pg": "8.16.3",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@eslint/js": "10.0.1",
     "@tailwindcss/vite": "4.3.3",
     "@types/node": "24.19.1",
+    "@types/pg": "8.15.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.1.1",

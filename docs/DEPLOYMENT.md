@@ -254,4 +254,4 @@ Later automate this with CI/CD after tests pass.
 
 ## Showcase database
 
-The same PostgreSQL container also holds the separate `showcase_dev` / `showcase` database. Set `SHOWCASE_DB` and backend `SHOWCASE_DATABASE_URL` for each environment. Fresh volumes initialize it automatically; existing volumes need the idempotent init command before independent Showcase migrations. Follow [Showcase setup](project_source_of_truth/web/showcase/SHOWCASE.md#v1-setup-and-operation); preserve the existing dev/prod project names and volumes.
+The same PostgreSQL container hosts an independent Showcase database and role. Showcase owns its server-side access and repeatable schema initialization; Butler's Alembic only manages Butler. Follow [Showcase setup](project_source_of_truth/web/showcase/SHOWCASE.md). Provision existing volumes without resetting or deleting Butler data.
