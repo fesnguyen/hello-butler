@@ -25,6 +25,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set PowerShell execution policy
+        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+
       - name: Show environment
         run: |
           Write-Host "Runner: $env:COMPUTERNAME"
@@ -62,6 +65,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set PowerShell execution policy
+        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
+
       - name: Show environment
         run: |
           Write-Host "Runner: $env:COMPUTERNAME"
@@ -94,6 +100,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set PowerShell execution policy
+        run: Set-ExecutionPolicy -ExecutionPolicy Bypass -Scope Process -Force
 
       - name: Show environment
         run: |
