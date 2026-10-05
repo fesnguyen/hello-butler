@@ -77,10 +77,15 @@ jobs:
         run: |
           uv sync --frozen
 
-      - name: Run backend tests
+      - name: Backend lint
         working-directory: backend
         run: |
-          uv run pytest
+          uv run ruff check .
+
+      - name: Backend type check
+        working-directory: backend
+        run: |
+          uv run pyright
 
       # ============================================================
       # 4. Docker build
@@ -89,6 +94,4 @@ jobs:
       - name: Build backend Docker image
         working-directory: backend
         run: |
-          docker build `
-            -t hello-butler-backend-ci:${{ github.sha }} `
-            .
+          docker build -t hello-butler-backend-ci:${{ github.sha }} .
