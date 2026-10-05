@@ -5,6 +5,10 @@ on:
   workflow_dispatch:
 
 jobs:
+  # ============================================================
+  # BACKEND
+  # ============================================================
+
   backend:
     name: Diagnose + Backend
     runs-on: [self-hosted, Windows, X64]
@@ -14,9 +18,9 @@ jobs:
         shell: powershell
 
     steps:
-      # ============================================================
-      # 1. Runner diagnosis
-      # ============================================================
+      # ----------------------------------------------------------
+      # Runner diagnosis
+      # ----------------------------------------------------------
 
       - name: Diagnose runner identity
         run: |
@@ -61,16 +65,16 @@ jobs:
           where.exe docker
           docker --version
 
-      # ============================================================
-      # 2. Checkout
-      # ============================================================
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # ============================================================
-      # 3. Backend
-      # ============================================================
+      # ----------------------------------------------------------
+      # Backend CI
+      # ----------------------------------------------------------
 
       - name: Sync backend dependencies
         working-directory: backend
@@ -82,11 +86,112 @@ jobs:
         run: |
           uv run ruff check .
 
-      # ============================================================
-      # 4. Docker build
-      # ============================================================
-
       - name: Build backend Docker image
         working-directory: backend
         run: |
-          docker build -t hello-butler-backend-ci:${{ github.sha }} .
+          docker build `
+            -t hello-butler-backend-ci:${{ github.sha }} `
+            .
+
+
+  # ============================================================
+  # SHOWCASE
+  # ============================================================
+
+  showcase:
+    name: Showcase
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Verify pnpm
+        run: |
+          where.exe pnpm
+          pnpm --version
+
+      - name: Install showcase dependencies
+        working-directory: web/showcase
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Build showcase
+        working-directory: web/showcase
+        run: |
+          pnpm build
+
+
+  # ============================================================
+  # DEPLOY
+  #
+  # Runs ONLY after:
+  #
+  #   backend  ✅
+  #   showcase ✅
+  #
+  # If either fails, this job does not run.
+  # ============================================================
+
+  deploy:
+    name: Deploy
+    runs-on: [self-hosted, Windows, X64]
+
+    needs:
+      - backend
+      - showcase
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      # Deploy is a new job, so get the repository/compose.yaml
+      # into this job's workspace.
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ----------------------------------------------------------
+      # Backend deployment
+      #
+      # CI created:
+      #
+      #   hello-butler-backend-ci:<commit>
+      #
+      # Move :latest to that exact tested image.
+      # ----------------------------------------------------------
+
+      - name: Tag backend image for deployment
+        run: |
+          docker tag `
+            hello-butler-backend-ci:${{ github.sha }} `
+            hello-butler-backend:latest
+
+      # ----------------------------------------------------------
+      # Apply production Compose state
+      #
+      # PostgreSQL should remain running.
+      # Backend is recreated if :latest changed.
+      #
+      # --no-build guarantees Compose does NOT rebuild backend.
+      # ----------------------------------------------------------
+
+      - name: Deploy backend
+        run: |
+          docker compose `
+            --env-file ./.env.production `
+            up -d --no-build
+
+      # ----------------------------------------------------------
+      # Verify deployment state
+      # ----------------------------------------------------------
+
+      - name: Show deployed containers
+        run: |
+          docker compose `
+            --env-file ./.env.production `
+            ps
