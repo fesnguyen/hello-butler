@@ -125,86 +125,86 @@ jobs:
         run: |
           pnpm build
 
-    # ============================================================
-    # ANDROID CLIENT
-    # ============================================================
+  # ============================================================
+  # ANDROID CLIENT
+  # ============================================================
 
-    client:
-      name: Diagnose + Android Client
-      runs-on: [self-hosted, Windows, X64]
+  client:
+    name: Diagnose + Android Client
+    runs-on: [self-hosted, Windows, X64]
 
-      defaults:
-        run:
-          shell: powershell
+    defaults:
+      run:
+        shell: powershell
 
-      steps:
-        # ----------------------------------------------------------
-        # Android runner diagnosis
-        # ----------------------------------------------------------
+    steps:
+      # ----------------------------------------------------------
+      # Android runner diagnosis
+      # ----------------------------------------------------------
 
-        - name: Diagnose Android environment
-          run: |
-            Write-Host "=== USER ==="
-            whoami
+      - name: Diagnose Android environment
+        run: |
+          Write-Host "=== USER ==="
+          whoami
 
-            Write-Host "`n=== JAVA_HOME ==="
-            Write-Host $env:JAVA_HOME
+          Write-Host "`n=== JAVA_HOME ==="
+          Write-Host $env:JAVA_HOME
 
-            Write-Host "`n=== JAVA ==="
-            Get-Command java | Format-List Source, Version
-            java -version
+          Write-Host "`n=== JAVA ==="
+          Get-Command java | Format-List Source, Version
+          java -version
 
-            Write-Host "`n=== ANDROID_HOME ==="
-            Write-Host $env:ANDROID_HOME
+          Write-Host "`n=== ANDROID_HOME ==="
+          Write-Host $env:ANDROID_HOME
 
-            Write-Host "`n=== ANDROID_SDK_ROOT ==="
-            Write-Host $env:ANDROID_SDK_ROOT
+          Write-Host "`n=== ANDROID_SDK_ROOT ==="
+          Write-Host $env:ANDROID_SDK_ROOT
 
-            Write-Host "`n=== VALIDATE ANDROID SDK ==="
+          Write-Host "`n=== VALIDATE ANDROID SDK ==="
 
-            if (-not $env:ANDROID_HOME) {
-              throw "ANDROID_HOME is not defined."
-            }
+          if (-not $env:ANDROID_HOME) {
+            throw "ANDROID_HOME is not defined."
+          }
 
-            if (-not (Test-Path $env:ANDROID_HOME)) {
-              throw "ANDROID_HOME does not exist: $env:ANDROID_HOME"
-            }
+          if (-not (Test-Path $env:ANDROID_HOME)) {
+            throw "ANDROID_HOME does not exist: $env:ANDROID_HOME"
+          }
 
-            Write-Host "Android SDK found: $env:ANDROID_HOME"
+          Write-Host "Android SDK found: $env:ANDROID_HOME"
 
-            Write-Host "`n=== INSTALLED SDK PLATFORMS ==="
-            Get-ChildItem "$env:ANDROID_HOME\platforms" -Name
+          Write-Host "`n=== INSTALLED SDK PLATFORMS ==="
+          Get-ChildItem "$env:ANDROID_HOME\platforms" -Name
 
-            Write-Host "`n=== INSTALLED BUILD TOOLS ==="
-            Get-ChildItem "$env:ANDROID_HOME\build-tools" -Name
+          Write-Host "`n=== INSTALLED BUILD TOOLS ==="
+          Get-ChildItem "$env:ANDROID_HOME\build-tools" -Name
 
-            Write-Host "`n=== PLATFORM TOOLS ==="
-            Test-Path "$env:ANDROID_HOME\platform-tools"
+          Write-Host "`n=== PLATFORM TOOLS ==="
+          Test-Path "$env:ANDROID_HOME\platform-tools"
 
-        # ----------------------------------------------------------
-        # Checkout
-        # ----------------------------------------------------------
+      # ----------------------------------------------------------
+      # Checkout
+      # ----------------------------------------------------------
 
-        - name: Checkout repository
-          uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-        # ----------------------------------------------------------
-        # Gradle diagnosis
-        # ----------------------------------------------------------
+      # ----------------------------------------------------------
+      # Gradle diagnosis
+      # ----------------------------------------------------------
 
-        - name: Diagnose Gradle
-          working-directory: client
-          run: |
-            .\gradlew.bat --version
+      - name: Diagnose Gradle
+        working-directory: client
+        run: |
+          .\gradlew.bat --version
 
-        # ----------------------------------------------------------
-        # Android build
-        # ----------------------------------------------------------
+      # ----------------------------------------------------------
+      # Android build
+      # ----------------------------------------------------------
 
-        - name: Build Android debug APK
-          working-directory: client
-          run: |
-            .\gradlew.bat assembleDebug
+      - name: Build Android debug APK
+        working-directory: client
+        run: |
+          .\gradlew.bat assembleDebug
 
   # ============================================================
   # DEPLOY
