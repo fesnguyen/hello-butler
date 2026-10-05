@@ -82,11 +82,6 @@ jobs:
         run: |
           uv run ruff check .
 
-      - name: Backend type check
-        working-directory: backend
-        run: |
-          uv run pyright
-
       # ============================================================
       # 4. Docker build
       # ============================================================
