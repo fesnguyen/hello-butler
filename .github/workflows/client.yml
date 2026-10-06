@@ -3,7 +3,7 @@ name: Android Client CI/CD
 on:
   push:
     branches:
-      - feature/implement_CI_CD
+      - feat/finish-CI-CD-flow
     paths:
       - "client/**"
       - ".github/workflows/client.yml"
