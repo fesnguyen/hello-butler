@@ -3,7 +3,7 @@ name: Android Client CI/CD
 on:
   push:
     branches:
-      - main
+      - feat/finish-CI-CD-flow
     paths:
       - "client/**"
       - ".github/workflows/client.yml"
@@ -67,30 +67,107 @@ jobs:
           .\gradlew.bat assembleRelease
 
       # ------------------------------------------------------------
-      # Verify build
+      # Sign release APK
       # ------------------------------------------------------------
 
-      - name: Verify release APK
+      - name: Sign release APK
+        run: |
+          $unsignedApk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release-unsigned.apk"
+          $signedApk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          $keystore = "C:\hello-butler-configs\hello-butler-release.jks"
+
+          if (-not (Test-Path $unsignedApk)) {
+            throw "Unsigned release APK was not produced: $unsignedApk"
+          }
+
+          if (-not (Test-Path $keystore)) {
+            throw "Release keystore not found: $keystore"
+          }
+
+          # Read signing credentials from the external production properties.
+          $properties = @{}
+
+          Get-Content "C:\hello-butler-configs\gradle.properties" | ForEach-Object {
+            if ($_ -match '^\s*([^#][^=]*)=(.*)$') {
+              $properties[$matches[1].Trim()] = $matches[2].Trim()
+            }
+          }
+
+          $storePassword = $properties["RELEASE_KEYSTORE_PASSWORD"]
+          $keyPassword = $properties["RELEASE_KEY_PASSWORD"]
+
+          if (-not $storePassword) {
+            throw "RELEASE_KEYSTORE_PASSWORD is missing."
+          }
+
+          if (-not $keyPassword) {
+            throw "RELEASE_KEY_PASSWORD is missing."
+          }
+
+          # Find apksigner from the installed Android SDK.
+          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $buildTools) {
+            throw "Android SDK Build Tools not found."
+          }
+
+          $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+
+          if (-not (Test-Path $apksigner)) {
+            throw "apksigner not found: $apksigner"
+          }
+
+          & $apksigner sign `
+            --ks $keystore `
+            --ks-key-alias "hello-butler" `
+            --ks-pass "pass:$storePassword" `
+            --key-pass "pass:$keyPassword" `
+            --out $signedApk `
+            $unsignedApk
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "APK signing failed."
+          }
+
+      # ------------------------------------------------------------
+      # Verify signature
+      # ------------------------------------------------------------
+
+      - name: Verify signed APK
         run: |
           $apk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
 
           if (-not (Test-Path $apk)) {
-            throw "Release APK was not produced: $apk"
+            throw "Signed release APK was not produced: $apk"
           }
 
-          Write-Host "Release APK built successfully:"
-          Write-Host $apk
+          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+
+          & $apksigner verify --verbose $apk
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "APK signature verification failed."
+          }
+
+          Write-Host "APK signature verified successfully."
 
       # ------------------------------------------------------------
-      # Deploy APK
+      # Publish APK to Showcase
       # ------------------------------------------------------------
 
-      - name: Deploy release APK
+      - name: Publish APK to Showcase
         run: |
           $source = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
 
-          $targetDirectory = "C:\hello-butler-production\android"
-          $target = "$targetDirectory\hello-butler.apk"
+          $targetDirectory = "C:\hello-butler-production\showcase\releases"
+          $target = "$targetDirectory\hello-butler-v0.1.0.apk"
 
           New-Item `
             -ItemType Directory `
@@ -99,5 +176,5 @@ jobs:
 
           Copy-Item $source $target -Force
 
-          Write-Host "APK deployed:"
+          Write-Host "APK published:"
           Write-Host $target
