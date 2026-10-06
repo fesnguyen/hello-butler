@@ -125,6 +125,19 @@ jobs:
         run: |
           pnpm build
 
+      - name: Stage showcase build
+        run: |
+          $target = "C:\hello-butler-ci-artifacts\showcase"
+
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          Copy-Item `
+            "web\showcase\dist\*" `
+            $target `
+            -Recurse `
+            -Force
+
   # ============================================================
   # ANDROID CLIENT
   # ============================================================
@@ -206,6 +219,18 @@ jobs:
         run: |
           .\gradlew.bat assembleDebug
 
+      - name: Stage Android APK
+        run: |
+          $target = "C:\hello-butler-ci-artifacts\android"
+
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          Copy-Item `
+            "client\app\build\outputs\apk\debug\app-debug.apk" `
+            "$target\hello-butler.apk" `
+            -Force
+
   # ============================================================
   # DEPLOY
   #
@@ -213,6 +238,7 @@ jobs:
   #
   #   backend  ✅
   #   showcase ✅
+  #   client   ✅
   #
   # If either fails, this job does not run.
   # ============================================================
@@ -264,7 +290,7 @@ jobs:
       - name: Deploy backend
         run: |
           docker compose `
-            --env-file ./.env.production `
+            --env-file "C:\hello-butler-production\.env.production" `
             up -d --no-build
 
       # ----------------------------------------------------------
@@ -274,5 +300,64 @@ jobs:
       - name: Show deployed containers
         run: |
           docker compose `
-            --env-file ./.env.production `
+            --env-file "C:\hello-butler-production\.env.production" `
             ps
+
+
+      - name: Deploy showcase
+        run: |
+          $source = "C:\hello-butler-ci-artifacts\showcase"
+          $target = "C:\hello-butler-deploy\showcase"
+
+          if (-not (Test-Path "$source\index.html")) {
+            throw "Showcase artifact is missing."
+          }
+
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          # Remove previous website while preserving the downloads directory.
+          Get-ChildItem $target |
+            Where-Object { $_.Name -ne "downloads" } |
+            Remove-Item -Recurse -Force
+
+          Copy-Item `
+            "$source\*" `
+            $target `
+            -Recurse `
+            -Force
+
+
+      - name: Deploy Android APK
+        run: |
+          $source = "C:\hello-butler-ci-artifacts\android\hello-butler.apk"
+          $target = "C:\hello-butler-deploy\showcase\downloads"
+
+          if (-not (Test-Path $source)) {
+            throw "Android APK artifact is missing."
+          }
+
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          Copy-Item `
+            $source `
+            "$target\hello-butler.apk" `
+            -Force
+
+      - name: Verify deployment
+        run: |
+          Write-Host "=== DOCKER ==="
+          docker compose `
+            --env-file "C:\hello-butler-production\.env.production" `
+            ps
+
+          Write-Host "`n=== SHOWCASE ==="
+          if (-not (Test-Path "C:\hello-butler-deploy\showcase\index.html")) {
+            throw "Showcase deployment failed."
+          }
+
+          Write-Host "`n=== APK ==="
+          $apk = Get-Item "C:\hello-butler-deploy\showcase\downloads\hello-butler.apk"
+          Write-Host "APK: $($apk.FullName)"
+          Write-Host "Size: $([math]::Round($apk.Length / 1MB, 2)) MB"
+
+          Write-Host "`nDeployment artifacts OK."
