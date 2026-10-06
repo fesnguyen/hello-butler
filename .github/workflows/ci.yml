@@ -1,0 +1,124 @@
+name: Showcase CI/CD
+
+on:
+  push:
+    branches:
+      - feature/implement_CI_CD
+    paths:
+      - "web/showcase/**"
+      - ".github/workflows/ci.yml"
+  workflow_dispatch:
+
+jobs:
+  showcase:
+    name: Build and Deploy Showcase
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ------------------------------------------------------------
+      # Production configuration for build
+      # ------------------------------------------------------------
+
+      - name: Copy production environment
+        run: |
+          $source = "C:\hello-butler-configs\.env.production"
+          $target = "${{ github.workspace }}\.env.production"
+
+          if (-not (Test-Path $source)) {
+            throw "Production environment file not found: $source"
+          }
+
+          Copy-Item $source $target -Force
+
+      # ------------------------------------------------------------
+      # CI
+      # ------------------------------------------------------------
+
+      - name: Install dependencies
+        working-directory: web/showcase
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: web/showcase
+        run: pnpm lint
+
+      - name: Test
+        working-directory: web/showcase
+        run: pnpm test
+
+      - name: Build production Showcase
+        working-directory: web/showcase
+        run: pnpm build
+
+      # ------------------------------------------------------------
+      # Deploy
+      # ------------------------------------------------------------
+
+      - name: Deploy Showcase
+        run: |
+          $source = "${{ github.workspace }}\web\showcase"
+          $target = "C:\hello-butler-production\showcase"
+
+          if (-not (Test-Path "$source\dist\index.html")) {
+            throw "Showcase frontend build is missing."
+          }
+
+          if (-not (Test-Path "$source\dist-server\server\index.js")) {
+            throw "Showcase backend build is missing."
+          }
+
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          # Replace application build output.
+          Remove-Item "$target\dist" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item "$target\dist-server" -Recurse -Force -ErrorAction SilentlyContinue
+
+          Copy-Item "$source\dist" "$target\dist" -Recurse -Force
+          Copy-Item "$source\dist-server" "$target\dist-server" -Recurse -Force
+
+          # Runtime dependency manifests.
+          Copy-Item "$source\package.json" "$target\package.json" -Force
+          Copy-Item "$source\pnpm-lock.yaml" "$target\pnpm-lock.yaml" -Force
+
+      # ------------------------------------------------------------
+      # Production runtime dependencies
+      # ------------------------------------------------------------
+
+      - name: Sync production dependencies
+        working-directory: C:\hello-butler-production\showcase
+        run: |
+          pnpm install --prod --frozen-lockfile
+
+      # ------------------------------------------------------------
+      # Verify runnable production installation
+      # ------------------------------------------------------------
+
+      - name: Verify production deployment
+        run: |
+          $target = "C:\hello-butler-production\showcase"
+
+          $required = @(
+            "$target\dist\index.html",
+            "$target\dist-server\server\index.js",
+            "$target\package.json",
+            "$target\pnpm-lock.yaml",
+            "$target\node_modules"
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              throw "Production deployment is incomplete: $path"
+            }
+          }
+
+          Write-Host "Showcase production deployment ready:"
+          Write-Host "  UI:           $target\dist"
+          Write-Host "  Backend:      $target\dist-server"
+          Write-Host "  Dependencies: $target\node_modules"
