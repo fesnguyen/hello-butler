@@ -1,0 +1,100 @@
+name: Android Client CI/CD
+
+on:
+  push:
+    branches:
+      - feature/implement_CI_CD
+    paths:
+      - "client/**"
+      - ".github/workflows/client.yml"
+
+  workflow_dispatch:
+
+jobs:
+  client:
+    name: Build and Deploy Android Client
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ------------------------------------------------------------
+      # Production configuration
+      #
+      # Android reads these values as Gradle properties.
+      # Keep production values outside the repository.
+      # ------------------------------------------------------------
+
+      - name: Copy production Gradle properties
+        run: |
+          $source = "C:\hello-butler-configs\gradle.properties"
+          $target = "${{ github.workspace }}\client\gradle.properties"
+
+          if (-not (Test-Path $source)) {
+            throw "Production Gradle properties not found: $source"
+          }
+
+          Copy-Item $source $target -Force
+
+      # ------------------------------------------------------------
+      # CI
+      # ------------------------------------------------------------
+
+      - name: Run Android checks
+        working-directory: client
+        run: |
+          .\gradlew.bat test
+
+      # ------------------------------------------------------------
+      # Production build
+      # ------------------------------------------------------------
+
+      - name: Build release APK
+        working-directory: client
+        run: |
+          .\gradlew.bat assembleRelease
+
+      # ------------------------------------------------------------
+      # Verify build
+      # ------------------------------------------------------------
+
+      - name: Verify release APK
+        run: |
+          $apk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          if (-not (Test-Path $apk)) {
+            throw "Release APK was not produced: $apk"
+          }
+
+          Write-Host "Release APK built successfully:"
+          Write-Host $apk
+
+      # ------------------------------------------------------------
+      # Deploy APK
+      # ------------------------------------------------------------
+
+      - name: Deploy release APK
+        run: |
+          $source = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          $targetDirectory = "C:\hello-butler-production\android"
+          $target = "$targetDirectory\hello-butler.apk"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $targetDirectory | Out-Null
+
+          Copy-Item $source $target -Force
+
+          Write-Host "APK deployed:"
+          Write-Host $target
