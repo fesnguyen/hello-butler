@@ -1,0 +1,142 @@
+name: Backend CI/CD
+
+on:
+  push:
+    branches:
+      - feature/implement_CI_CD
+    paths:
+      - "backend/**"
+      - "compose.yaml"
+      - ".github/workflows/backend.yml"
+
+  workflow_dispatch:
+
+jobs:
+  backend:
+    name: Build and Deploy Backend
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ------------------------------------------------------------
+      # Production configuration
+      # ------------------------------------------------------------
+
+      - name: Copy production environment
+        run: |
+          $source = "C:\hello-butler-configs\.env.production"
+          $target = "${{ github.workspace }}\.env.production"
+
+          if (-not (Test-Path $source)) {
+            throw "Production environment file not found: $source"
+          }
+
+          Copy-Item $source $target -Force
+
+      # ------------------------------------------------------------
+      # CI
+      # ------------------------------------------------------------
+
+      - name: Sync backend development dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Lint backend
+        working-directory: backend
+        run: uv run ruff check .
+
+      # ------------------------------------------------------------
+      # Build image ONCE
+      #
+      # Dockerfile already uses:
+      # - pinned uv 0.12.13
+      # - BuildKit cache for /root/.cache/uv
+      # - dependency layers before application source
+      # ------------------------------------------------------------
+
+      - name: Build backend image
+        run: |
+          $image = "hello-butler-backend-ci:${{ github.sha }}"
+
+          docker build `
+            --tag $image `
+            ./backend
+
+      # ------------------------------------------------------------
+      # Promote the exact tested/built image to production
+      #
+      # NO second Docker build.
+      # Moving :latest causes the previous image to become untagged
+      # when it has no other tags.
+      # ------------------------------------------------------------
+
+      - name: Promote image to latest
+        run: |
+          docker tag `
+            "hello-butler-backend-ci:${{ github.sha }}" `
+            "hello-butler-backend:latest"
+
+      # ------------------------------------------------------------
+      # Deploy
+      #
+      # Compose uses:
+      #   image: hello-butler-backend:latest
+      #
+      # --no-build guarantees Compose does not rebuild it.
+      # --no-deps avoids recreating PostgreSQL.
+      # ------------------------------------------------------------
+
+      - name: Deploy backend
+        run: |
+          docker compose `
+            --env-file .env.production `
+            up -d `
+            --no-build `
+            --no-deps `
+            --force-recreate `
+            backend
+
+      # ------------------------------------------------------------
+      # Verify
+      # ------------------------------------------------------------
+
+      - name: Verify backend container
+        run: |
+          $containerId = docker compose `
+            --env-file .env.production `
+            ps -q backend
+
+          if (-not $containerId) {
+            throw "Backend container was not created."
+          }
+
+          $running = docker inspect `
+            --format "{{.State.Running}}" `
+            $containerId
+
+          if ($running -ne "true") {
+            docker compose `
+              --env-file .env.production `
+              logs `
+              --tail 100 `
+              backend
+
+            throw "Backend container is not running."
+          }
+
+          Write-Host "Backend deployment successful."
+          Write-Host "Image: hello-butler-backend:latest"
+
+          docker compose `
+            --env-file .env.production `
+            ps backend
