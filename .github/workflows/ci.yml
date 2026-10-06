@@ -1,105 +1,17 @@
-name: CI Diagnosis
+name: Showcase CI/CD
 
 on:
   push:
+    branches:
+      - feature/implement_CI_CD
+    paths:
+      - "web/showcase/**"
+      - ".github/workflows/ci.yml"
   workflow_dispatch:
 
 jobs:
-  # ============================================================
-  # BACKEND
-  # ============================================================
-
-  backend:
-    name: Diagnose + Backend
-    runs-on: [self-hosted, Windows, X64]
-
-    defaults:
-      run:
-        shell: powershell
-
-    steps:
-      # ----------------------------------------------------------
-      # Runner diagnosis
-      # ----------------------------------------------------------
-
-      - name: Diagnose runner identity
-        run: |
-          Write-Host "=== WHO AM I ==="
-          whoami
-
-          Write-Host "`n=== GROUPS / PRIVILEGES ==="
-          whoami /groups
-
-          Write-Host "`n=== RUNNER DIRECTORY ==="
-          Get-Location
-
-      - name: Diagnose environment
-        run: |
-          Write-Host "=== PROCESS PATH ==="
-          $env:Path -split ';'
-
-          Write-Host "`n=== USER PATH ==="
-          [Environment]::GetEnvironmentVariable("Path", "User") -split ';'
-
-          Write-Host "`n=== MACHINE PATH ==="
-          [Environment]::GetEnvironmentVariable("Path", "Machine") -split ';'
-
-          Write-Host "`n=== JAVA_HOME ==="
-          Write-Host $env:JAVA_HOME
-
-      - name: Diagnose required tools
-        run: |
-          Write-Host "=== GIT ==="
-          where.exe git
-          git --version
-
-          Write-Host "`n=== UV ==="
-          where.exe uv
-          uv --version
-
-          Write-Host "`n=== JAVA ==="
-          where.exe java
-          java -version
-
-          Write-Host "`n=== DOCKER ==="
-          where.exe docker
-          docker --version
-
-      # ----------------------------------------------------------
-      # Checkout
-      # ----------------------------------------------------------
-
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ----------------------------------------------------------
-      # Backend CI
-      # ----------------------------------------------------------
-
-      - name: Sync backend dependencies
-        working-directory: backend
-        run: |
-          uv sync --frozen
-
-      - name: Backend lint
-        working-directory: backend
-        run: |
-          uv run ruff check .
-
-      - name: Build backend Docker image
-        working-directory: backend
-        run: |
-          docker build `
-            -t hello-butler-backend-ci:${{ github.sha }} `
-            .
-
-
-  # ============================================================
-  # SHOWCASE
-  # ============================================================
-
   showcase:
-    name: Showcase
+    name: Build and Deploy Showcase
     runs-on: [self-hosted, Windows, X64]
 
     defaults:
@@ -110,254 +22,80 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Verify pnpm
+      # ------------------------------------------------------------
+      # Production configuration
+      # ------------------------------------------------------------
+
+      - name: Copy production environment
         run: |
-          where.exe pnpm
-          pnpm --version
-
-      - name: Install showcase dependencies
-        working-directory: web/showcase
-        run: |
-          pnpm install --frozen-lockfile
-
-      - name: Build showcase
-        working-directory: web/showcase
-        run: |
-          pnpm build
-
-      - name: Stage showcase build
-        run: |
-          $target = "C:\hello-butler-ci-artifacts\showcase"
-
-          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-
-          Copy-Item `
-            "web\showcase\dist\*" `
-            $target `
-            -Recurse `
-            -Force
-
-  # ============================================================
-  # ANDROID CLIENT
-  # ============================================================
-
-  client:
-    name: Diagnose + Android Client
-    runs-on: [self-hosted, Windows, X64]
-
-    defaults:
-      run:
-        shell: powershell
-
-    steps:
-      # ----------------------------------------------------------
-      # Android runner diagnosis
-      # ----------------------------------------------------------
-
-      - name: Diagnose Android environment
-        run: |
-          Write-Host "=== USER ==="
-          whoami
-
-          Write-Host "`n=== JAVA_HOME ==="
-          Write-Host $env:JAVA_HOME
-
-          Write-Host "`n=== JAVA ==="
-          Get-Command java | Format-List Source, Version
-          java -version
-
-          Write-Host "`n=== ANDROID_HOME ==="
-          Write-Host $env:ANDROID_HOME
-
-          Write-Host "`n=== ANDROID_SDK_ROOT ==="
-          Write-Host $env:ANDROID_SDK_ROOT
-
-          Write-Host "`n=== VALIDATE ANDROID SDK ==="
-
-          if (-not $env:ANDROID_HOME) {
-            throw "ANDROID_HOME is not defined."
-          }
-
-          if (-not (Test-Path $env:ANDROID_HOME)) {
-            throw "ANDROID_HOME does not exist: $env:ANDROID_HOME"
-          }
-
-          Write-Host "Android SDK found: $env:ANDROID_HOME"
-
-          Write-Host "`n=== INSTALLED SDK PLATFORMS ==="
-          Get-ChildItem "$env:ANDROID_HOME\platforms" -Name
-
-          Write-Host "`n=== INSTALLED BUILD TOOLS ==="
-          Get-ChildItem "$env:ANDROID_HOME\build-tools" -Name
-
-          Write-Host "`n=== PLATFORM TOOLS ==="
-          Test-Path "$env:ANDROID_HOME\platform-tools"
-
-      # ----------------------------------------------------------
-      # Checkout
-      # ----------------------------------------------------------
-
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ----------------------------------------------------------
-      # Gradle diagnosis
-      # ----------------------------------------------------------
-
-      - name: Diagnose Gradle
-        working-directory: client
-        run: |
-          .\gradlew.bat --version
-
-      # ----------------------------------------------------------
-      # Android build
-      # ----------------------------------------------------------
-
-      - name: Build Android debug APK
-        working-directory: client
-        run: |
-          .\gradlew.bat assembleDebug
-
-      - name: Stage Android APK
-        run: |
-          $target = "C:\hello-butler-ci-artifacts\android"
-
-          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-
-          Copy-Item `
-            "client\app\build\outputs\apk\debug\app-debug.apk" `
-            "$target\hello-butler.apk" `
-            -Force
-
-  # ============================================================
-  # DEPLOY
-  #
-  # Runs ONLY after:
-  #
-  #   backend  ✅
-  #   showcase ✅
-  #   client   ✅
-  #
-  # If either fails, this job does not run.
-  # ============================================================
-
-  deploy:
-    name: Deploy
-    runs-on: [self-hosted, Windows, X64]
-
-    needs:
-      - backend
-      - showcase
-      - client
-
-    defaults:
-      run:
-        shell: powershell
-
-    steps:
-      # Deploy is a new job, so get the repository/compose.yaml
-      # into this job's workspace.
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ----------------------------------------------------------
-      # Backend deployment
-      #
-      # CI created:
-      #
-      #   hello-butler-backend-ci:<commit>
-      #
-      # Move :latest to that exact tested image.
-      # ----------------------------------------------------------
-
-      - name: Tag backend image for deployment
-        run: |
-          docker tag `
-            hello-butler-backend-ci:${{ github.sha }} `
-            hello-butler-backend:latest
-
-      # ----------------------------------------------------------
-      # Apply production Compose state
-      #
-      # PostgreSQL should remain running.
-      # Backend is recreated if :latest changed.
-      #
-      # --no-build guarantees Compose does NOT rebuild backend.
-      # ----------------------------------------------------------
-
-      - name: Deploy backend
-        run: |
-          docker compose `
-            --env-file "C:\hello-butler-production\.env.production" `
-            up -d --no-build
-
-      # ----------------------------------------------------------
-      # Verify deployment state
-      # ----------------------------------------------------------
-
-      - name: Show deployed containers
-        run: |
-          docker compose `
-            --env-file "C:\hello-butler-production\.env.production" `
-            ps
-
-
-      - name: Deploy showcase
-        run: |
-          $source = "C:\hello-butler-ci-artifacts\showcase"
-          $target = "C:\hello-butler-deploy\showcase"
-
-          if (-not (Test-Path "$source\index.html")) {
-            throw "Showcase artifact is missing."
-          }
-
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-
-          # Remove previous website while preserving the downloads directory.
-          Get-ChildItem $target |
-            Where-Object { $_.Name -ne "downloads" } |
-            Remove-Item -Recurse -Force
-
-          Copy-Item `
-            "$source\*" `
-            $target `
-            -Recurse `
-            -Force
-
-
-      - name: Deploy Android APK
-        run: |
-          $source = "C:\hello-butler-ci-artifacts\android\hello-butler.apk"
-          $target = "C:\hello-butler-deploy\showcase\downloads"
+          $source = "C:\hello-butler-configs\.env.production"
+          $target = "${{ github.workspace }}\.env.production"
 
           if (-not (Test-Path $source)) {
-            throw "Android APK artifact is missing."
+            throw "Production environment file not found: $source"
           }
 
+          Copy-Item $source $target -Force
+
+      # ------------------------------------------------------------
+      # Install + validate + build
+      # ------------------------------------------------------------
+
+      - name: Install dependencies
+        working-directory: web/showcase
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: web/showcase
+        run: pnpm lint
+
+      - name: Test
+        working-directory: web/showcase
+        run: pnpm test
+
+      - name: Build production Showcase
+        working-directory: web/showcase
+        run: pnpm build
+
+      # ------------------------------------------------------------
+      # Deploy production build
+      # ------------------------------------------------------------
+
+      - name: Deploy Showcase
+        run: |
+          $source = "${{ github.workspace }}\web\showcase"
+          $target = "C:\hello-butler-production\showcase"
+
+          if (-not (Test-Path "$source\dist\index.html")) {
+            throw "Showcase frontend build is missing."
+          }
+
+          if (-not (Test-Path "$source\dist-server\server\index.js")) {
+            throw "Showcase backend build is missing."
+          }
+
+          Remove-Item $target -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $target | Out-Null
 
-          Copy-Item `
-            $source `
-            "$target\hello-butler.apk" `
-            -Force
+          Copy-Item "$source\dist" "$target\dist" -Recurse -Force
+          Copy-Item "$source\dist-server" "$target\dist-server" -Recurse -Force
+
+      # ------------------------------------------------------------
+      # Verify final production output
+      # ------------------------------------------------------------
 
       - name: Verify deployment
         run: |
-          Write-Host "=== DOCKER ==="
-          docker compose `
-            --env-file "C:\hello-butler-production\.env.production" `
-            ps
+          $target = "C:\hello-butler-production\showcase"
 
-          Write-Host "`n=== SHOWCASE ==="
-          if (-not (Test-Path "C:\hello-butler-deploy\showcase\index.html")) {
-            throw "Showcase deployment failed."
+          if (-not (Test-Path "$target\dist\index.html")) {
+            throw "Production frontend is missing."
           }
 
-          Write-Host "`n=== APK ==="
-          $apk = Get-Item "C:\hello-butler-deploy\showcase\downloads\hello-butler.apk"
-          Write-Host "APK: $($apk.FullName)"
-          Write-Host "Size: $([math]::Round($apk.Length / 1MB, 2)) MB"
+          if (-not (Test-Path "$target\dist-server\server\index.js")) {
+            throw "Production backend is missing."
+          }
 
-          Write-Host "`nDeployment artifacts OK."
+          Write-Host "Showcase production build deployed successfully."
+          Write-Host "Frontend: $target\dist"
+          Write-Host "Backend:  $target\dist-server"
