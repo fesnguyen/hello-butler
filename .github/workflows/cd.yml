@@ -1,0 +1,433 @@
+name: Production CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ============================================================
+  # Backend
+  # ============================================================
+
+  backend:
+    name: Build and Deploy Backend
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ----------------------------------------------------------
+      # CI
+      # ----------------------------------------------------------
+
+      - name: Sync backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Lint backend
+        working-directory: backend
+        run: uv run ruff check .
+
+      # ----------------------------------------------------------
+      # Build
+      # ----------------------------------------------------------
+
+      - name: Build backend image
+        run: |
+          $image = "hello-butler-backend-ci:${{ github.sha }}"
+
+          docker build `
+            --tag $image `
+            ./backend
+
+      # ----------------------------------------------------------
+      # Production configuration
+      # ----------------------------------------------------------
+
+      - name: Copy production environment
+        run: |
+          $source = "C:\hello-butler-configs\.env.production"
+          $target = "${{ github.workspace }}\.env.production"
+
+          if (-not (Test-Path $source)) {
+            throw "Production environment file not found: $source"
+          }
+
+          Copy-Item $source $target -Force
+
+      # ----------------------------------------------------------
+      # Promote exact built image
+      # ----------------------------------------------------------
+
+      - name: Promote image to latest
+        run: |
+          docker tag `
+            "hello-butler-backend-ci:${{ github.sha }}" `
+            "hello-butler-backend:latest"
+
+      # ----------------------------------------------------------
+      # Deploy
+      # ----------------------------------------------------------
+
+      - name: Deploy backend
+        run: |
+          docker compose `
+            --env-file .env.production `
+            up -d `
+            --no-build `
+            --no-deps `
+            --force-recreate `
+            backend
+
+      # ----------------------------------------------------------
+      # Verify
+      # ----------------------------------------------------------
+
+      - name: Verify backend container
+        run: |
+          $containerId = docker compose `
+            --env-file .env.production `
+            ps -q backend
+
+          if (-not $containerId) {
+            throw "Backend container was not created."
+          }
+
+          $running = docker inspect `
+            --format "{{.State.Running}}" `
+            $containerId
+
+          if ($running -ne "true") {
+            docker compose `
+              --env-file .env.production `
+              logs `
+              --tail 100 `
+              backend
+
+            throw "Backend container is not running."
+          }
+
+          Write-Host "Backend deployment successful."
+          Write-Host "Image: hello-butler-backend:latest"
+
+          docker compose `
+            --env-file .env.production `
+            ps backend
+
+  # ============================================================
+  # Showcase
+  # ============================================================
+
+  showcase:
+    name: Build and Deploy Showcase
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ----------------------------------------------------------
+      # CI
+      # ----------------------------------------------------------
+
+      - name: Install dependencies
+        working-directory: web/showcase
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        working-directory: web/showcase
+        run: pnpm lint
+
+      - name: Test
+        working-directory: web/showcase
+        run: pnpm test
+
+      - name: Build production Showcase
+        working-directory: web/showcase
+        run: pnpm build
+
+      # ----------------------------------------------------------
+      # Deploy
+      # ----------------------------------------------------------
+
+      - name: Deploy Showcase
+        run: |
+          $source = "${{ github.workspace }}\web\showcase"
+          $target = "C:\hello-butler-production\showcase"
+
+          if (-not (Test-Path "$source\dist\index.html")) {
+            throw "Showcase frontend build is missing."
+          }
+
+          if (-not (Test-Path "$source\dist-server\server\index.js")) {
+            throw "Showcase backend build is missing."
+          }
+
+          New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+          Remove-Item "$target\dist" `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Remove-Item "$target\dist-server" `
+            -Recurse `
+            -Force `
+            -ErrorAction SilentlyContinue
+
+          Copy-Item "$source\dist" "$target\dist" -Recurse -Force
+          Copy-Item "$source\dist-server" "$target\dist-server" -Recurse -Force
+
+          Copy-Item "$source\package.json" "$target\package.json" -Force
+          Copy-Item "$source\pnpm-lock.yaml" "$target\pnpm-lock.yaml" -Force
+
+      - name: Sync production dependencies
+        working-directory: C:\hello-butler-production\showcase
+        run: |
+          pnpm install --prod --frozen-lockfile
+
+      # ----------------------------------------------------------
+      # Verify installation
+      # ----------------------------------------------------------
+
+      - name: Verify production deployment
+        run: |
+          $target = "C:\hello-butler-production\showcase"
+
+          $required = @(
+            "$target\dist\index.html",
+            "$target\dist-server\server\index.js",
+            "$target\package.json",
+            "$target\pnpm-lock.yaml",
+            "$target\node_modules"
+          )
+
+          foreach ($path in $required) {
+            if (-not (Test-Path $path)) {
+              throw "Production deployment is incomplete: $path"
+            }
+          }
+
+          Write-Host "Showcase production deployment ready."
+
+      # ----------------------------------------------------------
+      # Restart service
+      # ----------------------------------------------------------
+
+      - name: Restart Showcase service
+        run: |
+          $service = "C:\hello-butler-services\showcase-service.exe"
+
+          if (-not (Test-Path $service)) {
+            throw "Showcase service executable not found: $service"
+          }
+
+          & $service restart
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Failed to restart Showcase service."
+          }
+
+          Write-Host "Showcase service restarted successfully."
+
+      # ----------------------------------------------------------
+      # Health check
+      # ----------------------------------------------------------
+
+      - name: Verify Showcase service
+        run: |
+          $url = "http://127.0.0.1:8001/api/applications"
+
+          Start-Sleep -Seconds 2
+
+          try {
+            $response = Invoke-WebRequest `
+              -Uri $url `
+              -Method Get `
+              -UseBasicParsing
+
+            if ($response.StatusCode -ne 200) {
+              throw "Unexpected HTTP status: $($response.StatusCode)"
+            }
+          }
+          catch {
+            throw "Showcase service health check failed: $($_.Exception.Message)"
+          }
+
+          Write-Host "$url -> 200 OK"
+
+  # ============================================================
+  # Android
+  # ============================================================
+
+  client:
+    name: Build and Publish Android Client
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ----------------------------------------------------------
+      # Production configuration
+      # ----------------------------------------------------------
+
+      - name: Copy production Gradle properties
+        run: |
+          $source = "C:\hello-butler-configs\gradle.properties"
+          $target = "${{ github.workspace }}\client\gradle.properties"
+
+          if (-not (Test-Path $source)) {
+            throw "Production Gradle properties not found: $source"
+          }
+
+          Copy-Item $source $target -Force
+
+      # ----------------------------------------------------------
+      # CI
+      # ----------------------------------------------------------
+
+      - name: Run Android checks
+        working-directory: client
+        run: |
+          .\gradlew.bat test
+
+      # ----------------------------------------------------------
+      # Build
+      # ----------------------------------------------------------
+
+      - name: Build release APK
+        working-directory: client
+        run: |
+          .\gradlew.bat assembleRelease
+
+      # ----------------------------------------------------------
+      # Sign
+      # ----------------------------------------------------------
+
+      - name: Sign release APK
+        run: |
+          $unsignedApk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release-unsigned.apk"
+          $signedApk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          $keystore = "C:\hello-butler-configs\hello-butler-release.jks"
+
+          if (-not (Test-Path $unsignedApk)) {
+            throw "Unsigned release APK was not produced: $unsignedApk"
+          }
+
+          if (-not (Test-Path $keystore)) {
+            throw "Release keystore not found: $keystore"
+          }
+
+          $properties = @{}
+
+          Get-Content "C:\hello-butler-configs\gradle.properties" |
+            ForEach-Object {
+              if ($_ -match '^\s*([^#][^=]*)=(.*)$') {
+                $properties[$matches[1].Trim()] = $matches[2].Trim()
+              }
+            }
+
+          $storePassword = $properties["RELEASE_KEYSTORE_PASSWORD"]
+          $keyPassword = $properties["RELEASE_KEY_PASSWORD"]
+
+          if (-not $storePassword) {
+            throw "RELEASE_KEYSTORE_PASSWORD is missing."
+          }
+
+          if (-not $keyPassword) {
+            throw "RELEASE_KEY_PASSWORD is missing."
+          }
+
+          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $buildTools) {
+            throw "Android SDK Build Tools not found."
+          }
+
+          $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+
+          if (-not (Test-Path $apksigner)) {
+            throw "apksigner not found: $apksigner"
+          }
+
+          & $apksigner sign `
+            --ks $keystore `
+            --ks-key-alias "hello-butler" `
+            --ks-pass "pass:$storePassword" `
+            --key-pass "pass:$keyPassword" `
+            --out $signedApk `
+            $unsignedApk
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "APK signing failed."
+          }
+
+      # ----------------------------------------------------------
+      # Verify signature
+      # ----------------------------------------------------------
+
+      - name: Verify signed APK
+        run: |
+          $apk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          if (-not (Test-Path $apk)) {
+            throw "Signed release APK was not produced: $apk"
+          }
+
+          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+
+          & $apksigner verify --verbose $apk
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "APK signature verification failed."
+          }
+
+          Write-Host "APK signature verified successfully."
+
+      # ----------------------------------------------------------
+      # Publish
+      # ----------------------------------------------------------
+
+      - name: Publish APK to Showcase
+        run: |
+          $source = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          $targetDirectory = "C:\hello-butler-production\showcase\releases"
+          $target = "$targetDirectory\hello-butler-v0.1.0.apk"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $targetDirectory | Out-Null
+
+          Copy-Item $source $target -Force
+
+          Write-Host "APK published:"
+          Write-Host $target

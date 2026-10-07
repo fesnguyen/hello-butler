@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Validate Hello Butler
+    runs-on: [self-hosted, Windows, X64]
+
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      # ============================================================
+      # Checkout ONCE
+      # ============================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      # ============================================================
+      # Backend CI
+      # ============================================================
+
+      - name: Sync backend dependencies
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Lint backend
+        working-directory: backend
+        run: uv run ruff check .
+
+      - name: Build backend image
+        run: |
+          $image = "hello-butler-backend-ci:${{ github.sha }}"
+
+          docker build `
+            --tag $image `
+            ./backend
+
+      # ============================================================
+      # Showcase CI
+      # ============================================================
+
+      - name: Install Showcase dependencies
+        working-directory: web/showcase
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint Showcase
+        working-directory: web/showcase
+        run: pnpm lint
+
+      - name: Test Showcase
+        working-directory: web/showcase
+        run: pnpm test
+
+      - name: Build Showcase
+        working-directory: web/showcase
+        run: pnpm build
+
+      # ============================================================
+      # Android CI
+      # ============================================================
+
+      - name: Test Android client
+        working-directory: client
+        run: |
+          .\gradlew.bat test
