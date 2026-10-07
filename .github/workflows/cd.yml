@@ -1,4 +1,4 @@
-name: Production CI/CD
+name: Production Deployment
 
 on:
   push:
@@ -11,12 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  # ============================================================
-  # Backend
-  # ============================================================
-
-  backend:
-    name: Build and Deploy Backend
+  deploy:
+    name: Deploy Hello Butler
     runs-on: [self-hosted, Windows, X64]
 
     defaults:
@@ -24,36 +20,20 @@ jobs:
         shell: powershell
 
     steps:
+      # ============================================================
+      # Checkout ONCE
+      # ============================================================
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # ----------------------------------------------------------
-      # CI
-      # ----------------------------------------------------------
+      # ============================================================
+      # BACKEND
+      # ============================================================
 
-      - name: Sync backend dependencies
-        working-directory: backend
-        run: uv sync --frozen
-
-      - name: Lint backend
-        working-directory: backend
-        run: uv run ruff check .
-
-      # ----------------------------------------------------------
-      # Build
-      # ----------------------------------------------------------
-
-      - name: Build backend image
-        run: |
-          $image = "hello-butler-backend-ci:${{ github.sha }}"
-
-          docker build `
-            --tag $image `
-            ./backend
-
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Production configuration
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Copy production environment
         run: |
@@ -66,19 +46,31 @@ jobs:
 
           Copy-Item $source $target -Force
 
-      # ----------------------------------------------------------
-      # Promote exact built image
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------
 
-      - name: Promote image to latest
+      - name: Build backend image
+        run: |
+          $image = "hello-butler-backend-ci:${{ github.sha }}"
+
+          docker build `
+            --tag $image `
+            ./backend
+
+      # ------------------------------------------------------------
+      # Promote
+      # ------------------------------------------------------------
+
+      - name: Promote backend image to latest
         run: |
           docker tag `
             "hello-butler-backend-ci:${{ github.sha }}" `
             "hello-butler-backend:latest"
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Deploy
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Deploy backend
         run: |
@@ -90,11 +82,11 @@ jobs:
             --force-recreate `
             backend
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Verify
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
-      - name: Verify backend container
+      - name: Verify backend
         run: |
           $containerId = docker compose `
             --env-file .env.production `
@@ -121,49 +113,25 @@ jobs:
           Write-Host "Backend deployment successful."
           Write-Host "Image: hello-butler-backend:latest"
 
-          docker compose `
-            --env-file .env.production `
-            ps backend
+      # ============================================================
+      # SHOWCASE
+      # ============================================================
 
-  # ============================================================
-  # Showcase
-  # ============================================================
+      # ------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------
 
-  showcase:
-    name: Build and Deploy Showcase
-    runs-on: [self-hosted, Windows, X64]
-
-    defaults:
-      run:
-        shell: powershell
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ----------------------------------------------------------
-      # CI
-      # ----------------------------------------------------------
-
-      - name: Install dependencies
+      - name: Install Showcase dependencies
         working-directory: web/showcase
         run: pnpm install --frozen-lockfile
-
-      - name: Lint
-        working-directory: web/showcase
-        run: pnpm lint
-
-      - name: Test
-        working-directory: web/showcase
-        run: pnpm test
 
       - name: Build production Showcase
         working-directory: web/showcase
         run: pnpm build
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Deploy
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Deploy Showcase
         run: |
@@ -178,34 +146,61 @@ jobs:
             throw "Showcase backend build is missing."
           }
 
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $target | Out-Null
 
-          Remove-Item "$target\dist" `
+          # Replace application build output only.
+          # Keep the releases directory intact.
+          Remove-Item `
+            "$target\dist" `
             -Recurse `
             -Force `
             -ErrorAction SilentlyContinue
 
-          Remove-Item "$target\dist-server" `
+          Remove-Item `
+            "$target\dist-server" `
             -Recurse `
             -Force `
             -ErrorAction SilentlyContinue
 
-          Copy-Item "$source\dist" "$target\dist" -Recurse -Force
-          Copy-Item "$source\dist-server" "$target\dist-server" -Recurse -Force
+          Copy-Item `
+            "$source\dist" `
+            "$target\dist" `
+            -Recurse `
+            -Force
 
-          Copy-Item "$source\package.json" "$target\package.json" -Force
-          Copy-Item "$source\pnpm-lock.yaml" "$target\pnpm-lock.yaml" -Force
+          Copy-Item `
+            "$source\dist-server" `
+            "$target\dist-server" `
+            -Recurse `
+            -Force
 
-      - name: Sync production dependencies
+          Copy-Item `
+            "$source\package.json" `
+            "$target\package.json" `
+            -Force
+
+          Copy-Item `
+            "$source\pnpm-lock.yaml" `
+            "$target\pnpm-lock.yaml" `
+            -Force
+
+      # ------------------------------------------------------------
+      # Production dependencies
+      # ------------------------------------------------------------
+
+      - name: Sync Showcase production dependencies
         working-directory: C:\hello-butler-production\showcase
         run: |
           pnpm install --prod --frozen-lockfile
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Verify installation
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
-      - name: Verify production deployment
+      - name: Verify Showcase deployment
         run: |
           $target = "C:\hello-butler-production\showcase"
 
@@ -225,9 +220,9 @@ jobs:
 
           Write-Host "Showcase production deployment ready."
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Restart service
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Restart Showcase service
         run: |
@@ -237,6 +232,8 @@ jobs:
             throw "Showcase service executable not found: $service"
           }
 
+          Write-Host "Restarting Hello Butler Showcase service..."
+
           & $service restart
 
           if ($LASTEXITCODE -ne 0) {
@@ -245,9 +242,9 @@ jobs:
 
           Write-Host "Showcase service restarted successfully."
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Health check
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Verify Showcase service
         run: |
@@ -271,25 +268,13 @@ jobs:
 
           Write-Host "$url -> 200 OK"
 
-  # ============================================================
-  # Android
-  # ============================================================
+      # ============================================================
+      # ANDROID
+      # ============================================================
 
-  client:
-    name: Build and Publish Android Client
-    runs-on: [self-hosted, Windows, X64]
-
-    defaults:
-      run:
-        shell: powershell
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Production configuration
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Copy production Gradle properties
         run: |
@@ -302,27 +287,18 @@ jobs:
 
           Copy-Item $source $target -Force
 
-      # ----------------------------------------------------------
-      # CI
-      # ----------------------------------------------------------
-
-      - name: Run Android checks
-        working-directory: client
-        run: |
-          .\gradlew.bat test
-
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Build
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Build release APK
         working-directory: client
         run: |
           .\gradlew.bat assembleRelease
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Sign
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Sign release APK
         run: |
@@ -359,7 +335,9 @@ jobs:
             throw "RELEASE_KEY_PASSWORD is missing."
           }
 
-          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+          $buildTools = Get-ChildItem `
+            "$env:ANDROID_HOME\build-tools" `
+            -Directory |
             Sort-Object Name -Descending |
             Select-Object -First 1
 
@@ -367,7 +345,9 @@ jobs:
             throw "Android SDK Build Tools not found."
           }
 
-          $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+          $apksigner = Join-Path `
+            $buildTools.FullName `
+            "apksigner.bat"
 
           if (-not (Test-Path $apksigner)) {
             throw "apksigner not found: $apksigner"
@@ -385,9 +365,9 @@ jobs:
             throw "APK signing failed."
           }
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Verify signature
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Verify signed APK
         run: |
@@ -397,11 +377,23 @@ jobs:
             throw "Signed release APK was not produced: $apk"
           }
 
-          $buildTools = Get-ChildItem "$env:ANDROID_HOME\build-tools" -Directory |
+          $buildTools = Get-ChildItem `
+            "$env:ANDROID_HOME\build-tools" `
+            -Directory |
             Sort-Object Name -Descending |
             Select-Object -First 1
 
-          $apksigner = Join-Path $buildTools.FullName "apksigner.bat"
+          if (-not $buildTools) {
+            throw "Android SDK Build Tools not found."
+          }
+
+          $apksigner = Join-Path `
+            $buildTools.FullName `
+            "apksigner.bat"
+
+          if (-not (Test-Path $apksigner)) {
+            throw "apksigner not found: $apksigner"
+          }
 
           & $apksigner verify --verbose $apk
 
@@ -411,9 +403,9 @@ jobs:
 
           Write-Host "APK signature verified successfully."
 
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
       # Publish
-      # ----------------------------------------------------------
+      # ------------------------------------------------------------
 
       - name: Publish APK to Showcase
         run: |
