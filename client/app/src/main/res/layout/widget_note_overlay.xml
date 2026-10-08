@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_note_overlay"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:background="@android:color/transparent">
+    <LinearLayout android:id="@+id/widget_note_panel" android:layout_width="match_parent" android:layout_height="320dp"
+        android:layout_gravity="center" android:orientation="vertical" android:padding="8dp">
+        <include layout="@layout/widget_header" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+            android:orientation="vertical" android:padding="10dp" android:background="@drawable/widget_note_card">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1"
+                android:background="@drawable/widget_note_field">
+                <EditText android:id="@+id/widget_note_editor" android:layout_width="match_parent" android:layout_height="match_parent"
+                    android:padding="12dp" android:paddingBottom="28dp" android:gravity="top|start"
+                    android:hint="@string/widget_note_hint" android:textColor="@color/widget_text" android:textColorHint="@color/widget_text"
+                    android:textSize="17sp" android:fontFamily="sans" android:background="@android:color/transparent"
+                    android:inputType="textMultiLine|textCapSentences" android:imeOptions="flagNoExtractUi"
+                    android:maxLength="10000" android:scrollbars="vertical" android:importantForAutofill="no" />
+                <TextView android:id="@+id/widget_note_count" android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_gravity="bottom|end" android:padding="8dp" android:textColor="@color/widget_text" android:textSize="11sp" />
+            </FrameLayout>
+            <TextView android:id="@+id/widget_note_error" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:paddingTop="4dp" android:textColor="#FFFFABB4" android:textSize="13sp" android:visibility="gone" />
+            <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="10dp">
+                <Button android:id="@+id/widget_note_save" style="@style/Widget.Playback" android:layout_width="0dp" android:layout_weight="1"
+                    android:layout_height="48dp" android:layout_marginEnd="6dp" android:background="@drawable/widget_save"
+                    android:textColor="#FF212747" android:text="@string/widget_note_save" />
+                <Button android:id="@+id/widget_note_exit" style="@style/Widget.Playback" android:layout_width="0dp" android:layout_weight="1"
+                    android:layout_height="48dp" android:layout_marginStart="6dp" android:text="@string/widget_note_exit" />
+            </LinearLayout>
+        </LinearLayout>
+        <include layout="@layout/widget_actions" />
+    </LinearLayout>
+</FrameLayout>

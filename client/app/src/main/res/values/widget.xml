@@ -17,4 +17,9 @@
     <string name="widget_loading_stop">Loading… ■</string>
     <string name="widget_stop">Stop ■</string>
     <string name="widget_no_audio">Audio unavailable</string>
+    <string name="widget_note_hint">Write a note…</string>
+    <string name="widget_note_save">✓ Save</string>
+    <string name="widget_note_exit">✕ Exit</string>
+    <string name="widget_note_saving">Saving…</string>
+    <string name="widget_note_count">%1$d/10000</string>
 </resources>

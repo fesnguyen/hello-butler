@@ -1,32 +1,26 @@
-<?xml version="1.0" ?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="12dp" android:background="@drawable/widget_background">
-    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
-        <ImageView android:layout_width="32dp" android:layout_height="32dp" android:src="@drawable/widget_identity_circle" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
-        <TextView android:id="@+id/widget_title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/app_name" android:textColor="@color/widget_text" android:shadowColor="#CC000000" android:shadowRadius="2" android:textSize="13sp" android:layout_weight="1" android:paddingStart="8dp" android:textStyle="bold"/>
-        <Button android:id="@+id/widget_home" android:drawableStart="@drawable/widget_home" android:layout_width="72dp" android:layout_height="48dp" android:padding="0dp" android:text="@string/widget_home" android:textSize="12sp" android:textColor="@color/widget_text" android:background="?android:attr/selectableItemBackground"/>
-    </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="vertical" android:padding="10dp" android:background="@drawable/widget_card">
-        <FrameLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1">
-            <ListView android:id="@+id/widget_response" android:layout_width="match_parent" android:layout_height="match_parent" android:divider="@android:color/transparent" android:dividerHeight="0dp" android:scrollbars="vertical" android:cacheColorHint="@android:color/transparent"/>
-            <TextView android:id="@+id/widget_empty" android:layout_width="match_parent" android:layout_height="match_parent" android:text="@string/widget_empty" android:textColor="@color/widget_text" android:textSize="17sp"/>
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"
+    android:padding="8dp" android:background="@drawable/widget_background">
+    <include layout="@layout/widget_header" />
+    <LinearLayout android:id="@+id/widget_response_card" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="6dp" android:background="@drawable/widget_card">
+        <FrameLayout android:id="@+id/widget_response_area" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:padding="10dp" android:background="@drawable/widget_reading_surface">
+            <TextView android:id="@+id/widget_response_compact" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/widget_empty" android:textColor="@color/widget_text" android:textSize="@dimen/widget_response_text_size"
+                android:includeFontPadding="false" android:fontFamily="sans" android:breakStrategy="simple" android:hyphenationFrequency="none"
+                android:clickable="false" android:focusable="false" android:shadowColor="#CC000000" android:shadowRadius="2" />
+            <LinearLayout android:id="@+id/widget_response_collection" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" />
         </FrameLayout>
-        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal">
-            <Button android:id="@+id/widget_aloud" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:padding="2dp" android:textSize="12sp" android:text="@string/widget_aloud" android:textColor="@color/widget_accent" android:drawableStart="@drawable/widget_speaker" android:background="?android:attr/selectableItemBackground"/>
-            <Button android:id="@+id/widget_call" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:padding="2dp" android:textSize="12sp" android:text="@string/widget_call" android:textColor="@color/widget_accent" android:drawableStart="@drawable/widget_phone" android:background="?android:attr/selectableItemBackground"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+            <Button android:id="@+id/widget_aloud" style="@style/Widget.Playback" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="48dp" android:layout_marginEnd="4dp" android:text="@string/widget_aloud" android:drawableStart="@drawable/widget_speaker" />
+            <Button android:id="@+id/widget_call" style="@style/Widget.Playback" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="48dp" android:layout_marginStart="4dp" android:text="@string/widget_call" android:drawableStart="@drawable/widget_phone" />
         </LinearLayout>
     </LinearLayout>
-    <LinearLayout android:layout_width="match_parent" android:layout_height="76dp" android:layout_marginTop="8dp" android:orientation="horizontal">
-        <LinearLayout android:id="@+id/widget_open" android:layout_width="0dp" android:layout_weight="1" android:layout_height="76dp" android:gravity="center" android:orientation="vertical" android:background="@drawable/widget_tile" android:layout_marginEnd="4dp" android:contentDescription="@string/widget_open">
-            <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/widget_identity_circle" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
-            <TextView android:id="@+id/widget_open_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/widget_open" android:textColor="@color/widget_text" android:shadowColor="#CC000000" android:shadowRadius="2" android:textSize="13sp"/>
-        </LinearLayout>
-        <LinearLayout android:id="@+id/widget_talk" android:layout_width="0dp" android:layout_weight="1" android:layout_height="76dp" android:gravity="center" android:orientation="vertical" android:background="@drawable/widget_tile" android:layout_marginStart="4dp" android:layout_marginEnd="4dp" android:contentDescription="@string/widget_talk">
-            <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/widget_mic" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
-            <TextView android:id="@+id/widget_talk_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/widget_talk" android:textColor="@color/widget_text" android:shadowColor="#CC000000" android:shadowRadius="2" android:textSize="13sp"/>
-        </LinearLayout>
-        <LinearLayout android:id="@+id/widget_note" android:layout_width="0dp" android:layout_weight="1" android:layout_height="76dp" android:gravity="center" android:orientation="vertical" android:background="@drawable/widget_note_tile" android:layout_marginStart="4dp" android:contentDescription="@string/widget_note">
-            <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/widget_note" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
-            <TextView android:id="@+id/widget_note_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/widget_note" android:textColor="@color/widget_text" android:shadowColor="#CC000000" android:shadowRadius="2" android:textSize="13sp"/>
-        </LinearLayout>
-    </LinearLayout>
+    <include layout="@layout/widget_actions" />
 </LinearLayout>

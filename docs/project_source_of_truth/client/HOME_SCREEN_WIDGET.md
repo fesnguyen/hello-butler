@@ -165,7 +165,18 @@ Everything in the widget should support that interaction without duplicating the
 
 # Android implementation
 
-The widget uses platform `AppWidgetProvider`/`RemoteViews`, with no additional UI framework. `ButlerWidgetProvider` renders a weighted, resizable layout; provider metadata targets 4 × 4 cells and provides dp fallbacks and minimum resize bounds. Translucent tinted surfaces, rounded action tiles, white text and text shadows let the wallpaper remain visible. The reading card has a stronger tint for readability. The complete response wraps in a non-clickable, vertically scrolling collection: direct `RemoteCollectionItems` on Android 31+, a `RemoteViewsService` reading the same repository/Room state on Android 26–30. No response text is ellipsized or replaced with a navigation action.
+The widget uses platform `AppWidgetProvider`/`RemoteViews`, with no additional UI framework. Provider metadata targets 4 × 4 cells, with launcher resize bounds. The root is transparent; the compact header, response card, outlined playback capsules, and equally sized action tiles use translucent blue/purple tints and soft borders. White text and restrained shadows preserve readability. The header and permanent action row are shared XML layouts used by both the widget and Note Mode.
+
+### Adaptive response height
+
+`WidgetResponseLayout` measures the complete response with Android `StaticLayout`, using the same text size, font, wrapping behavior, available width, and font-scale configuration as the reading view. It reserves space for the header, both 48dp playback touch targets, the permanent action row, and padding. Small widget heights reduce decorative padding and tile height first. The provider reads launcher size options, including Android 12+ reported sizes, for the current orientation and recomputes on add/update/resize.
+
+- Short and medium responses use a wrapping, non-clickable `TextView`; the card and playback controls immediately follow its content height.
+- Only text exceeding the available reading height or a 216dp useful maximum switches to the existing scrolling collection. No canonical text is truncated.
+- Android 31+ sets the collection viewport's exact height with `setViewLayoutHeight` and uses direct `RemoteCollectionItems`.
+- Android 26–30 cannot remotely change `LayoutParams.height`; small XML viewport variants (32–208dp) select the largest bounded height that fits. The existing `RemoteViewsService` reads the same repository/Room projection.
+
+Playback/cache-only changes use a partial control update, preserving the response view and scrolling position. Response changes, widget lifecycle callbacks, and resizing rebuild the content projection. Any remaining launcher allocation beneath a short widget stays transparent rather than becoming empty card space.
 
 `ButlerApplication` observes the latest completed Butler message through the existing Butler repository and a focused Room DAO Flow, combined with `ButlerPlayback.state`. Persistence, history reconciliation, audio-cache updates, playback transitions, and logout clearing therefore refresh installed widgets without extra backend polling, database tables, or periodic widget work. Widget add/update/resize callbacks reload the same local state.
 
@@ -173,22 +184,24 @@ Actions use immutable, explicit PendingIntents:
 
 - Home opens Main Screen; Open Butler opens its conversation overlay, including when User Settings was previously visible.
 - A single tap on Talk opens Main Screen's existing conversation overlay and starts the existing recorder only while the Activity is resumed and microphone permission is granted. Granting permission continues that pending interaction; denial shows the existing error. Send submits through the same `finishCapture`/Talk repository pipeline; Cancel, closing the overlay, or leaving the app cancels capture. The normal in-app Order/Talk controls retain hold/release behavior.
-- Take Note opens a small translucent `WidgetNoteActivity` over the launcher with the shared `SavedContextEditor`, an ordinary Note, and Save/Exit controls. Android RemoteViews cannot host an editable text field; this is the user-selected popup fallback rather than a simulated inline editor. The same `UserSettingsViewModel` and saved-context repository handle saving and errors; the draft stays open on failure and retains its UUID and text through rotation/retry. Exit or successful Save closes the separate, excluded-from-recents task. A missing session hands off to normal application authentication and note navigation.
+- Take Note opens `WidgetNoteActivity` as a transparent, excluded-from-recents overlay. It shares the actual widget header and action-row layouts, replaces the central content visually with a purple multiline editor, and puts Save/Exit above the permanent tiles. The editor focuses immediately and requests the keyboard; the panel uses the originating widget width, adjusts to screen/keyboard insets, and returns to the unchanged launcher widget on Exit or successful Save. It uses the existing `UserSettingsViewModel.saveItem`/User Context repository, with a stable note UUID and native EditText state restoration across rotation; errors retain the draft. The counter/length limit follows the existing 10,000-character saved-context contract, not the illustrative 500-character counter in the reference. Home/Open Butler/Talk use the existing application navigation; Take Note refocuses the current editor without discarding it. A missing session hands off to normal application authentication and note navigation.
+
+  RemoteViews does not support EditText. Note Mode is therefore a real Activity overlay, not a literal editable launcher widget. Its panel is centered in available screen space, not anchored to an exact launcher widget coordinate; Android's widget size options do not provide that position. It has no application navigation chrome or User Settings screen.
 - Listen Aloud and As a Call use the existing `ButlerAudioPlaybackService` foreground-service PendingIntents and response cache. The service retains exclusive route ownership. Active playback/preparation exposes Stop; pending cache work shows Loading, and unavailable audio disables playback.
 
 `drawable-nodpi/butler_identity.webp` is a single transparent, square, padded adaptation of the supplied official hand-and-bell artwork. Its hand, gold bell and ringing marks are retained; its rectangular background has been removed. Open Butler places this cutout on a circular surface. The widget, Main Screen/overlay avatars, and adaptive launcher foreground reuse that resource. Launcher padding protects the artwork within icon masks; there is no substitute bell or assistant artwork.
 
 ## Device verification
 
-After installing a build, add Hello Butler from the launcher widget picker, then check:
+For development validation, remove any OLD widget instance, install the NEW build, open Hello Butler once, and add a NEW widget instance from the launcher picker. This avoids confusing launcher-cached views with the current build. Then check:
 
-1. Empty state, a completed response, a newer response, and offline cached content.
+1. Empty state; short/medium cards growing with text; long-response scrolling; non-clickable response text; a newer response and offline cached content.
 2. Resize, portrait/landscape, light/dark, large font sizes, multiple widget instances, and removal/re-addition.
 3. Home and Open Butler from a cold start and while User Settings was previously open.
 4. Talk handoff, microphone permission denial/grant, single tap/Send/Cancel, background cancellation, normal in-app hold/release, and one canonical persisted interaction.
-5. Take Note popup Save/Exit, launcher return, rotation, offline failure/retry, and the resulting ordinary Note in User Settings.
+5. Note Mode automatic keyboard/focus, purple tint, Save/Exit above permanent actions, launcher return, rotation, offline failure/retry, and the resulting ordinary Note in User Settings.
 6. Both audio routes, Loading/cache readiness, Stop, route switching, and completion/error reset, including when playback starts in the application.
-7. Logout clears the response; launcher icon masks and Open Butler show the supplied artwork.
+7. Logout clears the response; launcher icon masks/header/Open Butler show the supplied transparent artwork; bright/dark wallpaper readability; long press still moves/resizes the widget.
 
 Build and instrumentation commands (from `client/`):
 

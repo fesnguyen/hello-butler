@@ -1,1 +1,4 @@
-<TextView xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_response_text" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/widget_text" android:textSize="17sp" android:includeFontPadding="false" android:paddingBottom="3dp" android:clickable="false" android:focusable="false" android:shadowColor="#CC000000" android:shadowRadius="2"/>
+<TextView xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_response_text"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/widget_text" android:textSize="@dimen/widget_response_text_size"
+    android:includeFontPadding="false" android:fontFamily="sans" android:breakStrategy="simple" android:hyphenationFrequency="none"
+    android:clickable="false" android:focusable="false" android:shadowColor="#CC000000" android:shadowRadius="2" />

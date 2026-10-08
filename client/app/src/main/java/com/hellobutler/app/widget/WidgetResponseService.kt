@@ -21,7 +21,8 @@ class WidgetResponseService : RemoteViewsService() {
         override fun onDataSetChanged() {
             val app = applicationContext as ButlerApplication
             rows = runBlocking(Dispatchers.IO) {
-                responseRows(app.container.butlerRepository.observeLatestResponse().first()?.text.orEmpty())
+                responseRows(app.container.butlerRepository.observeLatestResponse().first()?.text?.takeIf { it.isNotBlank() }
+                    ?: getString(R.string.widget_empty))
             }
         }
         override fun onDestroy() { rows = emptyList() }
