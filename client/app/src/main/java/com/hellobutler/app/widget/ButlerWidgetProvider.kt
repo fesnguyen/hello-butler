@@ -7,6 +7,8 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.Build
+import android.net.Uri
 import android.util.Log
 import android.widget.RemoteViews
 import com.hellobutler.app.ButlerApplication
@@ -45,6 +47,7 @@ class ButlerWidgetProvider : AppWidgetProvider() {
 
     companion object {
         private val renderMutex = Mutex()
+        private val renderedText = mutableMapOf<Int, String?>()
 
         private suspend fun renderLatest(context: Context) = renderMutex.withLock {
             if (AppWidgetManager.getInstance(context).getAppWidgetIds(ComponentName(context, ButlerWidgetProvider::class.java)).isEmpty()) return@withLock
@@ -76,35 +79,49 @@ class ButlerWidgetProvider : AppWidgetProvider() {
             val manager = AppWidgetManager.getInstance(context)
             val ids = manager.getAppWidgetIds(ComponentName(context, ButlerWidgetProvider::class.java))
             if (ids.isEmpty()) return
-            val views = RemoteViews(context.packageName, R.layout.butler_widget)
-            views.setTextViewText(R.id.widget_response, message?.text ?: context.getString(R.string.widget_empty))
-            views.setOnClickPendingIntent(R.id.widget_home, navigation(context, "home"))
-            views.setOnClickPendingIntent(R.id.widget_open, navigation(context, "open"))
-            views.setOnClickPendingIntent(R.id.widget_response, navigation(context, "open"))
-            views.setOnClickPendingIntent(R.id.widget_talk, navigation(context, "talk"))
-            views.setOnClickPendingIntent(R.id.widget_note, navigation(context, "note"))
-            listOf(R.id.widget_aloud to false, R.id.widget_call to true).forEach { (id, private) ->
-                val phase = message?.let { playbackPhase(it.requestId, private, it.audioCacheState, playback) } ?: PlaybackPhase.READY
-                val unavailable = message == null || message.audioCacheState in setOf("none", "unavailable")
-                val active = message != null && playback.requestId == message.requestId && playback.privateRoute == private && playback.phase != PlaybackPhase.READY
-                val label = when {
-                    active && phase == PlaybackPhase.LOADING -> R.string.widget_loading_stop
-                    active -> R.string.widget_stop
-                    phase == PlaybackPhase.LOADING -> R.string.widget_loading
-                    unavailable && message != null -> R.string.widget_no_audio
-                    private -> R.string.widget_call
-                    else -> R.string.widget_aloud
+            ids.forEach { widgetId ->
+                val views = RemoteViews(context.packageName, R.layout.butler_widget)
+                views.setEmptyView(R.id.widget_response, R.id.widget_empty)
+                if (Build.VERSION.SDK_INT >= 31) {
+                    val items = RemoteViews.RemoteCollectionItems.Builder().setViewTypeCount(1).setHasStableIds(true)
+                    responseRows(message?.text.orEmpty()).forEachIndexed { index, text ->
+                        items.addItem((text.hashCode().toLong() shl 32) xor index.toLong(), responseRow(context.packageName, text))
+                    }
+                    views.setRemoteAdapter(R.id.widget_response, items.build())
+                } else {
+                    views.setRemoteAdapter(R.id.widget_response, Intent(context, WidgetResponseService::class.java)
+                        .setData(Uri.parse("butler-widget://response/$widgetId")))
                 }
-                views.setTextViewText(id, context.getString(label))
-                views.setBoolean(id, "setEnabled", !unavailable && (phase != PlaybackPhase.LOADING || active))
-                if (message != null) views.setOnClickPendingIntent(id, if (active) ButlerAudioPlaybackService.stopIntent(context)
-                    else ButlerAudioPlaybackService.intent(context, message.requestId, private))
+                views.setOnClickPendingIntent(R.id.widget_home, navigation(context, "home"))
+                views.setOnClickPendingIntent(R.id.widget_open, navigation(context, "open"))
+                views.setOnClickPendingIntent(R.id.widget_talk, navigation(context, "talk"))
+                views.setOnClickPendingIntent(R.id.widget_note, PendingIntent.getActivity(context, 410,
+                    Intent(context, WidgetNoteActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                listOf(R.id.widget_aloud to false, R.id.widget_call to true).forEach { (id, private) ->
+                    val phase = message?.let { playbackPhase(it.requestId, private, it.audioCacheState, playback) } ?: PlaybackPhase.READY
+                    val unavailable = message == null || message.audioCacheState in setOf("none", "unavailable")
+                    val active = message != null && playback.requestId == message.requestId && playback.privateRoute == private && playback.phase != PlaybackPhase.READY
+                    val label = when {
+                        active && phase == PlaybackPhase.LOADING -> R.string.widget_loading_stop
+                        active -> R.string.widget_stop
+                        phase == PlaybackPhase.LOADING -> R.string.widget_loading
+                        unavailable && message != null -> R.string.widget_no_audio
+                        private -> R.string.widget_call
+                        else -> R.string.widget_aloud
+                    }
+                    views.setTextViewText(id, context.getString(label))
+                    views.setBoolean(id, "setEnabled", !unavailable && (phase != PlaybackPhase.LOADING || active))
+                    if (message != null) views.setOnClickPendingIntent(id, if (active) ButlerAudioPlaybackService.stopIntent(context)
+                        else ButlerAudioPlaybackService.intent(context, message.requestId, private))
+                }
+                manager.updateAppWidget(widgetId, views)
+                if (Build.VERSION.SDK_INT < 31 && (!renderedText.containsKey(widgetId) || renderedText[widgetId] != message?.text)) {
+                    manager.notifyAppWidgetViewDataChanged(widgetId, R.id.widget_response)
+                }
+                renderedText[widgetId] = message?.text
             }
-            ids.forEach { id ->
-                val height = manager.getAppWidgetOptions(id).getInt(AppWidgetManager.OPTION_APPWIDGET_MIN_HEIGHT, 250)
-                views.setInt(R.id.widget_response, "setMaxLines", ((height - 184) / 22).coerceIn(1, 20))
-                manager.updateAppWidget(id, views)
-            }
+            renderedText.keys.retainAll(ids.toSet())
         }
     }
 }

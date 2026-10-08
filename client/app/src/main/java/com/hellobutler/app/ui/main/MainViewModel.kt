@@ -31,6 +31,7 @@ data class MainUiState(
     val captureMode: CaptureMode? = null,
     val textDraft: String? = null,
     val recording: Boolean = false,
+    val widgetTalkPending: Boolean = false,
     val recreatingToday: Boolean = false,
     val error: String? = null,
 )
@@ -47,7 +48,11 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     init { refreshPreparedDays(); viewModelScope.launch { butler.recover() } }
     fun openConversation() = _state.update { it.copy(overlayVisible = true) }
 
-    fun prepareTalk() = _state.update { it.copy(overlayVisible = true, captureMode = CaptureMode.TALK, textDraft = null, error = null) }
+    fun prepareTalk() = _state.update {
+        if (it.recording) it.copy(overlayVisible = true)
+        else it.copy(overlayVisible = true, captureMode = CaptureMode.TALK, textDraft = null, error = null, widgetTalkPending = true)
+    }
+    fun consumeWidgetTalk() = _state.update { it.copy(widgetTalkPending = false) }
 
     fun beginRecording(mode: CaptureMode) {
         if (mode == CaptureMode.TEXT || _state.value.recording) return
@@ -71,6 +76,7 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
                 overlayVisible = true,
                 captureMode = null,
                 recording = false,
+                widgetTalkPending = false,
                 error = null,
             )
         }
@@ -85,7 +91,7 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
         viewModelScope.launch { runCatching { butler.queueText(message) }.onFailure { captureError(it.message ?: "Message could not be queued") } }
     }
     fun captureError(message: String) = _state.update { it.copy(recording = false, error = message) }
-    fun dismissOverlay() = _state.update { it.copy(overlayVisible = false, captureMode = null, textDraft = null, recording = false) }
+    fun dismissOverlay() = _state.update { it.copy(overlayVisible = false, captureMode = null, textDraft = null, recording = false, widgetTalkPending = false) }
     fun updateEvent(event: DailyEventEntity) { viewModelScope.launch { eventsRepository.update(event) } }
     fun deleteEvent(event: DailyEventEntity) { viewModelScope.launch { eventsRepository.delete(event) } }
     fun mutateUpcomingEvent(

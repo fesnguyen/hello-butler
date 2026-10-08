@@ -165,18 +165,18 @@ Everything in the widget should support that interaction without duplicating the
 
 # Android implementation
 
-The widget uses platform `AppWidgetProvider`/`RemoteViews`, with no additional UI framework. `ButlerWidgetProvider` renders a weighted, resizable layout; provider metadata targets 4 × 4 cells and provides dp fallbacks and minimum resize bounds. Light/dark resource colors follow the device configuration. Long responses are ellipsized; tapping the response opens the canonical conversation.
+The widget uses platform `AppWidgetProvider`/`RemoteViews`, with no additional UI framework. `ButlerWidgetProvider` renders a weighted, resizable layout; provider metadata targets 4 × 4 cells and provides dp fallbacks and minimum resize bounds. Translucent tinted surfaces, rounded action tiles, white text and text shadows let the wallpaper remain visible. The reading card has a stronger tint for readability. The complete response wraps in a non-clickable, vertically scrolling collection: direct `RemoteCollectionItems` on Android 31+, a `RemoteViewsService` reading the same repository/Room state on Android 26–30. No response text is ellipsized or replaced with a navigation action.
 
 `ButlerApplication` observes the latest completed Butler message through the existing Butler repository and a focused Room DAO Flow, combined with `ButlerPlayback.state`. Persistence, history reconciliation, audio-cache updates, playback transitions, and logout clearing therefore refresh installed widgets without extra backend polling, database tables, or periodic widget work. Widget add/update/resize callbacks reload the same local state.
 
 Actions use immutable, explicit PendingIntents:
 
 - Home opens Main Screen; Open Butler opens its conversation overlay, including when User Settings was previously visible.
-- Talk opens the existing overlay in Talk mode with a “Hold Talk below to speak” hint. The user holds the existing Talk control; its permission check, recorder, release/upload, and request flow are unchanged. Launcher taps do not silently start microphone recording.
-- Take Note opens the shared `SavedContextEditor` over Main Screen, defaulting to an ordinary Note. The same `UserSettingsViewModel` and saved-context repository handle saving and errors; the draft stays open on failure and retains its UUID for retry.
+- A single tap on Talk opens Main Screen's existing conversation overlay and starts the existing recorder only while the Activity is resumed and microphone permission is granted. Granting permission continues that pending interaction; denial shows the existing error. Send submits through the same `finishCapture`/Talk repository pipeline; Cancel, closing the overlay, or leaving the app cancels capture. The normal in-app Order/Talk controls retain hold/release behavior.
+- Take Note opens a small translucent `WidgetNoteActivity` over the launcher with the shared `SavedContextEditor`, an ordinary Note, and Save/Exit controls. Android RemoteViews cannot host an editable text field; this is the user-selected popup fallback rather than a simulated inline editor. The same `UserSettingsViewModel` and saved-context repository handle saving and errors; the draft stays open on failure and retains its UUID and text through rotation/retry. Exit or successful Save closes the separate, excluded-from-recents task. A missing session hands off to normal application authentication and note navigation.
 - Listen Aloud and As a Call use the existing `ButlerAudioPlaybackService` foreground-service PendingIntents and response cache. The service retains exclusive route ownership. Active playback/preparation exposes Stop; pending cache work shows Loading, and unavailable audio disables playback.
 
-`drawable-nodpi/butler_identity.webp` is a single square, padded adaptation of the supplied official hand-and-bell artwork. Its proportions are retained. The widget, Main Screen/overlay avatars, and adaptive launcher foreground reuse that resource. Launcher padding protects the artwork within icon masks; there is no substitute bell or assistant artwork.
+`drawable-nodpi/butler_identity.webp` is a single transparent, square, padded adaptation of the supplied official hand-and-bell artwork. Its hand, gold bell and ringing marks are retained; its rectangular background has been removed. Open Butler places this cutout on a circular surface. The widget, Main Screen/overlay avatars, and adaptive launcher foreground reuse that resource. Launcher padding protects the artwork within icon masks; there is no substitute bell or assistant artwork.
 
 ## Device verification
 
@@ -185,8 +185,8 @@ After installing a build, add Hello Butler from the launcher widget picker, then
 1. Empty state, a completed response, a newer response, and offline cached content.
 2. Resize, portrait/landscape, light/dark, large font sizes, multiple widget instances, and removal/re-addition.
 3. Home and Open Butler from a cold start and while User Settings was previously open.
-4. Talk handoff, microphone permission denial/grant, hold/release, and one canonical persisted interaction.
-5. Take Note save/cancel, offline failure/retry, and the resulting ordinary Note in User Settings.
+4. Talk handoff, microphone permission denial/grant, single tap/Send/Cancel, background cancellation, normal in-app hold/release, and one canonical persisted interaction.
+5. Take Note popup Save/Exit, launcher return, rotation, offline failure/retry, and the resulting ordinary Note in User Settings.
 6. Both audio routes, Loading/cache readiness, Stop, route switching, and completion/error reset, including when playback starts in the application.
 7. Logout clears the response; launcher icon masks and Open Butler show the supplied artwork.
 

@@ -58,7 +58,7 @@ fun ButlerConversationOverlay(
                 }
                 Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                     Text("Butler", style = MaterialTheme.typography.titleMedium)
-                    Text(if (state.recording) "Recording" else if (state.captureMode == CaptureMode.TALK) "Hold Talk below to speak" else "Here with your day", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (state.recording) "Recording" else if (state.widgetTalkPending) "Starting Talk…" else if (state.captureMode == CaptureMode.TALK) "Ready to talk" else "Here with your day", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = onClose, enabled = !state.recording) { Icon(Icons.Outlined.Close, "Close conversation") }
             }

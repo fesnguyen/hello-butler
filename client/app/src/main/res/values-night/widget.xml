@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <resources>
-    <color name="widget_background">#191C2B</color>
-    <color name="widget_card">#292C3F</color>
-    <color name="widget_text">#F4EFFA</color>
-    <color name="widget_accent">#D0BCFF</color>
+    <color name="widget_background">#18101826</color>
+    <color name="widget_card">#99101826</color>
+    <color name="widget_text">#FAF8FF</color>
+    <color name="widget_accent">#D8CBFF</color>
 </resources>
