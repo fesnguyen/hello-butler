@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -15,10 +16,15 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import com.hellobutler.app.auth.AuthScreen
 import com.hellobutler.app.auth.AuthViewModel
 import com.hellobutler.app.core.AppContainer
+import com.hellobutler.app.core.ButlerDestination
+import com.hellobutler.app.core.ButlerNavigation
+import com.hellobutler.app.data.local.SavedContextEntity
 import com.hellobutler.app.ui.main.MainScreen
 import com.hellobutler.app.ui.main.MainViewModel
+import com.hellobutler.app.ui.settings.SavedContextEditor
 import com.hellobutler.app.ui.settings.UserSettingsScreen
 import com.hellobutler.app.ui.settings.UserSettingsViewModel
+import java.util.UUID
 
 @Composable
 fun HelloButlerApp(container: AppContainer) {
@@ -33,10 +39,25 @@ fun HelloButlerApp(container: AppContainer) {
             val mainViewModel: MainViewModel = viewModel(
                 factory = MainViewModel.factory(container.butlerRepository, container.dailyEventRepository)
             )
+            val destination by ButlerNavigation.destination.collectAsState()
+            var quickNote by remember { mutableStateOf<SavedContextEntity?>(null) }
+            val userSettingsViewModel: UserSettingsViewModel = viewModel(
+                factory = UserSettingsViewModel.factory(container.userSettingsRepository)
+            )
+            LaunchedEffect(destination) {
+                destination?.let {
+                    userSettingsOpen = false
+                    when (it) {
+                        ButlerDestination.HOME -> { quickNote = null; mainViewModel.dismissOverlay() }
+                        ButlerDestination.CONVERSATION -> { quickNote = null; mainViewModel.openConversation() }
+                        ButlerDestination.TALK -> { quickNote = null; mainViewModel.prepareTalk() }
+                        ButlerDestination.NOTE -> quickNote = SavedContextEntity(UUID.randomUUID().toString(), "", false, 0)
+                    }
+                    ButlerNavigation.navigationConsumed()
+                }
+            }
+            quickNote?.let { item -> SavedContextEditor(userSettingsViewModel, item) { quickNote = null } }
             if (userSettingsOpen) {
-                val userSettingsViewModel: UserSettingsViewModel = viewModel(
-                    factory = UserSettingsViewModel.factory(container.userSettingsRepository)
-                )
                 UserSettingsScreen(userSettingsViewModel) { userSettingsOpen = false }
             } else {
                 MainScreen(

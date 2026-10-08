@@ -17,6 +17,9 @@ import com.hellobutler.app.execution.ButlerPlayback
 import com.hellobutler.app.execution.PlaybackPhase
 import com.hellobutler.app.execution.playbackPhase
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.hellobutler.app.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -51,11 +54,11 @@ fun ButlerConversationOverlay(
         Column(Modifier.fillMaxHeight().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primary) {
-                    Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(9.dp).size(20.dp), tint = MaterialTheme.colorScheme.onPrimary)
+                    Image(painterResource(R.drawable.butler_identity), "Hello Butler", Modifier.padding(4.dp).size(32.dp))
                 }
                 Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
                     Text("Butler", style = MaterialTheme.typography.titleMedium)
-                    Text(if (state.recording) "Recording" else "Here with your day", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (state.recording) "Recording" else if (state.widgetTalkPending) "Starting Talk…" else if (state.captureMode == CaptureMode.TALK) "Ready to talk" else "Here with your day", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 IconButton(onClick = onClose, enabled = !state.recording) { Icon(Icons.Outlined.Close, "Close conversation") }
             }

@@ -5,6 +5,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
 import com.hellobutler.app.core.AppContainer
 import com.hellobutler.app.core.AppVisibility
+import com.hellobutler.app.widget.ButlerWidgetProvider
 import com.hellobutler.app.execution.NightlyPlanSyncWorker
 import com.hellobutler.app.execution.ScheduleRestoreWorker
 import com.hellobutler.app.sync.DailySyncWorker
@@ -21,6 +22,7 @@ class ButlerApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         registerActivityLifecycleCallbacks(AppVisibility)
+        ButlerWidgetProvider.observe(this)
         if (
             BuildConfig.FIREBASE_APPLICATION_ID.isNotBlank() &&
             BuildConfig.FIREBASE_API_KEY.isNotBlank() &&

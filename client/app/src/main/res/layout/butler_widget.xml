@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root"
+    android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical"
+    android:padding="8dp" android:background="@drawable/widget_background">
+    <include layout="@layout/widget_header" />
+    <LinearLayout android:id="@+id/widget_response_card" android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="6dp" android:background="@drawable/widget_card">
+        <FrameLayout android:id="@+id/widget_response_area" android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:padding="10dp" android:background="@drawable/widget_reading_surface">
+            <TextView android:id="@+id/widget_response_compact" android:layout_width="match_parent" android:layout_height="wrap_content"
+                android:text="@string/widget_empty" android:textColor="@color/widget_text" android:textSize="@dimen/widget_response_text_size"
+                android:includeFontPadding="false" android:fontFamily="sans" android:breakStrategy="simple" android:hyphenationFrequency="none"
+                android:clickable="false" android:focusable="false" android:shadowColor="#CC000000" android:shadowRadius="2" />
+            <LinearLayout android:id="@+id/widget_response_collection" android:layout_width="match_parent"
+                android:layout_height="wrap_content" android:orientation="vertical" android:visibility="gone" />
+        </FrameLayout>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+            <Button android:id="@+id/widget_aloud" style="@style/Widget.Playback" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="48dp" android:layout_marginEnd="4dp" android:text="@string/widget_aloud" android:drawableStart="@drawable/widget_speaker" />
+            <Button android:id="@+id/widget_call" style="@style/Widget.Playback" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="48dp" android:layout_marginStart="4dp" android:text="@string/widget_call" android:drawableStart="@drawable/widget_phone" />
+        </LinearLayout>
+    </LinearLayout>
+    <include layout="@layout/widget_actions" />
+</LinearLayout>

@@ -19,6 +19,8 @@
         android:name=".ButlerApplication"
         android:allowBackup="true"
         android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
         android:theme="@style/Theme.HelloButler"
         android:usesCleartextTraffic="true">
@@ -30,6 +32,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity android:name=".widget.WidgetNoteActivity" android:exported="false"
+            android:taskAffinity="" android:excludeFromRecents="true" android:theme="@style/Theme.HelloButler.WidgetPopup" />
+        <service android:name=".widget.WidgetResponseService" android:exported="false"
+            android:permission="android.permission.BIND_REMOTEVIEWS" />
+        <receiver android:name=".widget.ButlerWidgetProvider" android:exported="false" android:label="@string/app_name">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE" /></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/butler_widget_info" />
+        </receiver>
         <receiver
             android:name=".execution.DailyEventAlarmReceiver"
             android:exported="false" />

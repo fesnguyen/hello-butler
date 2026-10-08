@@ -45,6 +45,7 @@ class ButlerRepository(
     private val audioLocks = ConcurrentHashMap<String, Mutex>()
 
     fun observeMessages(): Flow<List<ConversationMessageEntity>> = dao.observeMessages()
+    fun observeLatestResponse(): Flow<ConversationMessageEntity?> = dao.observeLatestResponse()
 
     companion object {
         private const val TAG = "ButlerRepository"

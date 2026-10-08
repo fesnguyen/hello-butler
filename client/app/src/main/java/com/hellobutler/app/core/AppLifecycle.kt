@@ -18,9 +18,13 @@ object AppVisibility : Application.ActivityLifecycleCallbacks {
     override fun onActivityDestroyed(activity: Activity) = Unit
 }
 
+enum class ButlerDestination { HOME, CONVERSATION, TALK, NOTE }
+
 object ButlerNavigation {
-    private val mutableOpenConversation = MutableStateFlow(false)
-    val openConversation = mutableOpenConversation.asStateFlow()
-    fun openConversation() { mutableOpenConversation.value = true }
-    fun consumed() { mutableOpenConversation.value = false }
+    private val mutableDestination = MutableStateFlow<ButlerDestination?>(null)
+    val destination = mutableDestination.asStateFlow()
+    fun navigate(destination: ButlerDestination) { mutableDestination.value = destination }
+    fun navigationConsumed() { mutableDestination.value = null }
+
+    fun openConversation() = navigate(ButlerDestination.CONVERSATION)
 }

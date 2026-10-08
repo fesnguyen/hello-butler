@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_actions"
+    android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="horizontal"
+    android:layout_marginTop="8dp">
+    <LinearLayout android:id="@+id/widget_open" android:layout_width="0dp" android:layout_weight="1"
+        android:layout_height="wrap_content" android:minHeight="64dp" android:gravity="center" android:orientation="vertical"
+        android:paddingTop="6dp" android:paddingBottom="6dp" android:layout_marginStart="0dp"
+        android:layout_marginEnd="4dp" android:background="@drawable/widget_tile"
+        android:contentDescription="@string/widget_open">
+        <ImageView android:layout_width="36dp" android:layout_height="36dp" android:src="@drawable/widget_identity_circle"
+            android:scaleType="fitCenter" android:importantForAccessibility="no" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp"
+            android:text="@string/widget_open" android:textColor="@color/widget_text" android:textSize="@dimen/widget_action_text_size"
+            android:includeFontPadding="false" android:shadowColor="#CC000000" android:shadowRadius="2" />
+    </LinearLayout>
+    <LinearLayout android:id="@+id/widget_talk" android:layout_width="0dp" android:layout_weight="1"
+        android:layout_height="wrap_content" android:minHeight="64dp" android:gravity="center" android:orientation="vertical"
+        android:paddingTop="6dp" android:paddingBottom="6dp" android:layout_marginStart="4dp"
+        android:layout_marginEnd="4dp" android:background="@drawable/widget_tile"
+        android:contentDescription="@string/widget_talk">
+        <ImageView android:layout_width="36dp" android:layout_height="36dp" android:src="@drawable/widget_mic"
+            android:scaleType="fitCenter" android:importantForAccessibility="no" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp"
+            android:text="@string/widget_talk" android:textColor="@color/widget_text" android:textSize="@dimen/widget_action_text_size"
+            android:includeFontPadding="false" android:shadowColor="#CC000000" android:shadowRadius="2" />
+    </LinearLayout>
+    <LinearLayout android:id="@+id/widget_note" android:layout_width="0dp" android:layout_weight="1"
+        android:layout_height="wrap_content" android:minHeight="64dp" android:gravity="center" android:orientation="vertical"
+        android:paddingTop="6dp" android:paddingBottom="6dp" android:layout_marginStart="4dp"
+        android:layout_marginEnd="0dp" android:background="@drawable/widget_note_tile"
+        android:contentDescription="@string/widget_note">
+        <ImageView android:layout_width="36dp" android:layout_height="36dp" android:src="@drawable/widget_note"
+            android:scaleType="fitCenter" android:importantForAccessibility="no" />
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginTop="3dp"
+            android:text="@string/widget_note" android:textColor="@color/widget_text" android:textSize="@dimen/widget_action_text_size"
+            android:includeFontPadding="false" android:shadowColor="#CC000000" android:shadowRadius="2" />
+    </LinearLayout>
+</LinearLayout>

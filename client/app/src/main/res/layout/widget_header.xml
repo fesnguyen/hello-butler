@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent" android:layout_height="48dp"
+    android:gravity="center_vertical" android:paddingStart="6dp" android:paddingEnd="4dp"
+    android:background="@drawable/widget_header">
+    <ImageView android:layout_width="36dp" android:layout_height="36dp"
+        android:src="@drawable/widget_identity_circle" android:scaleType="fitCenter" android:importantForAccessibility="no" />
+    <TextView android:layout_width="0dp" android:layout_height="wrap_content" android:layout_weight="1"
+        android:paddingStart="8dp" android:text="@string/app_name" android:textSize="14sp" android:textStyle="bold"
+        android:textColor="@color/widget_text" android:shadowColor="#CC000000" android:shadowRadius="2" />
+    <Button android:id="@+id/widget_home" style="@style/Widget.Home" android:layout_width="80dp" android:layout_height="48dp"
+        android:text="@string/widget_home" android:drawableStart="@drawable/widget_home" />
+</LinearLayout>

@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.8  
+**Version:** 1.9  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -25,6 +25,8 @@ MainScreen
 Butler interaction happens over the user's day; there is no separate conversation screen. Upcoming Events appear below Daily Plan and are derived from active/future User Context. They are planning input, not persisted future Daily Plans, and ordinary routines do not appear in Upcoming.
 
 `Open in App` from a notification opens Main Screen with the Butler conversation overlay visible.
+
+The optional home-screen widget provides a compact path into the same Butler experience. It shows the latest Butler response and exposes Open Butler, Talk, Take Note, Listen Aloud, and As a Call actions. It does not duplicate the Daily Plan or create a second conversation/data model. See `HOME_SCREEN_WIDGET.md` for the widget-specific workflow.
 
 ---
 

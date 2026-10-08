@@ -6,6 +6,10 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.hellobutler.app.execution.ScheduleRestoreWorker
 import android.content.pm.PackageManager
 import android.media.AudioManager
@@ -21,10 +25,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.hellobutler.app.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -34,7 +40,6 @@ import com.hellobutler.app.data.remote.UpcomingEventDto
 import com.hellobutler.app.execution.SpeechForegroundService
 import com.hellobutler.app.execution.SpeechPlaybackState
 import com.hellobutler.app.execution.ButlerAudioPlaybackService
-import com.hellobutler.app.core.ButlerNavigation
 import com.hellobutler.app.speech.ButlerAudioRecorder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -72,8 +77,16 @@ fun MainScreen(
     var selectedEvent by remember { mutableStateOf<DailyEventEntity?>(null) }
     var creatingEvent by remember { mutableStateOf(false) }
     var selectedUpcoming by remember { mutableStateOf<UpcomingEventDto?>(null) }
+    var tapTalkSession by remember { mutableStateOf(false) }
+    var microphonePermissionRevision by remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleState by lifecycleOwner.lifecycle.currentStateAsState()
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (!granted) viewModel.captureError("Microphone permission is required for voice input")
+        if (!granted) {
+            viewModel.consumeWidgetTalk()
+            viewModel.captureError("Microphone permission is required for voice input")
+        }
+        microphonePermissionRevision++
     }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -83,18 +96,13 @@ fun MainScreen(
         onDispose {
             captureStartJob?.cancel()
             recorder.cancel()
+            if (tapTalkSession) viewModel.cancelRecording()
             listeningTone.release()
-        }
-    }
-    val openConversation by ButlerNavigation.openConversation.collectAsState()
-    LaunchedEffect(openConversation) {
-        if (openConversation) {
-            viewModel.openConversation()
-            ButlerNavigation.consumed()
         }
     }
     LaunchedEffect(Unit) {
         if (
+            !viewModel.state.value.widgetTalkPending &&
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
@@ -123,6 +131,7 @@ fun MainScreen(
                 },
                 onFailure = {
                     capturePending = false
+                    tapTalkSession = false
                     viewModel.captureError(it.message ?: "Recording could not start")
                 },
             )
@@ -146,6 +155,42 @@ fun MainScreen(
             return
         }
         viewModel.finishRecording(recorder.stop())
+    }
+
+    fun cancelTapTalk() {
+        captureStartJob?.cancel()
+        captureStartJob = null
+        capturePending = false
+        captureStartedAtMillis = 0L
+        recorder.cancel()
+        tapTalkSession = false
+        viewModel.cancelRecording()
+    }
+
+    LaunchedEffect(state.widgetTalkPending, microphonePermissionRevision, lifecycleState) {
+        if (state.widgetTalkPending && lifecycleState == Lifecycle.State.RESUMED) {
+            if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
+                viewModel.consumeWidgetTalk()
+                tapTalkSession = true
+                startCapture(CaptureMode.TALK)
+            }
+        }
+    }
+    LaunchedEffect(state.overlayVisible) {
+        if (!state.overlayVisible && tapTalkSession) {
+            cancelTapTalk()
+            viewModel.dismissOverlay()
+        }
+    }
+    val cancelOnBackground by rememberUpdatedState { if (tapTalkSession) cancelTapTalk() }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) cancelOnBackground()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     Scaffold(
@@ -172,14 +217,24 @@ fun MainScreen(
             )
         },
         bottomBar = {
-            ButlerControlBar(
-                enabled = !state.recording && !capturePending,
-                activeMode = state.captureMode,
-                recording = state.recording,
-                onVoicePressed = ::startCapture,
-                onVoiceReleased = ::finishCapture,
-                onText = viewModel::openTextComposer,
-            )
+            if (tapTalkSession && (state.recording || capturePending)) {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(if (capturePending) "Starting Talk…" else "Listening…", Modifier.weight(1f))
+                        TextButton(onClick = ::cancelTapTalk) { Text("Cancel") }
+                        Button(enabled = state.recording, onClick = { finishCapture(); tapTalkSession = false }) { Text("Send") }
+                    }
+                }
+            } else {
+                ButlerControlBar(
+                    enabled = !state.recording && !capturePending,
+                    activeMode = state.captureMode,
+                    recording = state.recording,
+                    onVoicePressed = ::startCapture,
+                    onVoiceReleased = ::finishCapture,
+                    onText = viewModel::openTextComposer,
+                )
+            }
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
@@ -256,7 +311,7 @@ fun MainScreen(
                         onSendText = viewModel::sendText,
                         onPlay = { requestId, private -> ButlerAudioPlaybackService.play(context, requestId, private) },
                         onStop = { ButlerAudioPlaybackService.stop(context) },
-                        onClose = viewModel::dismissOverlay,
+                        onClose = { if (tapTalkSession) cancelTapTalk(); viewModel.dismissOverlay() },
                         modifier = Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 10.dp),
                     )
                 }
@@ -317,7 +372,7 @@ private fun TodayHeader(
         },
         navigationIcon = {
             Surface(Modifier.padding(start = 14.dp, end = 6.dp), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
-                Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.primary)
+                Image(painterResource(R.drawable.butler_identity), "Hello Butler", Modifier.padding(6.dp).size(32.dp))
             }
         },
         actions = {
