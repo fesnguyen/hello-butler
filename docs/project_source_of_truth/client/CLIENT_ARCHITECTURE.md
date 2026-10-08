@@ -1,6 +1,6 @@
 # Client Architecture
 
-**Version:** 1.7  
+**Version:** 1.8  
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md` and `ENGINEERING.md`
 
@@ -55,6 +55,8 @@ Upcoming items expose appropriate modify/reschedule/skip/remove interactions lik
 ---
 
 # Responsibilities
+
+The client also exposes an optional Android home-screen widget. The widget is a compact Butler interaction surface, not a miniature Daily Plan. It shows the latest locally persisted Butler response and reuses the same conversation, recording, notes, response-audio, and navigation paths as the main application. Detailed behavior is defined in `HOME_SCREEN_WIDGET.md`.
 
 The client owns:
 
