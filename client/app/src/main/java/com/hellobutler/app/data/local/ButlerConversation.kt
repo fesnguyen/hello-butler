@@ -42,6 +42,9 @@ data class ConversationMessageEntity(
 
 @Dao
 interface ButlerConversationDao {
+    @Query("SELECT * FROM conversation_messages WHERE role = 'butler' AND deliveryState = 'completed' ORDER BY createdAt DESC, id DESC LIMIT 1")
+    fun observeLatestResponse(): Flow<ConversationMessageEntity?>
+
     @Query("SELECT * FROM conversation_messages ORDER BY createdAt ASC")
     fun observeMessages(): Flow<List<ConversationMessageEntity>>
 

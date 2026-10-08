@@ -1,0 +1,20 @@
+<?xml version="1.0" ?>
+<resources>
+    <color name="butler_icon_background">#0D1423</color>
+    <color name="widget_background">#F1EAFB</color>
+    <color name="widget_card">#FFFFFF</color>
+    <color name="widget_text">#191C2B</color>
+    <color name="widget_accent">#6042AA</color>
+    <string name="widget_description">Latest Butler response, listening, Talk and quick Notes</string>
+    <string name="widget_empty">Your Butler is here. Open Butler or Talk to start a conversation.</string>
+    <string name="widget_home">Home</string>
+    <string name="widget_open">Open Butler</string>
+    <string name="widget_talk">Talk</string>
+    <string name="widget_note">Take Note</string>
+    <string name="widget_aloud">Listen Aloud</string>
+    <string name="widget_call">As a Call</string>
+    <string name="widget_loading">Loading…</string>
+    <string name="widget_loading_stop">Loading… ■</string>
+    <string name="widget_stop">Stop ■</string>
+    <string name="widget_no_audio">Audio unavailable</string>
+</resources>

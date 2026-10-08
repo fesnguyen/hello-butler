@@ -21,10 +21,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.outlined.AccountCircle
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.Image
+import androidx.compose.ui.res.painterResource
+import com.hellobutler.app.R
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
@@ -34,7 +36,6 @@ import com.hellobutler.app.data.remote.UpcomingEventDto
 import com.hellobutler.app.execution.SpeechForegroundService
 import com.hellobutler.app.execution.SpeechPlaybackState
 import com.hellobutler.app.execution.ButlerAudioPlaybackService
-import com.hellobutler.app.core.ButlerNavigation
 import com.hellobutler.app.speech.ButlerAudioRecorder
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -84,13 +85,6 @@ fun MainScreen(
             captureStartJob?.cancel()
             recorder.cancel()
             listeningTone.release()
-        }
-    }
-    val openConversation by ButlerNavigation.openConversation.collectAsState()
-    LaunchedEffect(openConversation) {
-        if (openConversation) {
-            viewModel.openConversation()
-            ButlerNavigation.consumed()
         }
     }
     LaunchedEffect(Unit) {
@@ -317,7 +311,7 @@ private fun TodayHeader(
         },
         navigationIcon = {
             Surface(Modifier.padding(start = 14.dp, end = 6.dp), shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.primaryContainer) {
-                Icon(Icons.Outlined.AutoAwesome, null, Modifier.padding(10.dp), tint = MaterialTheme.colorScheme.primary)
+                Image(painterResource(R.drawable.butler_identity), "Hello Butler", Modifier.padding(6.dp).size(32.dp))
             }
         },
         actions = {

@@ -1,0 +1,29 @@
+<?xml version="1.0" ?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/widget_root" android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical" android:padding="12dp" android:background="@drawable/widget_background">
+    <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:gravity="center_vertical">
+        <ImageView android:layout_width="32dp" android:layout_height="32dp" android:src="@drawable/butler_identity" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+        <TextView android:id="@+id/widget_title" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/app_name" android:textColor="@color/widget_text" android:textSize="13sp" android:layout_weight="1" android:paddingStart="8dp" android:textStyle="bold"/>
+        <Button android:id="@+id/widget_home" android:drawableStart="@drawable/widget_home" android:layout_width="72dp" android:layout_height="48dp" android:padding="0dp" android:text="@string/widget_home" android:textSize="12sp" android:textColor="@color/widget_text" android:background="?android:attr/selectableItemBackground"/>
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:orientation="vertical" android:padding="10dp" android:background="@drawable/widget_card">
+        <TextView android:id="@+id/widget_response" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="1" android:text="@string/widget_empty" android:textColor="@color/widget_text" android:textSize="17sp" android:ellipsize="end" android:maxLines="10"/>
+        <LinearLayout android:layout_width="match_parent" android:layout_height="48dp" android:orientation="horizontal">
+            <Button android:id="@+id/widget_aloud" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:padding="2dp" android:textSize="12sp" android:text="@string/widget_aloud" android:textColor="@color/widget_accent" android:drawableStart="@drawable/widget_speaker" android:background="?android:attr/selectableItemBackground"/>
+            <Button android:id="@+id/widget_call" android:layout_width="0dp" android:layout_weight="1" android:layout_height="48dp" android:padding="2dp" android:textSize="12sp" android:text="@string/widget_call" android:textColor="@color/widget_accent" android:drawableStart="@drawable/widget_phone" android:background="?android:attr/selectableItemBackground"/>
+        </LinearLayout>
+    </LinearLayout>
+    <LinearLayout android:layout_width="match_parent" android:layout_height="64dp" android:orientation="horizontal">
+        <LinearLayout android:id="@+id/widget_open" android:layout_width="0dp" android:layout_weight="1" android:layout_height="64dp" android:gravity="center" android:orientation="vertical" android:background="?android:attr/selectableItemBackground" android:contentDescription="@string/widget_open">
+            <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/butler_identity" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+            <TextView android:id="@+id/widget_open_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/widget_open" android:textColor="@color/widget_text" android:textSize="13sp"/>
+        </LinearLayout>
+        <LinearLayout android:id="@+id/widget_talk" android:layout_width="0dp" android:layout_weight="1" android:layout_height="64dp" android:gravity="center" android:orientation="vertical" android:background="?android:attr/selectableItemBackground" android:contentDescription="@string/widget_talk">
+            <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/widget_mic" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+            <TextView android:id="@+id/widget_talk_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/widget_talk" android:textColor="@color/widget_text" android:textSize="13sp"/>
+        </LinearLayout>
+        <LinearLayout android:id="@+id/widget_note" android:layout_width="0dp" android:layout_weight="1" android:layout_height="64dp" android:gravity="center" android:orientation="vertical" android:background="?android:attr/selectableItemBackground" android:contentDescription="@string/widget_note">
+            <ImageView android:layout_width="40dp" android:layout_height="40dp" android:src="@drawable/widget_note" android:scaleType="fitCenter" android:importantForAccessibility="no"/>
+            <TextView android:id="@+id/widget_note_label" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="@string/widget_note" android:textColor="@color/widget_text" android:textSize="13sp"/>
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>

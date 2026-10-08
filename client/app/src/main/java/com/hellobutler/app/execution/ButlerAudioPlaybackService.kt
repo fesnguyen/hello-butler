@@ -118,7 +118,7 @@ class ButlerAudioPlaybackService : Service() {
     }
 
     private fun notification(text: String): Notification {
-        val stop = PendingIntent.getService(this, 0, Intent(this, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val stop = stopIntent(this)
         return NotificationCompat.Builder(this, CHANNEL).setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle("Hello Butler").setContentText(text).setOngoing(true)
             .addAction(android.R.drawable.ic_media_pause, "Stop", stop).build()
@@ -167,6 +167,11 @@ class ButlerAudioPlaybackService : Service() {
                 Intent(context, ButlerAudioPlaybackService::class.java).putExtra(EXTRA_REQUEST_ID, requestId).putExtra(EXTRA_PRIVATE, private),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+
+        fun stopIntent(context: Context): PendingIntent = PendingIntent.getService(
+            context, 0, Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
         fun stop(context: Context) {
             context.startService(Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP))

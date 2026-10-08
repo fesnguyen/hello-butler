@@ -47,6 +47,8 @@ class MainViewModel(private val butler: ButlerRepository, private val eventsRepo
     init { refreshPreparedDays(); viewModelScope.launch { butler.recover() } }
     fun openConversation() = _state.update { it.copy(overlayVisible = true) }
 
+    fun prepareTalk() = _state.update { it.copy(overlayVisible = true, captureMode = CaptureMode.TALK, textDraft = null, error = null) }
+
     fun beginRecording(mode: CaptureMode) {
         if (mode == CaptureMode.TEXT || _state.value.recording) return
         _state.update { it.copy(overlayVisible = true, captureMode = mode, textDraft = null, recording = true, error = null) }

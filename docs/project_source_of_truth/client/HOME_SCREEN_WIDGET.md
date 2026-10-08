@@ -160,3 +160,41 @@ The widget should answer one question immediately:
 > What did my Butler just tell me, and what do I want to do next?
 
 Everything in the widget should support that interaction without duplicating the full application.
+
+---
+
+# Android implementation
+
+The widget uses platform `AppWidgetProvider`/`RemoteViews`, with no additional UI framework. `ButlerWidgetProvider` renders a weighted, resizable layout; provider metadata targets 4 × 4 cells and provides dp fallbacks and minimum resize bounds. Light/dark resource colors follow the device configuration. Long responses are ellipsized; tapping the response opens the canonical conversation.
+
+`ButlerApplication` observes the latest completed Butler message through the existing Butler repository and a focused Room DAO Flow, combined with `ButlerPlayback.state`. Persistence, history reconciliation, audio-cache updates, playback transitions, and logout clearing therefore refresh installed widgets without extra backend polling, database tables, or periodic widget work. Widget add/update/resize callbacks reload the same local state.
+
+Actions use immutable, explicit PendingIntents:
+
+- Home opens Main Screen; Open Butler opens its conversation overlay, including when User Settings was previously visible.
+- Talk opens the existing overlay in Talk mode with a “Hold Talk below to speak” hint. The user holds the existing Talk control; its permission check, recorder, release/upload, and request flow are unchanged. Launcher taps do not silently start microphone recording.
+- Take Note opens the shared `SavedContextEditor` over Main Screen, defaulting to an ordinary Note. The same `UserSettingsViewModel` and saved-context repository handle saving and errors; the draft stays open on failure and retains its UUID for retry.
+- Listen Aloud and As a Call use the existing `ButlerAudioPlaybackService` foreground-service PendingIntents and response cache. The service retains exclusive route ownership. Active playback/preparation exposes Stop; pending cache work shows Loading, and unavailable audio disables playback.
+
+`drawable-nodpi/butler_identity.webp` is a single square, padded adaptation of the supplied official hand-and-bell artwork. Its proportions are retained. The widget, Main Screen/overlay avatars, and adaptive launcher foreground reuse that resource. Launcher padding protects the artwork within icon masks; there is no substitute bell or assistant artwork.
+
+## Device verification
+
+After installing a build, add Hello Butler from the launcher widget picker, then check:
+
+1. Empty state, a completed response, a newer response, and offline cached content.
+2. Resize, portrait/landscape, light/dark, large font sizes, multiple widget instances, and removal/re-addition.
+3. Home and Open Butler from a cold start and while User Settings was previously open.
+4. Talk handoff, microphone permission denial/grant, hold/release, and one canonical persisted interaction.
+5. Take Note save/cancel, offline failure/retry, and the resulting ordinary Note in User Settings.
+6. Both audio routes, Loading/cache readiness, Stop, route switching, and completion/error reset, including when playback starts in the application.
+7. Logout clears the response; launcher icon masks and Open Butler show the supplied artwork.
+
+Build and instrumentation commands (from `client/`):
+
+```shell
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:assembleDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest
+```
+
+The existing behavioral tests are Android instrumentation tests; `testDebugUnitTest` alone does not execute them. Launcher and physical speaker/earpiece behavior require a device or emulator.
