@@ -108,9 +108,10 @@ class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(event.speak_aloud)
 
     async def test_reminder_edit_invalidates_audio_without_eager_tts(self):
-        from app.application.sync.service import DailyEventSyncService
-        from app.application.sync.contracts import DailyEventMutation
         from datetime import date
+
+        from app.application.sync.contracts import DailyEventMutation
+        from app.application.sync.service import DailyEventSyncService
 
         _, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
         await self.speech.generate("event", event_id)
