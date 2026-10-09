@@ -4,7 +4,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -21,7 +21,7 @@ from app.application.upcoming import (
 )
 from app.core.config import Settings, get_settings
 from app.core.database import get_session
-from app.core.lifecycle import daily_plan_changes
+from app.core.lifecycle import daily_plan_changes, speech_service
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
 
 router = APIRouter(prefix="/api/sync", tags=["sync"])
@@ -39,8 +39,7 @@ async def event_audio(
             DailyEventModel.id == event_id,
             DailyEventModel.user_id == user.id,
             DailyEventModel.deleted_at.is_(None),
-            DailyEventModel.event_type.in_(("morning_brief", "good_night_summary")),
-            DailyEventModel.speak_aloud.is_(True),
+            DailyEventModel.event_type.in_(("morning_brief", "good_night_summary", "reminder")),
             DailyEventModel.audio_status == "ready",
         )
     )
@@ -48,6 +47,28 @@ async def event_audio(
     if path is None or not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Speech is not ready")
     return FileResponse(path, media_type="audio/ogg", filename=f"butler-event-{event_id}.ogg")
+
+
+@router.post("/events/{event_id}/speech")
+async def prepare_event_speech(
+    event_id: uuid.UUID,
+    version: int,
+    user: AuthenticatedUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
+    background: BackgroundTasks,
+) -> dict[str, str]:
+    """Generate reminder speech on demand, using the existing durable TTS owner."""
+    service = speech_service(settings)
+    try:
+        audio_status, queued = await service.prepare_reminder(session, user.id, event_id, version)
+    except LookupError as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    if queued:
+        background.add_task(service.generate, "event", event_id)
+    return {"audio_status": audio_status}
 
 
 class SyncEvent(BaseModel):

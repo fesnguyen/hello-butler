@@ -1,7 +1,7 @@
 # Personal Butler
 
 **Document:** Project Overview  
-**Version:** 1.8  
+**Version:** 1.9
 **Status:** Source of Truth
 
 ---
@@ -154,13 +154,17 @@ Loading → Ready → Speaking
 
 The controls must have a comfortable touch target and be visibly wider than bare icons without turning the message into a large action panel. Only one playback route owns the audio at a time; starting the other route stops/switches the current playback rather than overlapping audio.
 
-Morning Brief and Good Night Summary may auto-start Listen Aloud when due and must expose Stop immediately. Ordinary Butler responses remain silent until playback is selected.
+Morning Brief and Good Night Summary may auto-start Listen Aloud when due when daily briefing speech is enabled. Reminder and ordinary response speech are separately opt-in. Manual playback remains available regardless of these automatic-speech preferences. Playback and delayed continuations expose Stop.
+
+All Butler-managed openings, warm-ups, previews, and generated speech use a device-local Butler volume (0–100%, default 70%). This is player gain, separate from Android system volume; changing it must not affect other apps, alarms, ringtones, or notifications. Android's media volume still limits audible output.
+
+Audio sequences are configuration-driven. Morning Brief plays a long opening and random morning warm-up, then waits five minutes after the warm-up finishes before a short opening and the prepared speech. Good Night plays a long opening, random evening warm-up, and prepared speech without delay. Reminders use a short opening then reminder speech; responses use their existing speech. Details are in `client/AUDIO_WORKFLOWS.md`.
 
 ---
 
 ## User Settings
 
-The client destination is **User Settings**. It contains account information, read-only credits, editable TTS method, and user-manageable saved context.
+The client destination is **User Settings**. It contains account information, read-only credits, editable TTS method, Sound & Voice, and user-manageable saved context. Sound & Voice saves Butler volume immediately and exposes Speak reminders aloud, Speak Butler responses aloud, and Speak daily briefings aloud. The live volume sample is prerecorded and never invokes TTS.
 
 Backend profile persistence remains authoritative for account/configuration data. User Context remains authoritative for Butler knowledge about the user's life. Do not create a generic settings table or a separate notes/preferences table for this scope.
 

@@ -23,8 +23,8 @@ class DailyEventScheduler(private val context: Context) {
 
     fun schedule(event: DailyEventEntity) {
         val triggerAt = event.triggerAtMillis()
-        if (triggerAt == null || event.status != "planned" || !event.speakAloud ||
-            event.content.isNullOrBlank() || event.playbackAttemptedAt != null) {
+        if (triggerAt == null || event.status != "planned" || (!event.speakAloud && event.eventType != "reminder") ||
+            (event.content.isNullOrBlank() && event.eventType != "reminder") || event.playbackAttemptedAt != null) {
             cancel(event)
             return
         }
@@ -75,12 +75,13 @@ class DailyEventScheduler(private val context: Context) {
 internal fun DailyEventEntity.triggerAtMillis(): Long? {
     val date = runCatching { LocalDate.parse(eventDate) }.getOrNull() ?: return null
     val time = runCatching { startTime?.let(LocalTime::parse) }.getOrNull() ?: return null
-    return LocalDateTime.of(date, time).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+    return LocalDateTime.of(date, time).atZone(ZoneId.systemDefault()).toInstant().toEpochMilli() -
+        (if (eventType == "reminder") reminderMinutesBefore?.toLong()?.coerceAtLeast(0) ?: 0 else 0) * 60_000
 }
 
 internal fun DailyEventEntity.isDueForSpeech(nowMillis: Long = System.currentTimeMillis()): Boolean {
     val due = triggerAtMillis() ?: return false
-    return status == "planned" && speakAloud && !content.isNullOrBlank() &&
+    return status == "planned" && (speakAloud || eventType == "reminder") && (!content.isNullOrBlank() || eventType == "reminder") &&
         playbackAttemptedAt == null && due <= nowMillis &&
         eventDate == java.time.Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
 }

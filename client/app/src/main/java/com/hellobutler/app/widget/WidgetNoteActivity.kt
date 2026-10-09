@@ -41,7 +41,7 @@ class WidgetNoteActivity : ComponentActivity() {
             finish()
             return
         }
-        viewModel = ViewModelProvider(this, UserSettingsViewModel.factory(container.userSettingsRepository))[UserSettingsViewModel::class.java]
+        viewModel = ViewModelProvider(this, UserSettingsViewModel.factory(container.userSettingsRepository, container.soundVoice))[UserSettingsViewModel::class.java]
         enableEdgeToEdge()
         window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
         setContentView(R.layout.widget_note_overlay)

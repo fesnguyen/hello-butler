@@ -54,6 +54,11 @@ class DailyEventRepository(
 
     fun observeDate(date: String): Flow<List<DailyEventEntity>> = dao.observeDate(date)
 
+    suspend fun prepareReminderSpeech(eventId: String, version: Int) {
+        val response = authorized { token -> api.prepareEventSpeech("Bearer $token", eventId, version) }
+        if (!response.isSuccessful) throw ApiException("Reminder speech failed (${response.code()})")
+    }
+
     suspend fun speechAudio(eventId: String, version: Int): File? {
         val target = File(File(context.cacheDir, "event_speech").apply { mkdirs() }, "$eventId-$version.ogg")
         if (target.isOggOpusContainer()) return target

@@ -124,6 +124,12 @@ data class UpcomingMutationResultDto(
 )
 
 interface SyncApi {
+    @POST("api/sync/events/{eventId}/speech")
+    suspend fun prepareEventSpeech(
+        @Header("Authorization") authorization: String,
+        @Path("eventId") eventId: String,
+        @retrofit2.http.Query("version") version: Int,
+    ): Response<kotlinx.serialization.json.JsonObject>
     @Streaming
     @GET("api/sync/events/{eventId}/audio")
     suspend fun eventAudio(

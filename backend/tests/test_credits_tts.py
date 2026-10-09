@@ -88,6 +88,75 @@ class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
                 )
         return user_id, owner_id
 
+    async def test_reminder_uses_shared_voice_and_title_fallback_without_speak_flag(self):
+        user_id, event_id = await self.create("OPENAI", 2, "event", "reminder")
+        async with self.sessions() as session, session.begin():
+            event = await session.get(DailyEventModel, event_id)
+            event.speak_aloud = False
+            event.content = None
+            event.description = None
+            event.title = "Take medication"
+        self.assertIn(("event", event_id), await self.speech.pending())
+        await self.speech.generate("event", event_id)
+        await self.speech.generate("event", event_id)
+        self.openai.synthesize.assert_awaited_once_with(text="Take medication", request_id=event_id)
+        async with self.sessions() as session:
+            event = await session.get(DailyEventModel, event_id)
+            user = await session.get(UserModel, user_id)
+        self.assertEqual(event.audio_status, "ready")
+        self.assertEqual(user.credits, 1)
+        self.assertFalse(event.speak_aloud)
+
+    async def test_reminder_edit_invalidates_audio_without_eager_tts(self):
+        from app.application.sync.service import DailyEventSyncService
+        from app.application.sync.contracts import DailyEventMutation
+        from datetime import date
+
+        _, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
+        await self.speech.generate("event", event_id)
+        async with self.sessions() as session, session.begin():
+            row = await session.get(DailyEventModel, event_id)
+            DailyEventSyncService._apply_mutation(
+                row,
+                DailyEventMutation(
+                    id=event_id,
+                    event_date=date.today(),
+                    title="Updated reminder",
+                    event_type="reminder",
+                    status="planned",
+                    speak_aloud=False,
+                    sort_order=0,
+                ),
+            )
+            self.assertEqual(row.audio_status, "unavailable")
+            self.assertIsNone(row.response_audio_path)
+
+    async def test_reminder_prepare_is_on_demand_and_reuses_pending_owner(self):
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
+        async with self.sessions() as session, session.begin():
+            event = await session.get(DailyEventModel, event_id)
+            event.audio_status = "unavailable"
+        self.assertNotIn(("event", event_id), await self.speech.pending())
+        async with self.sessions() as session:
+            self.assertEqual(
+                await self.speech.prepare_reminder(session, user_id, event_id, 1), ("pending", True)
+            )
+        self.kokoro.synthesize.assert_not_awaited()
+        async with self.sessions() as session:
+            self.assertEqual(
+                await self.speech.prepare_reminder(session, user_id, event_id, 1),
+                ("pending", False),
+            )
+        for requester, version, exception in (
+            (uuid.uuid4(), 1, LookupError),
+            (user_id, 2, ValueError),
+        ):
+            async with self.sessions() as session:
+                with self.assertRaises(exception):
+                    await self.speech.prepare_reminder(session, requester, event_id, version)
+        await self.speech.generate("event", event_id)
+        self.kokoro.synthesize.assert_awaited_once()
+
     async def test_shared_selection_applies_to_requests_and_events(self):
         for kind in ("request", "event"):
             for method, credits, use_openai in (

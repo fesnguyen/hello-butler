@@ -204,3 +204,8 @@ Keep one authoritative model for each concept, and do not make canonical text de
 # Ecosystem boundary
 
 FastAPI owns only Hello Butler and its database/Alembic history. Showcase owns its PostgreSQL access through its own server-side data layer in `web/showcase`. Future Admin will manage ecosystem databases through its trusted server-side layer. See [Showcase](../web/showcase/SHOWCASE.md).
+
+
+## On-demand reminder speech
+
+Reminder playback reuses the shared `SpeechService` and existing DailyEvent audio fields. `POST /api/sync/events/{event_id}/speech?version=N` validates authenticated ownership, planned status, reminder type, and version; an unavailable owner transitions to pending and schedules generation. Existing pending/processing/ready speech is reused. The normal maintenance scan recovers pending reminders, and `GET /api/sync/events/{event_id}/audio` serves ready reminder audio. Content falls back to description/title. Showing notifications alone never requests synthesis. No provider settings or tables change.

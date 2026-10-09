@@ -39,6 +39,7 @@ class ButlerApplication : Application() {
                     .build(),
             )
         }
+        container.audioWorkflowScheduler.recover()
         ScheduleRestoreWorker.enqueue(this)
         NightlyPlanSyncWorker.scheduleNext(this)
         DailySyncWorker.schedulePeriodic(this)

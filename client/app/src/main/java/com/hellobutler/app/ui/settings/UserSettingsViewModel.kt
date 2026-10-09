@@ -31,7 +31,8 @@ data class UserSettingsUiState(
     val saved: Boolean = false,
 )
 
-class UserSettingsViewModel(private val repository: UserSettingsDataSource) : ViewModel() {
+class UserSettingsViewModel(private val repository: UserSettingsDataSource,
+    val soundVoice: com.hellobutler.app.execution.audio.SoundVoiceSettings? = null) : ViewModel() {
     private val _state = MutableStateFlow(UserSettingsUiState())
     val state = _state.asStateFlow()
 
@@ -96,8 +97,8 @@ class UserSettingsViewModel(private val repository: UserSettingsDataSource) : Vi
     }
 
     companion object {
-        fun factory(repository: UserSettingsDataSource): ViewModelProvider.Factory = viewModelFactory {
-            initializer { UserSettingsViewModel(repository) }
+        fun factory(repository: UserSettingsDataSource, soundVoice: com.hellobutler.app.execution.audio.SoundVoiceSettings? = null): ViewModelProvider.Factory = viewModelFactory {
+            initializer { UserSettingsViewModel(repository, soundVoice) }
         }
     }
 }
