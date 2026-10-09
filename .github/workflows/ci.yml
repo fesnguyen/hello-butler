@@ -8,68 +8,107 @@ on:
 permissions:
   contents: read
 
-jobs:
-  ci:
-    name: Validate Hello Butler
-    runs-on: [self-hosted, Windows, X64]
+# Only the newest commit on a branch needs validation.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  changes:
+    name: Detect changed components
+    runs-on: ubuntu-latest
+    outputs:
+      backend: ${{ steps.filter.outputs.backend }}
+      android: ${{ steps.filter.outputs.android }}
+      showcase: ${{ steps.filter.outputs.showcase }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            backend:
+              - 'backend/**'
+              - 'compose.yaml'
+              - '.github/workflows/ci.yml'
+            android:
+              - 'client/**'
+              - '.github/workflows/ci.yml'
+            showcase:
+              - 'web/showcase/**'
+              - '.github/workflows/ci.yml'
+
+  backend:
+    name: Backend CI
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    runs-on: [self-hosted, Windows, X64]
     defaults:
       run:
         shell: powershell
-
     steps:
-      # ============================================================
-      # Checkout ONCE
-      # ============================================================
-
-      - name: Checkout repository
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-
-      # ============================================================
-      # Backend CI
-      # ============================================================
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Sync backend dependencies
         working-directory: backend
         run: uv sync --frozen
-
       - name: Lint backend
         working-directory: backend
         run: uv run ruff check .
-
       - name: Build backend image
         run: |
           $image = "hello-butler-backend-ci:${{ github.sha }}"
+          docker build --tag $image ./backend
 
-          docker build `
-            --tag $image `
-            ./backend
-
-      # ============================================================
-      # Showcase CI
-      # ============================================================
-
+  showcase:
+    name: Showcase CI
+    needs: changes
+    if: needs.changes.outputs.showcase == 'true'
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install Showcase dependencies
         working-directory: web/showcase
         run: pnpm install --frozen-lockfile
-
       - name: Lint Showcase
         working-directory: web/showcase
         run: pnpm lint
-
       - name: Test Showcase
         working-directory: web/showcase
         run: pnpm test
-
       - name: Build Showcase
         working-directory: web/showcase
         run: pnpm build
 
-      # ============================================================
-      # Android CI
-      # ============================================================
-
+  android:
+    name: Android CI
+    needs: changes
+    if: needs.changes.outputs.android == 'true'
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Test Android client
         working-directory: client
+        run: .\gradlew.bat test
+
+  result:
+    name: Validate Hello Butler
+    needs: [changes, backend, showcase, android]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify component results
+        shell: bash
+        env:
+          RESULTS: ${{ toJSON(needs) }}
         run: |
-          .\gradlew.bat test
+          echo "$RESULTS"
+          if [[ "${{ needs.changes.result }}" != "success" ]]; then exit 1; fi
+          for result in "${{ needs.backend.result }}" "${{ needs.showcase.result }}" "${{ needs.android.result }}"; do
+            if [[ "$result" != "success" && "$result" != "skipped" ]]; then exit 1; fi
+          done
