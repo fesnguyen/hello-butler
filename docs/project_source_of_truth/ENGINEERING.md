@@ -27,17 +27,16 @@ It applies to:
 Implementation-specific architecture, technology choices, project structure, workflows, and data design belong in the relevant technical documents:
 
 ```text
-PROJECT.md
-ENGINEERING.md
-│
-├── backend/
-│   ├── ARCHITECTURE.md
-│   └── WORKFLOW.md
-│
-└── client/
-    ├── ARCHITECTURE.md
-    ├── WORKFLOW.md
-    └── ui/
+PROJECT.md                  # Highest product authority
+ENGINEERING.md              # Shared engineering rules
+backend/PROJECT_BACKEND.md  # Backend subsystem authority
+backend/TTS.md              # Backend speech implementation
+client/PROJECT_CLIENT.md    # Android subsystem authority
+client/AUDIO_WORKFLOWS.md   # Android audio implementation
+client/HOME_SCREEN_WIDGET.md
+client/CLIENT_SYNC_FLOW.md
+web/PROJECT_WEB.md          # Web subsystem authority
+web/showcase/SHOWCASE.md    # Showcase feature implementation
 ```
 
 This document should contain rules that apply across the project.
@@ -90,13 +89,13 @@ Complexity must be justified by an actual problem.
 Before modifying existing code:
 
 1. Understand the relevant product requirement.
-2. Read the relevant architecture and workflow documentation.
+2. Read the relevant subsystem PROJECT_* document and affected feature documents.
 3. Inspect the existing implementation.
 4. Preserve established architectural boundaries and conventions unless there is a clear reason to change them.
 
 Do not silently introduce a new architectural style into an existing area.
 
-Architectural changes should be intentional and reflected in the relevant architecture document.
+Architectural changes should be intentional and reflected in the relevant subsystem document and affected feature documents.
 
 ---
 

@@ -2,7 +2,7 @@
 
 **Status:** Source of Truth
 **Version:** 1.0
-**Authority:** Derived from PROJECT.md, ENGINEERING.md, and CLIENT_ARCHITECTURE.md
+**Authority:** Derived from PROJECT.md, ENGINEERING.md, and PROJECT_CLIENT.md
 
 ## Configuration
 
