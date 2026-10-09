@@ -111,6 +111,11 @@ class DailyEventActions:
             event.origin = "user"  # An explicit user change becomes protected planning input.
             event.planner_key = None
             event.version += 1
+            if event.event_type == "reminder":
+                event.audio_status = "unavailable"
+                event.response_audio_path = None
+                event.response_audio_mime_type = None
+                event.response_audio_delete_after = None
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
             result = ButlerResult(
                 response=canonical_response_from(state),
@@ -137,6 +142,11 @@ class DailyEventActions:
             event.origin = "user"
             event.planner_key = None
             event.version += 1
+            if event.event_type == "reminder":
+                event.audio_status = "unavailable"
+                event.response_audio_path = None
+                event.response_audio_mime_type = None
+                event.response_audio_delete_after = None
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
             result = ButlerResult(
                 response=canonical_response_from(state), changed_entities=[changed]
@@ -156,6 +166,11 @@ class DailyEventActions:
             event.origin = "user"
             event.planner_key = None
             event.version += 1
+            if event.event_type == "reminder":
+                event.audio_status = "unavailable"
+                event.response_audio_path = None
+                event.response_audio_mime_type = None
+                event.response_audio_delete_after = None
             changed = ChangedEntity(type="daily_event", id=event.id, plan_dates=[event.event_date])
             result = ButlerResult(
                 response=canonical_response_from(state), changed_entities=[changed]

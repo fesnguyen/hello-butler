@@ -53,7 +53,7 @@ internal object DeferredSpeechNotification {
             NotificationCompat.Builder(context, CHANNEL)
                 .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
                 .setContentTitle(event.title)
-                .setContentText("Your prepared Butler speech is ready. Tap Listen.")
+                .setContentText(event.content?.takeIf { it.isNotBlank() } ?: event.description ?: event.title)
                 .setContentIntent(listen)
                 .addAction(android.R.drawable.ic_media_play, "Listen", listen)
                 .addAction(android.R.drawable.ic_menu_view, "Open in App", open)

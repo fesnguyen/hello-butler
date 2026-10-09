@@ -49,8 +49,26 @@ class ButlerAudioWorker(appContext: Context, params: WorkerParameters) : Corouti
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
         return runCatching {
-            if (container.butlerRepository.ensureAudio(requestId) != null ||
-                container.butlerRepository.audioUnavailable(requestId)) Result.success() else Result.retry()
+            val audio = container.butlerRepository.ensureAudio(requestId)
+            if (audio != null && container.soundVoice.state.value.responses) {
+                val id = "response:$requestId"
+                val message = container.database.butlerConversationDao().message(requestId, "butler")
+                val recent = message?.createdAt?.let { runCatching {
+                    java.time.Instant.parse(it).isAfter(java.time.Instant.now().minusSeconds(600))
+                }.getOrDefault(false) } ?: false
+                if (recent && container.audioWorkflowStore.get(id) == null) {
+                    val execution = com.hellobutler.app.execution.audio.AudioExecution(id,
+                        com.hellobutler.app.execution.audio.AudioWorkflow.BUTLER_RESPONSE,
+                        audio.absolutePath, requestId = requestId)
+                    container.audioWorkflowStore.save(execution)
+                    if (com.hellobutler.app.core.AppVisibility.isForeground) {
+                        try { com.hellobutler.app.execution.ButlerAudioPlaybackService.resume(applicationContext, id) }
+                        catch (_: IllegalStateException) { container.audioWorkflowScheduler.offer(execution) }
+                        catch (_: SecurityException) { container.audioWorkflowScheduler.offer(execution) }
+                    } else container.audioWorkflowScheduler.offer(execution)
+                }
+            }
+            if (audio != null || container.butlerRepository.audioUnavailable(requestId)) Result.success() else Result.retry()
         }.getOrElse { Result.retry() }
     }
     companion object {

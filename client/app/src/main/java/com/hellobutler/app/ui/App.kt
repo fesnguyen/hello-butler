@@ -42,7 +42,7 @@ fun HelloButlerApp(container: AppContainer) {
             val destination by ButlerNavigation.destination.collectAsState()
             var quickNote by remember { mutableStateOf<SavedContextEntity?>(null) }
             val userSettingsViewModel: UserSettingsViewModel = viewModel(
-                factory = UserSettingsViewModel.factory(container.userSettingsRepository)
+                factory = UserSettingsViewModel.factory(container.userSettingsRepository, container.soundVoice)
             )
             LaunchedEffect(destination) {
                 destination?.let {

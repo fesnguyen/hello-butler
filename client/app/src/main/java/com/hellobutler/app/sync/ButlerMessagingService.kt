@@ -21,6 +21,12 @@ class ButlerMessagingService : FirebaseMessagingService() {
             "butler_request_completed", "butler_request_handling" -> {
                 val requestId = message.data["request_id"] ?: return
                 val app = application as ButlerApplication
+                if (message.data["type"] == "butler_request_completed" &&
+                    app.container.soundVoice.state.value.responses &&
+                    (AppVisibility.isForeground || message.priority == RemoteMessage.PRIORITY_HIGH)) {
+                    // Delivered high-priority FCM is a background FGS exemption. Downgraded pushes use the worker/Listen fallback.
+                    runCatching { com.hellobutler.app.execution.ButlerAudioPlaybackService.play(this, requestId, false, automatic = true) }
+                }
                 if (AppVisibility.isForeground) {
                     app.applicationScope.launch {
                         runCatching {

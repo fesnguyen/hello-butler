@@ -37,6 +37,32 @@ class SpeechService:
             return DailyEventModel
         raise ValueError("Unknown speech owner")
 
+    @staticmethod
+    async def prepare_reminder(
+        session: AsyncSession, user_id: uuid.UUID, owner_id: uuid.UUID, version: int
+    ) -> tuple[str, bool]:
+        """Queue on-demand speech once; reuse the existing event owner/lifecycle."""
+        event = await session.scalar(
+            select(DailyEventModel)
+            .where(
+                DailyEventModel.id == owner_id,
+                DailyEventModel.user_id == user_id,
+                DailyEventModel.deleted_at.is_(None),
+                DailyEventModel.status == "planned",
+                DailyEventModel.event_type == "reminder",
+            )
+            .with_for_update()
+        )
+        if event is None:
+            raise LookupError("Reminder not found")
+        if event.version != version:
+            raise ValueError("Reminder changed")
+        if event.audio_status == "unavailable":
+            event.audio_status = "pending"
+            await session.commit()
+            return "pending", True
+        return event.audio_status, False
+
     async def pending(self) -> list[tuple[str, uuid.UUID]]:
         stale = datetime.now(UTC) - timedelta(minutes=self.settings.butler_processing_stale_minutes)
         found: list[tuple[str, uuid.UUID]] = []
@@ -52,9 +78,11 @@ class SpeechService:
                             (model.status == "completed",)
                             if kind == "request"
                             else (
-                                model.event_type.in_(("morning_brief", "good_night_summary")),
+                                model.event_type.in_(
+                                    ("morning_brief", "good_night_summary", "reminder")
+                                ),
                                 model.deleted_at.is_(None),
-                                model.speak_aloud.is_(True),
+                                or_(model.speak_aloud.is_(True), model.event_type == "reminder"),
                                 model.status == "planned",
                             )
                         ),
@@ -79,12 +107,20 @@ class SpeechService:
                 return
             if kind == "event" and (
                 row.deleted_at
-                or not row.speak_aloud
+                or (not row.speak_aloud and row.event_type != "reminder")
                 or row.status != "planned"
-                or row.event_type not in ("morning_brief", "good_night_summary")
+                or row.event_type not in ("morning_brief", "good_night_summary", "reminder")
             ):
                 return
-            text = row.response_text if kind == "request" else row.content
+            text = (
+                row.response_text
+                if kind == "request"
+                else (
+                    (row.content or row.description or row.title)
+                    if row.event_type == "reminder"
+                    else row.content
+                )
+            )
             user_id = row.user_id
             version = row.version if kind == "event" else None
             row.audio_status = "processing"

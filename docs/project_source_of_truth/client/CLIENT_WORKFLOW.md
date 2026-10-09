@@ -1,6 +1,6 @@
 # Client Workflow
 
-**Version:** 1.9  
+**Version:** 2.0
 **Status:** Source of Truth  
 **Authority:** Derived from `PROJECT.md`, `ENGINEERING.md`, and `CLIENT_ARCHITECTURE.md`
 
@@ -102,7 +102,7 @@ Ordinary notifications show the same Butler text plus playback actions and `Open
 
 Both use the shared backend TTS service and the user's TTS method. When due, they may auto-start Listen Aloud and must expose Stop immediately. Do not use Android native TTS as a Butler speech fallback.
 
-Ordinary Butler messages remain silent until the user selects playback.
+Ordinary Butler messages remain silent by default; Speak Butler responses aloud opts into automatic playback of recent completed responses. Manual listening remains available independently.
 
 ---
 
@@ -180,3 +180,14 @@ Pending audio/text uploads and direct mutations may be queued for WorkManager re
 # Guiding UI Principle
 
 Butler should feel continuously present without becoming visually heavy. Keep controls comfortably tappable, keep canonical text available before optional speech, and expose one coherent saved-context experience instead of separate disconnected preference/note stores.
+
+
+# Sound & Voice and Audio Sequences
+
+Sound & Voice is in User Settings. Volume is horizontal, 0–100%, initially 70%, saved immediately. Adjusting starts one bundled sample and changes the current player's gain without restarting that sample for each slider movement. Finishing adjustment/leaving settings stops preview. The original `morning_warmup_0.mp3` is copied to `volume_preview.mp3`; missing/failed optional samples are skipped with no TTS call.
+
+Automatic preferences are device-local and persisted: reminders default off, ordinary responses default off, daily briefings default on. Workers/service read the same values. Disabling automatic speech preserves text, ordinary notifications, and explicit manual listening.
+
+Morning Brief: long opening → shuffled morning warm-up → persist continuation at warm-up completion + 300 seconds → release service/player → short opening → existing prepared speech. Good Night: long opening → shuffled evening warm-up → existing prepared speech. Reminder: ordinary notification, plus optional short opening → shared backend reminder speech. Response: existing response audio only. A manual listen suppresses a pending automatic repeat of that response.
+
+Waiting continuations expose a Stop notification. Stop cancels the journal and tagged workers/exact alarm. A delayed worker cannot assume a background service-start exemption: offer Listen when required. App restart repairs persisted waiting work; in-progress ambiguous audio is cancelled to avoid repeated announcements. Definition snapshots keep an already-scheduled sequence stable across configuration edits. See `AUDIO_WORKFLOWS.md`.

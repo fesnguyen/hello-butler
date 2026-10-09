@@ -1,9 +1,7 @@
 package com.hellobutler.app.execution
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -11,12 +9,8 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
-import android.os.PowerManager
-import android.media.MediaPlayer
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import com.hellobutler.app.MainActivity
-import androidx.core.content.ContextCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
@@ -25,20 +19,10 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import com.hellobutler.app.ButlerApplication
 import com.hellobutler.app.sync.DailySyncWorker
-import java.time.Instant
 import java.util.concurrent.TimeUnit
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlin.coroutines.resume
-import kotlinx.coroutines.withTimeoutOrNull
 
 object SpeechPlaybackState {
     private val mutableSpeaking = MutableStateFlow(false)
@@ -50,13 +34,19 @@ class DailyEventAlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_EXECUTE_EVENT) return
         val eventId = intent.getStringExtra(EXTRA_EVENT_ID) ?: return
-        try {
-            SpeechForegroundService.start(context, eventId)
-        } catch (error: IllegalStateException) {
-            // Permission can be revoked between scheduling and delivery. Do not consume the claim.
-            DailyEventExecutionWorker.enqueue(context, eventId, 0)
-        } catch (error: SecurityException) {
-            DailyEventExecutionWorker.enqueue(context, eventId, 0)
+        val pending = goAsync()
+        (context.applicationContext as ButlerApplication).applicationScope.launch {
+            try {
+                val container = (context.applicationContext as ButlerApplication).container
+                val event = container.database.dailyEventDao().get(eventId) ?: return@launch
+                if (!event.isDueForSpeech()) return@launch
+                DeferredSpeechNotification.show(context, event)
+                if (container.soundVoice.state.value.allows(com.hellobutler.app.execution.audio.AudioWorkflows.forEvent(event.eventType))) {
+                    try { SpeechForegroundService.start(context, eventId) }
+                    catch (_: IllegalStateException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
+                    catch (_: SecurityException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
+                }
+            } finally { pending.finish() }
         }
     }
 }
@@ -75,193 +65,28 @@ class ScheduleRestoreReceiver : BroadcastReceiver() {
     }
 }
 
+/** Compatibility entry point for existing scheduled Listen intents; playback has one owner. */
 class SpeechForegroundService : Service() {
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private var playback: Job? = null
-    private var player: MediaPlayer? = null
-    private var activeStartId = 0
-    private var wakeLock: PowerManager.WakeLock? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        val channel = NotificationChannel(
-            CHANNEL_ID, "Butler speech", NotificationManager.IMPORTANCE_LOW
-        ).apply { description = "Shows while Butler is speaking" }
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
-    }
-
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP_SPEECH) {
-            stopSpeech()
-            return START_NOT_STICKY
+        if (intent?.action == ACTION_STOP_SPEECH) ButlerAudioPlaybackService.stop(this)
+        else intent?.getStringExtra(EXTRA_EVENT_ID)?.let { eventId ->
+            val channel = NotificationChannel("butler_speech", "Butler speech", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+            val notification = NotificationCompat.Builder(this, "butler_speech")
+                .setSmallIcon(android.R.drawable.ic_media_play).setContentTitle("Hello Butler").setContentText("Preparing speech…").build()
+            if (Build.VERSION.SDK_INT >= 29) startForeground(4102, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+            else startForeground(4102, notification)
+            try { ButlerAudioPlaybackService.playEvent(this, eventId) }
+            finally { stopForeground(STOP_FOREGROUND_REMOVE) }
         }
-        val eventId = intent?.getStringExtra(EXTRA_EVENT_ID) ?: run {
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        try {
-            startAsForeground(notification("Preparing Butler speech…"))
-        } catch (error: IllegalStateException) {
-            DailyEventExecutionWorker.enqueue(this, eventId, 0)
-            stopSelf(startId)
-            return START_NOT_STICKY
-        }
-        activeStartId = startId
-        wakeLock?.takeIf { it.isHeld }?.release()
-        wakeLock = getSystemService(PowerManager::class.java)
-            .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HelloButler:ScheduledSpeech")
-            .apply { acquire(130_000) } // Bound CPU wake time while the locked device initializes TTS.
-        playback?.cancel()
-        releasePlayer()
-        playback = scope.launch {
-            try {
-                speak(eventId)
-            } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                throw cancelled
-            } catch (error: Exception) {
-                Log.w("HelloButlerTTS", "Scheduled speech failed", error)
-            } finally {
-                if (activeStartId == startId) finish(startId)
-            }
-        }
+        stopSelf(startId)
         return START_NOT_STICKY
     }
-
-    private suspend fun speak(eventId: String) {
-        val container = (application as ButlerApplication).container
-        val dao = container.database.dailyEventDao()
-        val event = dao.get(eventId)
-        if (event == null || !event.isDueForSpeech()) {
-            return
-        }
-        val audio = withTimeoutOrNull(120_000) {
-            var file: java.io.File? = null
-            while (file == null) {
-                file = container.dailyEventRepository.speechAudio(eventId, event.version)
-                if (file == null) delay(2_000)
-            }
-            file
-        } ?: return // Leave the text and playback claim intact when speech fails.
-        if (dao.claimPlayback(
-                event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(),
-                event.content.orEmpty(), event.version,
-            ) != 1) {
-            return
-        }
-        DeferredSpeechNotification.cancel(this, eventId)
-        SpeechPlaybackState.setSpeaking(true)
-        getSystemService(NotificationManager::class.java).notify(
-            NOTIFICATION_ID, notification(event.title)
-        )
-        suspendCancellableCoroutine<Unit> { continuation ->
-            val media = MediaPlayer()
-            player = media
-            media.setOnPreparedListener { it.start() }
-            media.setOnCompletionListener { if (continuation.isActive) continuation.resume(Unit) }
-            media.setOnErrorListener { _, _, _ ->
-                if (continuation.isActive) continuation.resume(Unit)
-                true
-            }
-            continuation.invokeOnCancellation {
-                if (player === media) {
-                    player = null
-                    runCatching { media.release() }
-                }
-            }
-            try {
-                media.setDataSource(audio.absolutePath)
-                media.prepareAsync()
-            } catch (error: Exception) {
-                if (player === media) player = null
-                runCatching { media.release() }
-                if (continuation.isActive) continuation.resume(Unit)
-                Log.w("HelloButlerTTS", "Event audio playback failed", error)
-            }
-        }
-    }
-
-    private fun stopSpeech() {
-        playback?.cancel()
-        finish(null)
-    }
-
-    private fun finish(startId: Int?) {
-        releasePlayer()
-        wakeLock?.takeIf { it.isHeld }?.release()
-        wakeLock = null
-        SpeechPlaybackState.setSpeaking(false)
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        if (startId == null) stopSelf() else stopSelf(startId)
-    }
-
-    private fun notification(title: String): Notification {
-        val stop = PendingIntent.getService(
-            this,
-            0,
-            Intent(this, SpeechForegroundService::class.java).setAction(ACTION_STOP_SPEECH),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val open = PendingIntent.getActivity(
-            this, 1,
-            Intent(this, MainActivity::class.java)
-                .putExtra(MainActivity.EXTRA_OPEN_CONVERSATION, true)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
-            .setContentTitle("Butler is speaking")
-            .setContentText(title)
-            .setCategory(NotificationCompat.CATEGORY_SERVICE)
-            .setOngoing(true)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", stop)
-            .addAction(android.R.drawable.ic_menu_view, "Open in App", open)
-            .build()
-    }
-
-    private fun startAsForeground(notification: Notification) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
-
-    override fun onDestroy() {
-        wakeLock?.takeIf { it.isHeld }?.release()
-        wakeLock = null
-        releasePlayer()
-        scope.cancel()
-        SpeechPlaybackState.setSpeaking(false)
-        super.onDestroy()
-    }
-
     override fun onBind(intent: Intent?): IBinder? = null
-
-    private fun releasePlayer() {
-        val current = player
-        player = null
-        if (current != null) runCatching { current.release() }
-    }
-
     companion object {
-        private const val CHANNEL_ID = "butler_speech"
-        private const val NOTIFICATION_ID = 4102
         const val ACTION_STOP_SPEECH = "com.hellobutler.app.STOP_SPEECH"
-
-        fun start(context: Context, eventId: String) {
-            val intent = Intent(context, SpeechForegroundService::class.java)
-                .putExtra(EXTRA_EVENT_ID, eventId)
-            ContextCompat.startForegroundService(context, intent)
-        }
-
-        fun stop(context: Context) {
-            context.startService(
-                Intent(context, SpeechForegroundService::class.java).setAction(ACTION_STOP_SPEECH)
-            )
-        }
+        fun start(context: Context, eventId: String) = ButlerAudioPlaybackService.playEvent(context, eventId, automatic = true)
+        fun stop(context: Context) = ButlerAudioPlaybackService.stop(context)
     }
 }
 

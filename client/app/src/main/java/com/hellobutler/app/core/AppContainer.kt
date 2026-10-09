@@ -35,6 +35,9 @@ class AppContainer(context: Context) {
         .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
         .build()
     private val sessionStore = SecureSessionStore(context)
+    val soundVoice = com.hellobutler.app.execution.audio.SoundVoiceSettings(context)
+    val audioWorkflowStore = com.hellobutler.app.execution.audio.AudioWorkflowStore(context)
+    val audioWorkflowScheduler = com.hellobutler.app.execution.audio.AudioWorkflowScheduler(context, audioWorkflowStore)
     val database = ButlerDatabase.get(context)
     val eventScheduler = DailyEventScheduler(context.applicationContext)
 
@@ -45,6 +48,8 @@ class AppContainer(context: Context) {
         afterLogout = {
             context.stopService(android.content.Intent(context, com.hellobutler.app.execution.SpeechForegroundService::class.java))
             context.stopService(android.content.Intent(context, com.hellobutler.app.execution.ButlerAudioPlaybackService::class.java))
+            audioWorkflowScheduler.clear()
+            java.io.File(context.filesDir, "workflow_audio").deleteRecursively()
             dailyEventRepository.clear()
             butlerRepository.clear()
             userSettingsRepository.clear()

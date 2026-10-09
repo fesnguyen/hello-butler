@@ -60,6 +60,9 @@ fun UserSettingsScreen(viewModel: UserSettingsViewModel, onBack: () -> Unit) {
             }
             item { SectionTitle("Credits") }
             item { Text(state.credits.toString(), style = MaterialTheme.typography.headlineSmall) }
+            viewModel.soundVoice?.let { soundVoice ->
+                item { SoundVoiceSection(soundVoice) }
+            }
             item { SectionTitle("TTS Method") }
             item {
                 TtsChoice(
