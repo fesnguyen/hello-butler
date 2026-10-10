@@ -1,5 +1,7 @@
 # Showcase V1
 
+**Status:** Source of Truth · **Parent:** [PROJECT_WEB.md](../PROJECT_WEB.md)
+
 ## Ownership
 
 One PostgreSQL instance hosts independent databases: `hello_butler_dev` and `showcase_dev` in development; `hello_butler` and `showcase` in production.

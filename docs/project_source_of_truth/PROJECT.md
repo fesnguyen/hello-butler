@@ -256,4 +256,4 @@ Preserve rich input, keep canonical text independent of optional speech, and avo
 
 ## Source of Truth
 
-`PROJECT.md` is authoritative for product behavior. Technical documents derive from it. Version history is recorded in `docs/project_source_of_truth/versions/VERSION_UPDATES.md`.
+`PROJECT.md` is authoritative for product behavior. Technical documents derive from it in this order: `ENGINEERING.md` (shared engineering rules), subsystem entry points (`backend/PROJECT_BACKEND.md`, `client/PROJECT_CLIENT.md`, `web/PROJECT_WEB.md`), then their linked feature documents. A child may add implementation detail but must not silently contradict a parent. Read only the relevant subsystem and feature documents for a change. Version history is recorded in `docs/project_source_of_truth/versions/VERSION_UPDATES.md`.

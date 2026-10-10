@@ -2,7 +2,7 @@
 
 **Version:** 1.0  
 **Status:** Source of Truth  
-**Authority:** Derived from `CLIENT_ARCHITECTURE.md` and `CLIENT_WORKFLOW.md`
+**Authority:** Derived from `PROJECT_CLIENT.md` and `PROJECT_CLIENT.md`
 
 ---
 
