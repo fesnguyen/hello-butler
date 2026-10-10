@@ -5,7 +5,10 @@ import express from "express";
 
 import { initializeDatabases } from "./database.js";
 
-const databases = await initializeDatabases();
+const databases = await initializeDatabases().catch((error: unknown) => {
+  console.error("Failed to initialize Admin databases:", error);
+  process.exit(1);
+});
 
 const admin = new AdminJS({
   rootPath: "/admin",

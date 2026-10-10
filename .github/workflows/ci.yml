@@ -21,6 +21,7 @@ jobs:
       backend: ${{ steps.filter.outputs.backend }}
       android: ${{ steps.filter.outputs.android }}
       showcase: ${{ steps.filter.outputs.showcase }}
+      admin: ${{ steps.filter.outputs.admin }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: dorny/paths-filter@v3
@@ -36,6 +37,9 @@ jobs:
               - '.github/workflows/ci.yml'
             showcase:
               - 'web/showcase/**'
+              - '.github/workflows/ci.yml'
+            admin:
+              - 'web/admin/**'
               - '.github/workflows/ci.yml'
 
   backend:
@@ -82,6 +86,31 @@ jobs:
         working-directory: web/showcase
         run: pnpm build
 
+
+  admin:
+    name: Admin CI
+    needs: changes
+    if: needs.changes.outputs.admin == 'true'
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Admin dependencies
+        working-directory: web/admin
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck Admin
+        working-directory: web/admin
+        run: pnpm typecheck
+
+      - name: Build Admin
+        working-directory: web/admin
+        run: pnpm build
+
+
   android:
     name: Android CI
     needs: changes
@@ -98,7 +127,7 @@ jobs:
 
   result:
     name: Validate Hello Butler
-    needs: [changes, backend, showcase, android]
+    needs: [changes, backend, showcase, admin, android]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -109,6 +138,6 @@ jobs:
         run: |
           echo "$RESULTS"
           if [[ "${{ needs.changes.result }}" != "success" ]]; then exit 1; fi
-          for result in "${{ needs.backend.result }}" "${{ needs.showcase.result }}" "${{ needs.android.result }}"; do
+          for result in "${{ needs.backend.result }}" "${{ needs.showcase.result }}" "${{ needs.admin.result }}" "${{ needs.android.result }}"; do
             if [[ "$result" != "success" && "$result" != "skipped" ]]; then exit 1; fi
           done
