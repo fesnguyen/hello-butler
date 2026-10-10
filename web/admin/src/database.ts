@@ -14,7 +14,7 @@ function requiredEnv(name: string): string {
   return value;
 }
 
-async function connectDatabase(
+export function databaseOptions(
   databaseEnv: string,
   userEnv: string,
   passwordEnv: string,
@@ -38,30 +38,25 @@ async function connectDatabase(
   connectionUrl.password = password;
   connectionUrl.pathname = `/${database}`;
 
-  const adapter = new Adapter("postgresql", {
-    connectionString: connectionUrl.toString(),
-    database,
-  });
-
-  return adapter.init();
+  return { connectionString: connectionUrl.toString(), database, schema: "public" };
 }
 
 export async function initializeDatabases() {
-  const helloButler = await connectDatabase(
+  const helloButler = await new Adapter("postgresql", databaseOptions(
     "POSTGRES_DB",
     "POSTGRES_USER",
     "POSTGRES_PASSWORD",
     "POSTGRES_HOST",
     "POSTGRES_PORT",
-  );
+  )).init();
 
-  const showcase = await connectDatabase(
+  const showcase = await new Adapter("postgresql", databaseOptions(
     "SHOWCASE_DB",
     "SHOWCASE_USER",
     "SHOWCASE_PASSWORD",
     "SHOWCASE_HOST",
     "SHOWCASE_PORT",
-  );
+  )).init();
 
   return [helloButler, showcase];
 }
