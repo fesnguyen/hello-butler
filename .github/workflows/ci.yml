@@ -37,6 +37,7 @@ jobs:
               - 'web/showcase/**'
             admin:
               - 'web/admin/**'
+              - '.github/workflows/ci.yml'
 
   backend:
     name: Backend CI
@@ -101,6 +102,10 @@ jobs:
       - name: Typecheck Admin
         working-directory: web/admin
         run: pnpm typecheck
+
+      - name: Test Admin authorization
+        working-directory: web/admin
+        run: pnpm test
 
       - name: Build Admin
         working-directory: web/admin
