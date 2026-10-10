@@ -34,16 +34,12 @@ jobs:
             backend:
               - 'backend/**'
               - 'compose.yaml'
-              - '.github/workflows/cd.yml'
             showcase:
               - 'web/showcase/**'
-              - '.github/workflows/cd.yml'
             admin:
               - 'web/admin/**'
-              - '.github/workflows/cd.yml'
             android:
               - 'client/**'
-              - '.github/workflows/cd.yml'
 
   deploy:
     name: Deploy Hello Butler

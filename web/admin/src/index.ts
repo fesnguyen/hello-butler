@@ -5,8 +5,8 @@ import express from "express";
 
 import { initializeDatabases } from "./database.js";
 
-const databases = await initializeDatabases().catch((error: unknown) => {
-  console.error("Failed to initialize Admin databases:", error);
+const databases = await initializeDatabases().catch(() => {
+  console.error("Failed to initialize Admin databases.");
   process.exit(1);
 });
 

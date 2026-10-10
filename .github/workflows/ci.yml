@@ -31,16 +31,12 @@ jobs:
             backend:
               - 'backend/**'
               - 'compose.yaml'
-              - '.github/workflows/ci.yml'
             android:
               - 'client/**'
-              - '.github/workflows/ci.yml'
             showcase:
               - 'web/showcase/**'
-              - '.github/workflows/ci.yml'
             admin:
               - 'web/admin/**'
-              - '.github/workflows/ci.yml'
 
   backend:
     name: Backend CI
