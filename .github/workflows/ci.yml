@@ -39,6 +39,7 @@ jobs:
             admin:
               - 'web/admin/**'
               - '.github/workflows/ci.yml'
+              - 'compose.yaml'
 
   backend:
     name: Backend CI
@@ -96,7 +97,6 @@ jobs:
             throw "Showcase Docker build failed."
           }
 
-
   admin:
     name: Admin CI
     needs: changes
@@ -123,6 +123,19 @@ jobs:
       - name: Build Admin
         working-directory: web/admin
         run: pnpm build
+
+      - name: Validate Admin Docker image
+        run: |
+          $image = "hello-butler-admin-ci:${{ github.sha }}"
+
+          docker build `
+            --file web/admin/Dockerfile `
+            --tag $image `
+            web/admin
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Admin Docker build failed."
+          }
 
 
   android:
