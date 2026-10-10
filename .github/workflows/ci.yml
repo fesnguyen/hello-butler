@@ -35,6 +35,7 @@ jobs:
               - 'client/**'
             showcase:
               - 'web/showcase/**'
+              - 'compose.yaml'
             admin:
               - 'web/admin/**'
               - '.github/workflows/ci.yml'
@@ -82,6 +83,18 @@ jobs:
       - name: Build Showcase
         working-directory: web/showcase
         run: pnpm build
+      - name: Validate Showcase Docker image
+        run: |
+          $image = "hello-butler-showcase-ci:${{ github.sha }}"
+
+          docker build `
+            --file web/showcase/Dockerfile `
+            --tag $image `
+            web/showcase
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Showcase Docker build failed."
+          }
 
 
   admin:
