@@ -1,0 +1,35 @@
+{
+  "name": "admin",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "node --env-file=../../.env.dev --import tsx --watch src/index.ts",
+    "build": "tsc",
+    "start": "node --env-file=../../.env.production dist/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@adminjs/express": "^6.1.1",
+    "@adminjs/sql": "^2.2.6",
+    "adminjs": "^7.8.17",
+    "express": "^4.22.3",
+    "express-formidable": "^1.2.0",
+    "express-session": "^1.19.0",
+    "pg": "^8.23.1",
+    "tslib": "^2.8.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/express-session": "^1.19.0",
+    "@types/node": "^26.6.4",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
