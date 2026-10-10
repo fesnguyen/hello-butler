@@ -79,6 +79,7 @@ services:
       SHOWCASE_HOST: postgres
       SHOWCASE_PORT: "5432"
       ADMIN_HTTP_HOST: "0.0.0.0"
+      ADMIN_LOCAL_HTTP: "true"
       PORT: "3000"
 
     ports:
