@@ -29,9 +29,17 @@ export function readAdminConfig(env: NodeJS.ProcessEnv = process.env): AdminConf
   if (env.ADMIN_TRUST_PROXY && env.ADMIN_TRUST_PROXY !== "loopback") {
     throw new Error("ADMIN_TRUST_PROXY must be unset or loopback.");
   }
+  if (
+    env.ADMIN_LOCAL_HTTP === "true" &&
+    env.NODE_ENV !== "production"
+  ) {
+    throw new Error("ADMIN_LOCAL_HTTP is only intended for production.");
+  }
   return {
     email, passwordHash, sessionSecret,
-    secureCookies: env.NODE_ENV === "production",
+    secureCookies:
+      env.NODE_ENV === "production" &&
+      env.ADMIN_LOCAL_HTTP !== "true",
     trustProxy: env.ADMIN_TRUST_PROXY === "loopback" ? "loopback" : false,
   };
 }
