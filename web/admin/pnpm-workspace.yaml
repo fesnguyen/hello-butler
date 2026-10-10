@@ -1,0 +1,4 @@
+allowBuilds:
+  esbuild: false
+overrides:
+  "@tiptap/extension-horizontal-rule": "2.1.13"
