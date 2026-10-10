@@ -69,7 +69,11 @@ jobs:
       # ------------------------------------------------------------
 
       - name: Copy production environment
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.backend == 'true' || needs.changes.outputs.showcase == 'true'
+        if: >-
+            github.event_name == 'workflow_dispatch' || 
+            needs.changes.outputs.backend == 'true' || 
+            needs.changes.outputs.showcase == 'true' || 
+            needs.changes.outputs.admin == 'true'
         run: |
           $source = "C:\hello-butler-configs\.env.production"
           $target = "${{ github.workspace }}\.env.production"
