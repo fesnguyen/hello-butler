@@ -35,9 +35,11 @@ jobs:
               - 'client/**'
             showcase:
               - 'web/showcase/**'
+              - 'compose.yaml'
             admin:
               - 'web/admin/**'
               - '.github/workflows/ci.yml'
+              - 'compose.yaml'
 
   backend:
     name: Backend CI
@@ -82,7 +84,18 @@ jobs:
       - name: Build Showcase
         working-directory: web/showcase
         run: pnpm build
+      - name: Validate Showcase Docker image
+        run: |
+          $image = "hello-butler-showcase-ci:${{ github.sha }}"
 
+          docker build `
+            --file web/showcase/Dockerfile `
+            --tag $image `
+            web/showcase
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Showcase Docker build failed."
+          }
 
   admin:
     name: Admin CI
@@ -110,6 +123,19 @@ jobs:
       - name: Build Admin
         working-directory: web/admin
         run: pnpm build
+
+      - name: Validate Admin Docker image
+        run: |
+          $image = "hello-butler-admin-ci:${{ github.sha }}"
+
+          docker build `
+            --file web/admin/Dockerfile `
+            --tag $image `
+            web/admin
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Admin Docker build failed."
+          }
 
 
   android:

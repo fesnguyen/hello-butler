@@ -36,6 +36,7 @@ jobs:
               - 'compose.yaml'
             showcase:
               - 'web/showcase/**'
+              - 'compose.yaml'
             admin:
               - 'web/admin/**'
             android:
@@ -63,10 +64,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # ============================================================
-      # BACKEND
-      # ============================================================
-
       # ------------------------------------------------------------
       # Production configuration
       # ------------------------------------------------------------
@@ -82,6 +79,10 @@ jobs:
           }
 
           Copy-Item $source $target -Force
+
+      # ============================================================
+      # BACKEND
+      # ============================================================
 
       # ------------------------------------------------------------
       # Build
@@ -154,247 +155,73 @@ jobs:
           Write-Host "Backend deployment successful."
           Write-Host "Image: hello-butler-backend:latest"
 
+      
       # ============================================================
-      # SHOWCASE
+      # SHOWCASE — Docker deployment
       # ============================================================
 
-      # ------------------------------------------------------------
-      # Build
-      # ------------------------------------------------------------
-
-      - name: Install Showcase dependencies
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
-        working-directory: web/showcase
-        run: pnpm install --frozen-lockfile
-
-      - name: Build production Showcase
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
-        working-directory: web/showcase
-        run: pnpm build
-
-      # ------------------------------------------------------------
-      # Deploy
-      # ------------------------------------------------------------
-
-      - name: Deploy Showcase
+      - name: Build Showcase image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
         run: |
-          $source = "${{ github.workspace }}\web\showcase"
-          $target = "C:\hello-butler-production\showcase"
-
-          if (-not (Test-Path "$source\dist\index.html")) {
-            throw "Showcase frontend build is missing."
-          }
-
-          if (-not (Test-Path "$source\dist-server\server\index.js")) {
-            throw "Showcase backend build is missing."
-          }
-
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $target | Out-Null
-
-          # Replace application build output only.
-          # Keep the releases directory intact.
-          Remove-Item `
-            "$target\dist" `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          Remove-Item `
-            "$target\dist-server" `
-            -Recurse `
-            -Force `
-            -ErrorAction SilentlyContinue
-
-          Copy-Item `
-            "$source\dist" `
-            "$target\dist" `
-            -Recurse `
-            -Force
-
-          Copy-Item `
-            "$source\dist-server" `
-            "$target\dist-server" `
-            -Recurse `
-            -Force
-
-          Copy-Item `
-            "$source\package.json" `
-            "$target\package.json" `
-            -Force
-
-          Copy-Item `
-            "$source\pnpm-lock.yaml" `
-            "$target\pnpm-lock.yaml" `
-            -Force
-
-      # ------------------------------------------------------------
-      # Production dependencies
-      # ------------------------------------------------------------
-
-      - name: Sync Showcase production dependencies
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
-        working-directory: C:\hello-butler-production\showcase
-        run: |
-          pnpm install --prod --frozen-lockfile
-
-      # ------------------------------------------------------------
-      # Verify installation
-      # ------------------------------------------------------------
-
-      - name: Verify Showcase deployment
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
-        run: |
-          $target = "C:\hello-butler-production\showcase"
-
-          $required = @(
-            "$target\dist\index.html",
-            "$target\dist-server\server\index.js",
-            "$target\package.json",
-            "$target\pnpm-lock.yaml",
-            "$target\node_modules"
-          )
-
-          foreach ($path in $required) {
-            if (-not (Test-Path $path)) {
-              throw "Production deployment is incomplete: $path"
-            }
-          }
-
-          Write-Host "Showcase production deployment ready."
-
-      # ------------------------------------------------------------
-      # Restart service
-      # ------------------------------------------------------------
-
-      - name: Restart Showcase service
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
-        run: |
-          $service = "C:\hello-butler-services\showcase-service.exe"
-
-          if (-not (Test-Path $service)) {
-            throw "Showcase service executable not found: $service"
-          }
-
-          Write-Host "Restarting Hello Butler Showcase service..."
-
-          & $service restart
+          docker build `
+            --tag "hello-butler-showcase-ci:${{ github.sha }}" `
+            ./web/showcase
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to restart Showcase service."
+            throw "Showcase image build failed."
           }
 
-          Write-Host "Showcase service restarted successfully."
-
-      # ------------------------------------------------------------
-      # Health check
-      # ------------------------------------------------------------
-
-      - name: Verify Showcase service
+      - name: Promote Showcase image
         if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
         run: |
-          $url = "http://127.0.0.1:8001/api/applications"
-
-          Start-Sleep -Seconds 2
-
-          try {
-            $response = Invoke-WebRequest `
-              -Uri $url `
-              -Method Get `
-              -UseBasicParsing
-
-            if ($response.StatusCode -ne 200) {
-              throw "Unexpected HTTP status: $($response.StatusCode)"
-            }
-          }
-          catch {
-            throw "Showcase service health check failed: $($_.Exception.Message)"
-          }
-
-          Write-Host "$url -> 200 OK"
-
-    
-      # ============================================================
-      # ADMIN
-      # ============================================================
-
-      - name: Install Admin dependencies
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
-        working-directory: web/admin
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Admin
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
-        working-directory: web/admin
-        run: pnpm build
-
-      - name: Deploy Admin
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
-        run: |
-          $source = "${{ github.workspace }}\web\admin"
-          $target = "C:\hello-butler-production\admin"
-
-          if (-not (Test-Path "$source\dist\index.js")) {
-            throw "Admin build output is missing."
-          }
-
-          New-Item -ItemType Directory -Force -Path $target | Out-Null
-
-          Remove-Item "$target\dist" -Recurse -Force -ErrorAction SilentlyContinue
-
-          Copy-Item "$source\dist" "$target\dist" -Recurse -Force
-
-          foreach ($file in @(
-            "package.json",
-            "pnpm-lock.yaml",
-            "pnpm-workspace.yaml"
-          )) {
-            Copy-Item "$source\$file" "$target\$file" -Force
-          }
-
-      - name: Sync Admin production dependencies
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
-        working-directory: C:\hello-butler-production\admin
-        run: pnpm install --prod --frozen-lockfile
-
-      - name: Verify Admin installation
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
-        run: |
-          $target = "C:\hello-butler-production\admin"
-
-          foreach ($path in @(
-            "$target\dist\index.js",
-            "$target\package.json",
-            "$target\pnpm-lock.yaml",
-            "$target\node_modules"
-          )) {
-            if (-not (Test-Path $path)) {
-              throw "Admin deployment is incomplete: $path"
-            }
-          }
-
-      - name: Restart Admin service
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
-        run: |
-          $service = "C:\hello-butler-services\admin-service.exe"
-
-          if (-not (Test-Path $service)) {
-            throw "Admin service executable not found."
-          }
-
-          & $service restart
+          docker tag `
+            "hello-butler-showcase-ci:${{ github.sha }}" `
+            "hello-butler-showcase:latest"
 
           if ($LASTEXITCODE -ne 0) {
-            throw "Failed to restart Admin service."
+            throw "Showcase image promotion failed."
           }
 
-      - name: Verify Admin service
-        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
+      - name: Deploy Showcase container
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
         run: |
-          $url = "http://127.0.0.1:3000/admin"
+          docker compose `
+            --env-file .env.production `
+            up -d `
+            --no-build `
+            --no-deps `
+            --force-recreate `
+            showcase
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Showcase container deployment failed."
+          }
+
+      - name: Verify Showcase container
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.showcase == 'true'
+        run: |
+          $containerId = docker compose `
+            --env-file .env.production `
+            ps -q showcase
+
+          if (-not $containerId) {
+            throw "Showcase container was not created."
+          }
+
+          $running = docker inspect `
+            --format "{{.State.Running}}" `
+            $containerId
+
+          if ($running -ne "true") {
+            docker compose `
+              --env-file .env.production `
+              logs --tail 100 showcase
+
+            throw "Showcase container is not running."
+          }
+
+          $url = "http://127.0.0.1:8002/api/applications"
+          $healthy = $false
 
           for ($attempt = 1; $attempt -le 10; $attempt++) {
             try {
@@ -404,18 +231,119 @@ jobs:
                 -TimeoutSec 5
 
               if ($response.StatusCode -eq 200) {
-                Write-Host "Admin service healthy: $url"
-                exit 0
+                $healthy = $true
+                break
               }
             }
             catch {
-              Write-Host "Admin not ready (attempt $attempt)."
+              Start-Sleep -Seconds 2
             }
-
-            Start-Sleep -Seconds 2
           }
 
-          throw "Admin service health check failed."
+          if (-not $healthy) {
+            docker compose `
+              --env-file .env.production `
+              logs --tail 100 showcase
+
+            throw "Showcase health check failed: $url"
+          }
+
+          Write-Host "Showcase Docker deployment successful."
+
+    
+      # ============================================================
+      # ADMIN — Docker deployment
+      # ============================================================
+
+      - name: Build Admin image
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
+        run: |
+          docker build `
+            --tag "hello-butler-admin-ci:${{ github.sha }}" `
+            ./web/admin
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Admin image build failed."
+          }
+
+      - name: Promote Admin image
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
+        run: |
+          docker tag `
+            "hello-butler-admin-ci:${{ github.sha }}" `
+            "hello-butler-admin:latest"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Admin image promotion failed."
+          }
+
+      - name: Deploy Admin container
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
+        run: |
+          docker compose `
+            --env-file .env.production `
+            up -d `
+            --no-build `
+            --no-deps `
+            --force-recreate `
+            admin
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Admin container deployment failed."
+          }
+
+      - name: Verify Admin container
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.admin == 'true'
+        run: |
+          $containerId = docker compose `
+            --env-file .env.production `
+            ps -q admin
+
+          if ($LASTEXITCODE -ne 0 -or -not $containerId) {
+            throw "Admin container was not created."
+          }
+
+          $running = docker inspect `
+            --format "{{.State.Running}}" `
+            $containerId
+
+          if ($LASTEXITCODE -ne 0 -or $running -ne "true") {
+            docker compose `
+              --env-file .env.production `
+              logs --tail 100 admin
+
+            throw "Admin container is not running."
+          }
+
+          $url = "http://127.0.0.1:3001/admin/login"
+          $healthy = $false
+
+          for ($attempt = 1; $attempt -le 10; $attempt++) {
+            try {
+              $response = Invoke-WebRequest `
+                -Uri $url `
+                -UseBasicParsing `
+                -TimeoutSec 5
+
+              if ($response.StatusCode -eq 200) {
+                $healthy = $true
+                break
+              }
+            }
+            catch {
+              Start-Sleep -Seconds 2
+            }
+          }
+
+          if (-not $healthy) {
+            docker compose `
+              --env-file .env.production `
+              logs --tail 100 admin
+
+            throw "Admin health check failed: $url"
+          }
+
+          Write-Host "Admin Docker deployment successful."
 
 
       # ============================================================

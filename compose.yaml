@@ -31,5 +31,63 @@ services:
       postgres:
         condition: service_healthy
 
+  showcase:
+    image: hello-butler-showcase:latest
+    build:
+      context: ./web/showcase
+      dockerfile: Dockerfile
+
+    restart: unless-stopped
+
+    env_file:
+      - ./.env.production
+
+    environment:
+      SHOWCASE_HOST: postgres
+      SHOWCASE_PORT: "5432"
+      SHOWCASE_HTTP_HOST: "0.0.0.0"
+      SHOWCASE_HTTP_PORT: "${SHOWCASE_HTTP_PORT:-8001}"
+
+    ports:
+      - "127.0.0.1:${SHOWCASE_HOST_PORT:-8002}:${SHOWCASE_HTTP_PORT:-8001}"
+
+    volumes:
+      - type: bind
+        source: C:/hello-butler-production/showcase/releases
+        target: /app/releases
+        read_only: true
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  
+  admin:
+    image: hello-butler-admin:latest
+    build:
+      context: ./web/admin
+      dockerfile: Dockerfile
+
+    restart: unless-stopped
+
+    env_file:
+      - ./.env.production
+
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      SHOWCASE_HOST: postgres
+      SHOWCASE_PORT: "5432"
+      ADMIN_HTTP_HOST: "0.0.0.0"
+      PORT: "3000"
+
+    ports:
+      - "127.0.0.1:3001:3000"
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+
 volumes:
   postgres_data:
