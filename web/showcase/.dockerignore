@@ -1,0 +1,17 @@
+
+node_modules
+dist
+dist-server
+releases
+
+.env
+.env.*
+*.log
+
+.git
+.github
+.vscode
+.idea
+
+coverage
+*.tsbuildinfo
