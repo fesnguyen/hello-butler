@@ -26,6 +26,10 @@ RUN pnpm install --prod --frozen-lockfile
 
 COPY --from=build /app/dist ./dist
 
+# Allow AdminJS to generate frontend assets at runtime.
+RUN mkdir -p /app/.adminjs \
+    && chown -R node:node /app/.adminjs
+
 USER node
 
 EXPOSE 3000
