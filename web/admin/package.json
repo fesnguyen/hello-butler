@@ -9,7 +9,8 @@
     "dev": "node --env-file=../../.env.dev --import tsx --watch src/index.ts",
     "build": "tsc",
     "start": "node --env-file=../../.env.production --import ./dist/production.js dist/index.js",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "2fa:operator": "node --env-file-if-exists=../../.env.dev --import tsx src/two-factor-operator.ts"
   },
   "keywords": [],
   "author": "",
@@ -18,13 +19,16 @@
     "@adminjs/express": "^6.1.1",
     "@adminjs/sql": "^2.2.6",
     "@babel/plugin-syntax-import-assertions": "^7.29.7",
+    "@otplib/plugin-crypto-node": "^13.5.0",
     "adminjs": "^7.8.17",
     "connect-pg-simple": "^10.0.0",
     "express": "^4.22.3",
     "express-formidable": "^1.2.0",
     "express-rate-limit": "^8.7.1",
     "express-session": "^1.19.0",
+    "otplib": "^13.5.0",
     "pg": "^8.23.1",
+    "qrcode": "^1.5.4",
     "tslib": "^2.8.1"
   },
   "devDependencies": {
@@ -35,6 +39,7 @@
     "@types/express-session": "^1.19.0",
     "@types/node": "^26.6.4",
     "@types/pg": "^8.23.1",
+    "@types/qrcode": "^1.5.6",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }

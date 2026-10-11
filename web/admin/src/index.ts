@@ -3,6 +3,7 @@ import AdminJS from "adminjs";
 import { createAdminApp } from "./app.js";
 import { readAdminConfig } from "./config.js";
 import { databaseOptions, initializeDatabases } from "./database.js";
+import { TwoFactorStore } from "./two-factor.js";
 import { createSessionStore } from "./sessions.js";
 
 async function start() {
@@ -17,13 +18,7 @@ async function start() {
   }
 
   // Validate database settings before opening connections.
-  databaseOptions(
-    "POSTGRES_DB",
-    "POSTGRES_USER",
-    "POSTGRES_PASSWORD",
-    "POSTGRES_HOST",
-    "POSTGRES_PORT",
-  );
+  databaseOptions("POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_HOST", "POSTGRES_PORT");
 
   const sessionOptions = databaseOptions(
     "SHOWCASE_DB",
@@ -33,8 +28,10 @@ async function start() {
     "SHOWCASE_PORT",
   );
 
-  // Initialize persistent sessions and AdminJS resources.
+  // Initialize private authentication state before discovering public AdminJS resources.
   const sessions = await createSessionStore(sessionOptions);
+  const factors = new TwoFactorStore(sessions.pool, config);
+  await factors.initialize();
   const databases = await initializeDatabases();
 
   const admin = new AdminJS({
@@ -42,7 +39,7 @@ async function start() {
     databases,
   });
 
-  const app = createAdminApp(admin, config, sessions.store);
+  const app = createAdminApp(admin, config, sessions.store, factors);
 
   // Start the HTTP server.
   const server = app.listen(port, host, () => {
@@ -66,8 +63,6 @@ async function start() {
 
 start().catch(() => {
   // Avoid logging connection errors that may contain credentials.
-  console.error(
-    "Admin startup failed. Check authentication and database configuration.",
-  );
+  console.error("Admin startup failed. Check authentication and database configuration.");
   process.exit(1);
 });

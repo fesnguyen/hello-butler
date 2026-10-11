@@ -1,3 +1,2 @@
-// The production command always requires secure cookies, even if the env file
-// omitted NODE_ENV. Proxy trust must still be explicitly configured.
+// Force production cookie defaults; the explicit localhost HTTP exception remains controlled by configuration.
 process.env.NODE_ENV = "production";
