@@ -19,6 +19,7 @@ export function showcaseServer(
   load: () => Promise<ShowcaseApplication[]>,
   dist = resolve('dist'),
   releases = resolve('releases'),
+  media = resolve('media'),
 ) {
   return createServer(async (request, response) => {
     try {
@@ -57,6 +58,52 @@ export function showcaseServer(
       // Reject unknown API routes instead of falling through to static files.
       if (path.startsWith('/api/')) {
         response.writeHead(404).end();
+        return;
+      }
+
+      // Public application screenshots are stored outside the Docker image.
+      // /media/hello-butler/home.webp
+      //   -> SHOWCASE_MEDIA_DIR/hello-butler/home.webp
+      if (path.startsWith('/media/')) {
+        const relativePath = decodeURIComponent(path.slice('/media/'.length));
+        const file = resolve(media, relativePath);
+
+        // Prevent directory traversal.
+        if (!file.startsWith(resolve(media) + sep)) {
+          response.writeHead(404).end();
+          return;
+        }
+
+        const imageMime: Record<string, string> = {
+          '.png': 'image/png',
+          '.jpg': 'image/jpeg',
+          '.jpeg': 'image/jpeg',
+          '.webp': 'image/webp',
+          '.gif': 'image/gif',
+          '.avif': 'image/avif',
+        };
+
+        const contentType = imageMime[extname(file).toLowerCase()];
+
+        if (!contentType) {
+          response.writeHead(404).end();
+          return;
+        }
+
+        try {
+          const body = await readFile(file);
+
+          response.writeHead(200, {
+            'Content-Type': contentType,
+            'Cache-Control': 'public, max-age=3600',
+            'X-Content-Type-Options': 'nosniff',
+          });
+
+          response.end(request.method === 'HEAD' ? undefined : body);
+        } catch {
+          response.writeHead(404).end();
+        }
+
         return;
       }
 
