@@ -16,15 +16,21 @@ Credentials belong exclusively to server environments. Browser code never connec
 
 Exactly three essential tables:
 
-| Table | Columns |
-| --- | --- |
-| applications | id UUID PK, name, description, nullable github_url |
-| media | id UUID PK, application_id FK, url, display_order |
-| releases | id UUID PK, application_id FK, version, download_url, published_at timestamptz |
+| Table        | Columns                                                                        |
+| ------------ | ------------------------------------------------------------------------------ |
+| applications | id UUID PK, name, description, nullable github_url                             |
+| media        | id UUID PK, application_id FK, url, display_order                              |
+| releases     | id UUID PK, application_id FK, version, download_url, published_at timestamptz |
 
 Foreign keys cascade child deletion. Media order is `display_order`, then ID. Latest published release is greatest `published_at <= now()`, then ID. `GET /api/applications` returns applications with ordered `media[]` and nullable `latest_release`, using one aggregate query (no N+1). Empty collections return `[]`. Public endpoints are read-only; database errors return a generic 503.
 
 Preserve the responsive V1 cards, loading/retry/empty states and absent media/source/release states. Application content comes from PostgreSQL, never React constants. No invented APK links.
+
+## Portfolio presentation
+
+The public UI keeps EX’S LAB’s cream, charcoal, burnt-orange and sage palette. A single application uses a featured split card on desktop; larger collections use a responsive grid. Content and actions remain API-driven.
+
+`MediaGallery` presents ordered media in full-width, scroll-snapping frames with contained images, preserving portrait and landscape proportions. Touch/trackpad scrolling, previous/next buttons, and Left/Right/Home/End keys share the same gallery state. Images load lazily and decode asynchronously; empty URLs and failed loads display a labeled preview fallback. Applications without media retain the sage initial cover. Entrance and hover transitions are brief and disabled for reduced-motion preferences, including programmatic gallery scrolling.
 
 ## Setup
 

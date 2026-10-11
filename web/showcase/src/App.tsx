@@ -27,9 +27,10 @@ export default function App() {
             Things I’ve <em>built.</em>
           </h1>
           <p className="intro-description">
-            Applications, experiments, and demos.
+            Small ideas, thoughtfully made.
             <br />
-            Ideas turned into things you can actually use.
+            Applications and experiments built to be used, explored, and
+            improved.
           </p>
         </section>
         <section className="applications" aria-labelledby="applications-title">
