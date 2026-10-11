@@ -2,11 +2,14 @@ export interface AdminConfig {
   email: string;
   passwordHash: string;
   sessionSecret: string;
+  totpEncryptionKey: Buffer;
   secureCookies: boolean;
   trustProxy: false | "loopback";
 }
 
 export const SESSION_MAX_AGE = 8 * 60 * 60 * 1000;
+export const PENDING_MAX_AGE = 5 * 60 * 1000;
+export const SETUP_MAX_AGE = 10 * 60 * 1000;
 export const COOKIE_NAME = "hello-butler-admin";
 export const COOKIE_PATH = "/admin";
 
@@ -26,20 +29,22 @@ export function readAdminConfig(env: NodeJS.ProcessEnv = process.env): AdminConf
   if (sessionSecret.trim().length < 32) {
     throw new Error("ADMIN_SESSION_SECRET must contain at least 32 characters.");
   }
+  const encryptionKey = env.ADMIN_TOTP_ENCRYPTION_KEY ?? "";
+  if (!/^[0-9a-f]{64}$/i.test(encryptionKey)) {
+    throw new Error("ADMIN_TOTP_ENCRYPTION_KEY must contain a 32-byte hex key.");
+  }
   if (env.ADMIN_TRUST_PROXY && env.ADMIN_TRUST_PROXY !== "loopback") {
     throw new Error("ADMIN_TRUST_PROXY must be unset or loopback.");
   }
-  if (
-    env.ADMIN_LOCAL_HTTP === "true" &&
-    env.NODE_ENV !== "production"
-  ) {
+  if (env.ADMIN_LOCAL_HTTP === "true" && env.NODE_ENV !== "production") {
     throw new Error("ADMIN_LOCAL_HTTP is only intended for production.");
   }
   return {
-    email, passwordHash, sessionSecret,
-    secureCookies:
-      env.NODE_ENV === "production" &&
-      env.ADMIN_LOCAL_HTTP !== "true",
+    email,
+    passwordHash,
+    sessionSecret,
+    totpEncryptionKey: Buffer.from(encryptionKey, "hex"),
+    secureCookies: env.NODE_ENV === "production" && env.ADMIN_LOCAL_HTTP !== "true",
     trustProxy: env.ADMIN_TRUST_PROXY === "loopback" ? "loopback" : false,
   };
 }
