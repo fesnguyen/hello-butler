@@ -2,10 +2,17 @@ import pg from 'pg';
 import { databaseConfig } from './config.ts';
 import { listApplications } from './data.ts';
 import { showcaseServer } from './http.ts';
+import { resolve } from 'node:path';
 
 const pool = new pg.Pool(databaseConfig());
 pool.on('error', () => console.error('Showcase database connection failed'));
-const server = showcaseServer(() => listApplications(pool));
+
+const server = showcaseServer(
+  () => listApplications(pool),
+  resolve('dist'),
+  resolve(process.env.SHOWCASE_RELEASES_PATH || 'releases'),
+  resolve(process.env.SHOWCASE_MEDIA_DIR || 'media'),
+);
 const port = Number(process.env.SHOWCASE_HTTP_PORT || 8001);
 if (!Number.isInteger(port) || port < 1 || port > 65535)
   throw new Error('Invalid SHOWCASE_HTTP_PORT');

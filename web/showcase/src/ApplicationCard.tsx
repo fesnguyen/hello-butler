@@ -1,32 +1,23 @@
 import type { ShowcaseApplication } from './api';
+import { MediaGallery } from './MediaGallery';
 
 export function ApplicationCard({
   application,
 }: {
   application: ShowcaseApplication;
 }) {
-  const media = [...application.media].sort(
-    (a, b) => a.display_order - b.display_order,
-  );
   const release = application.latest_release;
 
   return (
     <article className="app-card">
-      {media.length ? (
-        <div
-          className="media-strip"
-          aria-label={`${application.name} screenshots`}
-          tabIndex={0}
-        >
-          {media.map((item, index) => (
-            <img
-              key={item.id}
-              src={item.url}
-              alt={`${application.name} preview ${index + 1}`}
-              loading="lazy"
-            />
-          ))}
-        </div>
+      {application.media.length ? (
+        <MediaGallery
+          key={application.media
+            .map((item) => `${item.id}:${item.url}`)
+            .join('|')}
+          name={application.name}
+          media={application.media}
+        />
       ) : (
         <div className="app-cover" aria-hidden="true">
           <span className="cover-orbit" />

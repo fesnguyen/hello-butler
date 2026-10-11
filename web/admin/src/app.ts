@@ -78,10 +78,17 @@ export function createAdminApp(admin: AdminJS, config: AdminConfig, store: sessi
   }, router, sessionOptions);
   app.use(admin.options.rootPath, router);
   app.get("/", (_req, res) => res.redirect(admin.options.rootPath));
-  const onError: ErrorRequestHandler = (_error, _req, res, _next) => {
-    console.error("Admin request failed.");
-    res.status(500).send("Unable to complete the Admin request.");
-  };
+  const onError: ErrorRequestHandler = (error, req, res, _next) => {
+    console.error("Admin request failed.", {
+      method: req.method,
+      path: req.originalUrl,
+      errorType: error instanceof Error ? error.name : typeof error,
+      message: error instanceof Error ? error.message : "Unknown error",
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+
+  res.status(500).send("Unable to complete the Admin request.");
+};
   app.use(onError);
   return app;
 }

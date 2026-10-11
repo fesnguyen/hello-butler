@@ -83,3 +83,41 @@ test('fetch returns the aggregate contract and reports HTTP failures', async (t)
   );
   await assert.rejects(fetchApplications(''), /could not be loaded/);
 });
+
+test('gallery has accessible controls, lazy images and deterministic media ties', () => {
+  const html = renderToStaticMarkup(
+    <ApplicationCard
+      application={{
+        ...application,
+        media: [
+          { id: 'b', url: '/b.png', display_order: 0 },
+          { id: 'a', url: '/a.png', display_order: 0 },
+        ],
+      }}
+    />,
+  );
+  assert.ok(html.indexOf('/a.png') < html.indexOf('/b.png'));
+  assert.match(html, /loading="lazy"/);
+  assert.match(html, /decoding="async"/);
+  assert.match(html, /tabindex="0"/);
+  assert.match(
+    html,
+    /aria-label="Previous Test application preview"[^>]*disabled/,
+  );
+  assert.match(html, /aria-label="Next Test application preview"/);
+  assert.match(html, /aria-controls=/);
+});
+
+test('a single missing media URL gets a fallback without navigation buttons', () => {
+  const html = renderToStaticMarkup(
+    <ApplicationCard
+      application={{
+        ...application,
+        media: [{ id: 'missing', url: '', display_order: 0 }],
+      }}
+    />,
+  );
+  assert.match(html, /Preview unavailable/);
+  assert.match(html, /preview 1 unavailable/);
+  assert.doesNotMatch(html, /<img|<button/);
+});

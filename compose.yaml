@@ -56,6 +56,11 @@ services:
         target: /app/releases
         read_only: true
 
+      - type: bind
+        source: C:/hello-butler-production/showcase/media
+        target: /app/media
+        read_only: true
+
     depends_on:
       postgres:
         condition: service_healthy
