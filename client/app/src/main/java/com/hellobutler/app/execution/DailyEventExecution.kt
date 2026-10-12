@@ -40,8 +40,9 @@ class DailyEventAlarmReceiver : BroadcastReceiver() {
                 val container = (context.applicationContext as ButlerApplication).container
                 val event = container.database.dailyEventDao().get(eventId) ?: return@launch
                 if (!event.isDueForSpeech()) return@launch
-                DeferredSpeechNotification.show(context, event)
-                if (container.soundVoice.state.value.allows(com.hellobutler.app.execution.audio.AudioWorkflows.forEvent(event.eventType))) {
+                val ready = container.dailyEventRepository.preparedSpeech(event) != null
+                DeferredSpeechNotification.show(context, event, ready)
+                if (ready && container.soundVoice.state.value.allows(com.hellobutler.app.execution.audio.AudioWorkflows.forEvent(event.eventType))) {
                     try { SpeechForegroundService.start(context, eventId) }
                     catch (_: IllegalStateException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
                     catch (_: SecurityException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
@@ -98,7 +99,8 @@ class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) :
             val event = container.database.dailyEventDao().get(eventId)
             if (event != null && event.isDueForSpeech()) {
                 // A delayed worker has no background FGS exemption. The Listen action does.
-                if (!DeferredSpeechNotification.show(applicationContext, event)) return Result.retry()
+                val ready = container.dailyEventRepository.preparedSpeech(event) != null
+                if (!DeferredSpeechNotification.show(applicationContext, event, ready)) return Result.retry()
             }
             Result.success()
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -132,6 +134,7 @@ class ScheduleRestoreWorker(appContext: Context, params: WorkerParameters) : Cor
     override suspend fun doWork(): Result {
         val container = (applicationContext as ButlerApplication).container
         container.database.dailyEventDao().pendingSpokenEvents().forEach(container.eventScheduler::schedule)
+        container.dailyEventRepository.recoverAudioPreparation()
         return Result.success()
     }
 

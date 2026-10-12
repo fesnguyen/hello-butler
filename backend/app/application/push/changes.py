@@ -6,18 +6,24 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Session, UOWTransaction
 
 from app.application.push.service import PushService
+from app.application.speech import (
+    event_speech_eligible,
+    event_speech_text,
+    invalidate_event_speech,
+    rebind_event_speech,
+)
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
 
 logger = logging.getLogger(__name__)
 
 
 class DailyPlanChanges:
-    """Publish a hint only after a canonical plan transaction has committed."""
+    """Maintain event speech state and publish hints after canonical plan commits."""
 
     def __init__(
         self,
@@ -37,6 +43,35 @@ class DailyPlanChanges:
             session: Session, flush_context: UOWTransaction, instances: object
         ) -> None:
             nonlocal changed
+            for row in [*session.new, *session.dirty]:
+                if not isinstance(row, DailyEventModel):
+                    continue
+                state = inspect(row)
+                previous = {
+                    name: list(state.attrs[name].history.deleted)[0]
+                    if state.attrs[name].history.deleted
+                    else getattr(row, name)
+                    for name in ("content", "description", "title")
+                }
+                old_text = next(
+                    (text.strip() for text in previous.values() if text and text.strip()), ""
+                )
+                speech_changed = old_text != event_speech_text(row) or any(
+                    state.attrs[name].history.has_changes()
+                    for name in ("event_type", "speak_aloud")
+                )
+                version_changed = state.attrs.version.history.has_changes()
+                if (
+                    row in session.new
+                    or speech_changed
+                    or not event_speech_eligible(row)
+                    or (version_changed and row.audio_status == "processing")
+                ):
+                    invalidate_event_speech(row)
+                elif version_changed and row.audio_status == "ready":
+                    versions = list(state.attrs.version.history.deleted)
+                    if not versions or not rebind_event_speech(row, versions[0]):
+                        invalidate_event_speech(row)
             changed |= any(
                 isinstance(row, (DailyPlanModel, DailyEventModel))
                 and row.user_id == user_id

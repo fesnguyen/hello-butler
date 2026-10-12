@@ -24,13 +24,14 @@ class DailyEventScheduler(private val context: Context) {
     fun schedule(event: DailyEventEntity) {
         val triggerAt = event.triggerAtMillis()
         if (triggerAt == null || event.status != "planned" || (!event.speakAloud && event.eventType != "reminder") ||
-            (event.content.isNullOrBlank() && event.eventType != "reminder") || event.playbackAttemptedAt != null) {
+            listOf(event.content, event.description, event.title).all { it.isNullOrBlank() } || event.playbackAttemptedAt != null) {
             cancel(event)
             return
         }
         if (triggerAt <= System.currentTimeMillis()) {
             // Do not erase a due Listen notification on routine sync, or replay old alarms.
             if (!event.isDueForSpeech()) cancel(event)
+            else DailyEventExecutionWorker.enqueue(context, event.id, 0)
             return
         }
         cancel(event)
@@ -81,7 +82,7 @@ internal fun DailyEventEntity.triggerAtMillis(): Long? {
 
 internal fun DailyEventEntity.isDueForSpeech(nowMillis: Long = System.currentTimeMillis()): Boolean {
     val due = triggerAtMillis() ?: return false
-    return status == "planned" && (speakAloud || eventType == "reminder") && (!content.isNullOrBlank() || eventType == "reminder") &&
+    return status == "planned" && (speakAloud || eventType == "reminder") && listOf(content, description, title).any { !it.isNullOrBlank() } &&
         playbackAttemptedAt == null && due <= nowMillis &&
         eventDate == java.time.Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
 }

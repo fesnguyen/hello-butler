@@ -73,6 +73,9 @@ data class EventSyncOperationDto(
 @Serializable data class SyncBatchRequestDto(val operations: List<EventSyncOperationDto>)
 
 @Serializable
+data class EventSpeechPreparationDto(@SerialName("audio_status") val audioStatus: String)
+
+@Serializable
 data class EventSyncResultDto(
     @SerialName("operation_id") val operationId: String,
     val status: String,
@@ -129,12 +132,13 @@ interface SyncApi {
         @Header("Authorization") authorization: String,
         @Path("eventId") eventId: String,
         @retrofit2.http.Query("version") version: Int,
-    ): Response<kotlinx.serialization.json.JsonObject>
+    ): Response<EventSpeechPreparationDto>
     @Streaming
     @GET("api/sync/events/{eventId}/audio")
     suspend fun eventAudio(
         @Header("Authorization") authorization: String,
         @Path("eventId") eventId: String,
+        @retrofit2.http.Query("version") version: Int,
     ): Response<ResponseBody>
     @POST("api/sync/events")
     suspend fun syncEvents(

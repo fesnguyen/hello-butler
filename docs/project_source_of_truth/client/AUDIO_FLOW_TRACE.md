@@ -3,7 +3,7 @@
 **Parent:** [PROJECT_CLIENT.md](PROJECT_CLIENT.md)  
 **Configuration contract:** [AUDIO_WORKFLOWS.md](AUDIO_WORKFLOWS.md)  
 **Backend speech contract:** [TTS.md](../backend/TTS.md)  
-**Inspected baseline:** `main` at `36a74c88a9211c43d855ac97aed45e26161a3ed3`, 2026-10-12.
+**Implementation baseline:** `docs/audio-flow-trace`, offline-first scheduled-event preparation, 2026-10-12. Conversation-response and manual native-TTS paths remain independently traced below.
 
 This is a source-derived execution/debugging reference, not a claim that every path has passed device testing. Source code describes current behavior; [PROJECT.md](../PROJECT.md) describes intended product behavior. Differences are recorded below without changing those requirements. Defaults are code defaults, not verified deployment environment values. Paths are relative to repository root and linked for navigation. Android data directories are expressed using actual `Context.filesDir`/`cacheDir` code, rather than assuming a package installation path.
 
@@ -11,11 +11,11 @@ This is a source-derived execution/debugging reference, not a claim that every p
 
 | Flow | Trigger | Text source | TTS provider | Audio storage | Scheduler | Actual player |
 | --- | --- | --- | --- | --- | --- | --- |
-| Morning Brief, scheduled | Future Room event alarm; fallback Listen notification | Planning AI `MorningBriefDraft.content` | Shared backend OpenAI/Kokoro | Backend `events`; Android `event_speech` cache → `workflow_audio` files | AlarmManager initially; WorkManager + optional exact alarm after delay | `ButlerAudioPlaybackService.playResource()` → `MediaPlayer.start()` |
+| Morning Brief, scheduled | Future Room event alarm; fallback Listen notification | Planning AI `MorningBriefDraft.content` | Shared backend OpenAI/Kokoro | Backend `events`; Android durable `filesDir/event_speech` → protected `workflow_audio` snapshot | AlarmManager initially; WorkManager + optional exact alarm after delay | `ButlerAudioPlaybackService.playResource()` → `MediaPlayer.start()` |
 | Good Night Summary, scheduled | Future Room event alarm; fallback Listen | Evening AI `GoodNightSummaryDraft.content`, or protected user-authored summary | Shared backend OpenAI/Kokoro | Same event stores | AlarmManager / initial notification worker; no configured delay | Shared service → MediaPlayer |
 | Butler response, automatic | Completion FCM or audio worker, preference and freshness gated | Multimodal/text interaction AI canonical response | Shared backend OpenAI/Kokoro | Backend `responses`; Android durable `butler_audio`; Room file reference | Upload/result/audio WorkManager; FCM; continuation offer/recovery | Shared service → MediaPlayer |
 | Butler response, manual speaker/private | Overlay, widget, response notification | Same persisted response | Reuses same backend asset; no Android synthesis | Same response stores | User foreground-service intent; loading polls | Shared service → MediaPlayer with media/communication route |
-| Reminder | Alarm or scheduled Listen action | Event `content` → `description` → `title`; no separate reminder-script AI call | Shared backend, requested on playback | Backend `events`; cache → durable workflow copy | AlarmManager or WorkManager notification fallback | Shared service → short opening + MediaPlayer speech |
+| Reminder | Alarm or scheduled Listen action | Event `content` → `description` → `title`; no separate reminder-script AI call | Shared backend, queued after canonical persistence | Backend `events`; durable prepared files → workflow snapshot | AlarmManager or WorkManager notification fallback | Shared service → short opening + MediaPlayer speech |
 | Brief details, manual Listen aloud | `BriefContentDialog` button | Room content → description → placeholder | **Android offline native TTS** | Native engine output; no app speech file | Compose coroutine; no workflow journal | `LocalTextToSpeech.speak()` → `TextToSpeech.speak()` |
 | Volume calibration | Settings slider value changes | Prerecorded sample | None at runtime | Bundled `res/raw/volume_preview.mp3` | No sequence/delay; one service invocation | Shared `playResource()` → MediaPlayer, **bypasses AudioSequence** |
 | Opening/warm-up assets | Sequence `PLAY` operation | Prerecorded sound/speech | None at runtime | Bundled `res/raw/*.mp3` | Inside selected workflow | Shared MediaPlayer |
@@ -30,13 +30,13 @@ This is a source-derived execution/debugging reference, not a claim that every p
 ### 2.1 Provider and lifecycle trace
 
 1. [backend/app/core/lifecycle.py](../../../backend/app/core/lifecycle.py), `speech_service()` constructs `SpeechService` with `OpenAIButlerVoiceProvider` and `KokoroButlerVoiceProvider`, using settings, not provider-constructor fallback defaults.
-2. [backend/app/application/speech.py](../../../backend/app/application/speech.py), `SpeechService.pending()` finds completed requests or planned/nondeleted eligible events with `pending` or stale `processing` audio. Brief/summary events require `speak_aloud`; reminders are eligible regardless of that flag. `generate(kind, owner_id)` locks the owner row, rechecks eligibility, snapshots text/event version, and changes audio status to `processing` before synthesis.
-3. `generate()` passes request `response_text`, summary/brief `content`, or reminder `(content or description or title)` to `_choose()`. Empty text or `butler_voice_enabled=false` yields unavailable speech. Fallback uses Python truthiness, not whitespace trimming.
+2. [backend/app/application/speech.py](../../../backend/app/application/speech.py), `SpeechService.pending()` finds completed requests or planned/nondeleted eligible events with `pending` or stale `processing` audio. All event types with speech enabled and nonblank narration are supported; reminders are eligible regardless of that flag. `generate(kind, owner_id)` locks the owner row, rechecks eligibility, snapshots text/event version, and changes audio status to `processing` before synthesis.
+3. `generate()` uses request `response_text` or event `event_speech_text()`: first nonblank content → description → title, trimmed. Empty narration or disabled backend voice yields unavailable speech.
 4. `_choose()` locks the owner and `users` row. Non-`OPENAI` preference selects Kokoro. OpenAI selection falls back to Kokoro when credits are below configured cost or the OpenAI provider is absent. A nonzero cost is deducted and `tts_credit_charged=true` reserves it. A previously charged owner selects OpenAI without another deduction. Stored `tts_method` is unchanged. Reasoning/planning credits are separate and do not receive this speech fallback.
 5. [backend/app/infrastructure/ai/openai_provider.py](../../../backend/app/infrastructure/ai/openai_provider.py), `OpenAIButlerVoiceProvider.synthesize()` calls `AsyncOpenAI.audio.speech.create(model, voice, input=text, response_format="wav")` and validates RIFF/WAVE. [backend/app/infrastructure/ai/kokoro_provider.py](../../../backend/app/infrastructure/ai/kokoro_provider.py), `synthesize()` serializes inference with its instance lock and runs `_render_wav()` in a thread; lazily loads `KPipeline`, concatenates audio chunks, and writes 24 kHz PCM16 WAV into memory. Kokoro is **backend-local**, not Android-local.
-6. `SpeechService._store()` validates WAV, runs FFmpeg `libopus`, 32 kbps/VBR with metadata stripped, checks Ogg/Opus signatures, and writes the generated `.ogg`. WAV is an intermediate byte buffer, not the persisted speech format.
-7. OpenAI synthesis/encoding/storage exceptions are logged, reserved credits refunded through `_refund()`, and Kokoro attempted once. Kokoro failure or no provider ends as `unavailable`. Cancellation refunds and returns the owner to `pending`. Normal unavailable speech is not automatically requeued; reminders have an explicit preparation retry. SDK retry details are external to this application's call chain.
-8. `generate()` finally locks the owner again. A changed event version discards the new file instead of publishing it. Otherwise it stores `audio_status=ready|unavailable`, path, `audio/ogg`, and deletion deadline. Generation does not mark a Daily Event completed. Text completion remains independent.
+6. `SpeechService._store()` validates WAV, runs FFmpeg `libopus`, 32 kbps/VBR with metadata stripped, checks Ogg/Opus signatures, and publishes the generated `.ogg` with a unique partial file and atomic replace. WAV is an intermediate byte buffer, not the persisted speech format.
+7. OpenAI synthesis/encoding/storage exceptions are logged, reserved credits refunded through `_refund()`, and Kokoro attempted once. Kokoro failure or no provider ends as `unavailable`. Cancellation refunds and returns the owner to `pending`. Event preparation retries unavailable/expired speech through the shared preparation endpoint; WorkManager applies backoff. No playback-time retry is used for events. SDK retry details are external to this application's call chain.
+8. `generate()` finally locks the owner again. A changed event version discards the new file instead of publishing it and refunds an obsolete OpenAI reservation without clearing the newer version’s reservation. Otherwise it stores `audio_status=ready|unavailable`, path, `audio/ogg`, and deletion deadline. Generation does not mark a Daily Event completed. Text completion remains independent.
 9. [backend/app/main.py](../../../backend/app/main.py), `lifespan()` starts `maintain_butler_requests()`: recover requests, create tasks for `speech.pending()`, then run request/event cleanup every configured maintenance interval (default 60 seconds). Row state claims avoid normal duplicate synthesis; stale processing recovery depends on `updated_at` (default stale interval 10 minutes). These are asyncio tasks in the backend process, not an external job queue. The maintenance coroutine catches/logs failures and continues.
 
 [backend/app/core/config.py](../../../backend/app/core/config.py), `Settings` defaults: text/planning `gpt-5.4-nano`, audio understanding `gpt-audio-1.5`, TTS `gpt-4o-mini-tts`, OpenAI voice `fable`, Kokoro language `b`/voice `bm_fable`, TTS credit cost 1, voice enabled, audio retention 1 day. Environment overrides may change all of these.
@@ -52,8 +52,8 @@ This is a source-derived execution/debugging reference, not a claim that every p
 | Android input capture | `File(context.cacheDir,"butler-input-{uuid}.ogg")` | `ButlerAudioRecorder.start()` → `stop()` → `queueAudio()` | Cancel/invalid short capture deletes; successful queue moves/copies to pending directory |
 | Android pending upload | `File(context.filesDir,"butler_pending")/{request_id}.ogg` | `ButlerRepository.queueAudio()` → `upload()` | Room request `localAudioPath` references file until reconcile completion; then deleted; logout clears directory |
 | Android response speech | `File(context.filesDir,"butler_audio")/{request_id}.{extension}`; download uses `.part` | `ButlerRepository.ensureAudio()` → shared player | Durable internal files, Room message path/cache state; same-request files replaced on redownload; no age-based pruning observed; logout deletes directory. Supports signature checks for Ogg, WAV, MP3, M4A, though shared backend currently produces Ogg |
-| Android event download cache | `File(context.cacheDir,"event_speech")/{event_id}-{version}.ogg`; `.part` while downloading | `DailyEventRepository.speechAudio()` → playback preparation | Evictable cache, signature-validated; filename carries requested version; no per-version pruning observed; logout clears |
-| Android event workflow copy | `File(filesDir,"workflow_audio")/{event_id}-{version}.ogg` | `ButlerAudioPlaybackService.prepare()` copies cached speech → journal/player | Durable for delay/process death; terminal event runs older than 7 days pruned by `AudioWorkflowStore.prune()` at recovery; logout clears directory. Copy before failed Room claim can leave unjournaled file |
+| Android prepared event speech | `File(context.filesDir,"event_speech")/{event_id}-{version}.ogg`; unique `.part` during transfer | `DailyEventAudioWorker` → `DailyEventRepository.speechAudio()` → local-only lookup | Durable internal files; header/version validated; obsolete/deleted/ineligible files pruned after persistence and startup; stale partials older than a day removed; logout clears |
+| Android event workflow copy | `File(filesDir,"workflow_audio")/{event_id}-{version}.ogg` | `DailyEventRepository.claimPreparedSpeech()` copies prepared speech → journal/player | Durable for delay/process death; terminal event runs older than 7 days pruned by `AudioWorkflowStore.prune()` at recovery; logout clears directory. Prepared directory cleanup never touches active/delayed workflow snapshots |
 | Android workflow journal | SharedPreferences `butler_audio_workflows`, keys `execution:{id}`, `rotation:{group}` | `AudioWorkflowStore.save()/select()` → service/scheduler/recovery | JSON snapshot: ID, workflow/definition, file path, owner/version, next index, due time, mode/route, status/timestamps. `save()` uses synchronous `commit()`; terminal runs pruned after 7 days; logout clears |
 | Android sound preferences | SharedPreferences `butler_sound_voice`: `volume`, `reminders`, `responses`, `briefings` | `SoundVoiceSettings.volume()/toggle()` → service/workers/receivers | Device-local; defaults 70%, off, off, on. Logout path does not clear these settings |
 | Android Room | `daily_events.playbackAttemptedAt`; `butler_requests`; `conversation_messages.localAudioPath/audioCacheState` | Repositories/DAO → UI, workers, service | [DailyEventEntity.kt](../../../client/app/src/main/java/com/hellobutler/app/data/local/DailyEventEntity.kt) contains no generated audio file path/status; response file refs live in [ButlerConversation.kt](../../../client/app/src/main/java/com/hellobutler/app/data/local/ButlerConversation.kt) |
@@ -67,7 +67,7 @@ Sources: [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/h
 
 1. Service companion `play()/playEvent()/resume()` invokes `ContextCompat.startForegroundService()`. `onStartCommand()` reads `request_id`, `daily_event_id`, `execution_id`, `private`, `automatic`, `manual_resume`. It rejects terminal/future continuations, stale automatic responses, duplicate active owner/route, or preview while active. Automatic runs competing with another owner defer: existing execution waits 15 seconds; new event enqueues an offer worker; a new automatic response can return without reserving a run.
 2. Explicit/manual replacement calls `releasePlayback(cancel=true)` on the current owner. `startForegroundNow()` immediately publishes Preparing audio under mediaPlayback foreground-service type. If that fails, existing runs are offered and event work is enqueued. No sticky restart (`START_NOT_STICKY`).
-3. `prepare()` obtains event/response files as described in each trace. Event execution ID is `event:{id}:{version}`; automatic response ID is `response:{request_id}`; manual response ID is a random UUID. Existing event journals of **any** status prevent a new run for that event/version. Automatic request preparation reserves `preparing` before downloading. Execution snapshots retain build-time definition and file path.
+3. `prepare()` obtains event/response files as described in each trace. Event preparation is a local-only durable snapshot and Room claim; it never POSTs, GETs, polls, or waits for network. Missing speech retains a normal text notification and no claim. Event execution ID is `event:{id}:{version}`; automatic response ID is `response:{request_id}`; manual response ID is a random UUID. Existing event journals of **any** status prevent a new run for that event/version. Automatic request preparation reserves `preparing` before downloading. Execution snapshots retain build-time definition and file path.
 4. `validEvent()` rechecks Room planned status, version, and **device-local today's date** before sequence start and every resource. It does not recheck due time, speakAloud, content, or claim timestamp at continuation. Automatic category settings are checked before start and each resource; changing settings while active cancels through the service's settings collector.
 5. `AudioSequence.run()` calls `AudioWorkflowParser.parse(execution.definition)` and starts at `execution.next`. Before `PLAY`, it synchronously checkpoints `playing` and the current index. After playback completion it checkpoints the next index as `ready`. Failed optional resources continue; failed `<speech>` ends `cancelled`. See configuration limits in [AUDIO_WORKFLOWS.md](AUDIO_WORKFLOWS.md), rather than duplicating the parser grammar here.
 6. `playResource(resource,speechPath)` resolves bundled names through `AudioResources.resolve(name,store::select)`. Group rotation persists remaining choices through `AudioWorkflowStore.select()` before output. `<speech>` uses the execution file after existence check. Missing optional assets are logged/skipped. Speech is never synthesized in this method.
@@ -97,108 +97,68 @@ The following constants are in `ButlerAudioPlaybackService.kt`, except the daily
 
 Two continuation work entries visible in Android Studio do not by themselves prove duplicate audible execution: initial event workers, upload/result/audio workers, and exact-alarm supplements have distinct responsibilities. Compare `execution_id`, `next`, `dueAt`, journal status and Room claim before diagnosing duplication.
 
-## 3. Morning Brief
+## 3. Morning Brief and shared scheduled-event preparation
 
-### Generation and synchronization diagram
-
-```mermaid
-sequenceDiagram
-    participant T as Planning trigger
-    participant B as Backend API and planner
-    participant A as Planning AI
-    participant D as Database and audio files
-    participant C as Android repository
-    T->>B: Evening prepare or prepare day
-    B->>D: Load context and protected events
-    B->>A: plan_day then compose_morning_brief
-    A-->>B: Proposed events and brief content
-    B->>D: Persist daily plan and morning event, audio pending
-    B-->>C: Plan change push hint
-    C->>B: GET daily-plan for date
-    B-->>C: Canonical event snapshot
-    Note over B,D: Maintenance SpeechService generates event Ogg asynchronously
-    B->>D: Choose TTS, synthesize, store file and ready metadata
-```
-
-The backend API/planner participant includes shared TTS orchestration here. Provider generation/storage is expanded in §2; scheduling and audible start are expanded separately below to keep diagrams navigable.
-
-### Scheduled execution diagram
+### Lifecycle
 
 ```mermaid
 sequenceDiagram
+    participant B as Backend planning and speech
     participant R as Android repository and Room
-    participant S as Alarm and continuation scheduler
-    participant P as Playback service and sequence
-    participant B as Backend event audio API
-    participant M as MediaPlayer
-    R->>S: schedule morning event
-    S->>P: Alarm receiver playEvent automatic
-    P->>R: Check due event and speechAudio
-    R->>B: GET event audio
-    B-->>R: Prepared Ogg
-    R-->>P: Cache file
-    P->>R: Copy durable file and claim occurrence
-    P->>M: long_opening then morning_warmup
-    M-->>P: Each completion
-    P->>S: Checkpoint waiting, dueAt = now + 300 seconds
-    Note over P,M: Service, player and audio focus released
-    S->>P: Exact alarm resume or user Listen from offer
-    P->>R: Recheck event version, planned status and date
-    P->>M: short_opening then prepared speech
-    M-->>P: Completion
-    P->>R: Journal complete, claim retained
+    participant W as Preparation worker
+    participant A as Alarm and notification
+    participant P as Shared playback
+    B->>B: Persist canonical text and pending speech
+    B-->>R: Plan-change hint and canonical snapshot
+    R->>R: Commit event ID and version
+    R->>A: Schedule immediately
+    R->>W: Enqueue unique preparation independently
+    W->>B: POST speech with version
+    B-->>W: Pending, processing or ready
+    W->>B: GET audio with version when ready
+    B-->>W: Ogg and X-Event-Version
+    W->>R: Validate, recheck Room and atomically publish durable file
+    A->>R: Reload due event and check local file
+    alt Prepared audio exists
+        A->>P: Start configured sequence
+        P->>R: Snapshot file and claim occurrence
+        P->>P: Openings, warm-up, delayed continuation and speech
+    else Audio missing
+        A->>A: Text notification and standard notification sound
+        Note over W,P: Preparation never starts late playback
+    end
 ```
 
-### Numbered execution trace
+1. **Text entry:** `NightlyPlanningScheduler`, planning API, `NightlyPlanSyncWorker` or plan recreation invokes `DayPlanningService.prepare()`. It calls planning AI and `compose_morning_brief()`, then `_persist()` saves the event. Default brief time remains 06:05. Canonical persistence does not await TTS.
+2. **Backend preparation:** [DailyPlanChanges](../../../backend/app/application/push/changes.py) owns a before-flush speech invalidation hook covering planner, conversation and direct sync mutations. New eligible events queue pending speech. Effective narration/type/speech-eligibility changes invalidate old metadata; unchanged narration retains ready bytes. A version change during synthesis queues a fresh generation and rejects old output. Preparation POST starts pending generation immediately; existing maintenance also recovers pending/stale processing owners. Text/action commits and push hints remain independent of speech success.
+3. **Canonical sync:** [DailyEventRepository](../../../client/app/src/main/java/com/hellobutler/app/data/repository/DailyEventRepository.kt) `pull()`/`reconcileResults()` commit Room before scheduling and enqueuing preparation. `queue()` schedules local edits, cancels obsolete preparation/files, and leaves unsynchronized rows ineligible for downloads until backend confirmation. Meaningful date/time/narration/type/lead/speech changes reset old playback claims; a version-only update preserves a claim.
+4. **Worker:** [DailyEventAudioWorker](../../../client/app/src/main/java/com/hellobutler/app/execution/DailyEventAudioWorker.kt) uses CONNECTED constraints and exponential backoff starting at ten seconds. Work identity is `daily-event-audio:{id}:{version}`, with KEEP for unfinished identical work. Each run reloads Room, skips stale/ineligible/already-claimed/past-date events, and attempts preparation once. Pending/network/temporary failures retry through WorkManager; no live polling loop. A stale/deleted/ineligible server result requests canonical synchronization for the affected event date. Deleted, unsupported and authentication-rejected requests fail distinctly. Preparation remains eligible through the event’s device-local date for manual availability, but never starts playback.
+5. **Version-safe transfer:** `speechAudio()` first reuses a validated durable file. Otherwise it POSTs `/api/sync/events/{id}/speech?version=N`, then GETs `/audio?version=N` when ready. GET validates ownership, current version, eligibility and filename, and supplies `X-Event-Version`. Client verifies that header, Ogg/Opus signature and unchanged canonical Room state before renaming a unique partial file. Downloads are serialized separately from persistence; alarm scheduling never waits for transfer. There is no new Room table or audio identity.
+6. **Storage and recovery:** Prepared bytes live in `filesDir/event_speech`. `recoverAudioPreparation()` repairs missed enqueues from Room and cleans obsolete files on startup/restoration through `ScheduleRestoreWorker`. Persistence reconciles obsolete versions/deletions. Logout cancels preparation and removes files. Obsolete cache files are never used by scheduled playback and are removed at recovery. `claimPreparedSpeech()` locks against repository mutation, copies audio atomically into `workflow_audio`, then claims the Room occurrence. Prepared-file cleanup cannot delete that active/delayed snapshot.
+7. **Alarm:** `DailyEventScheduler` preserves future alarm registration independently of preparation. Exact-alarm receiver shows notification and only auto-starts when local audio exists and category settings permit. Missing speech shows event text with Android notification sound; no backend request, synthesis, download, polling, wait, claim, journal or late automatic speech. Late initial sync/restore offers a notification through the existing execution worker. Notification Listen is offered only when audio is locally ready. Sound still obeys notification permission/channel/DND/system settings.
+8. **Sequence:** `MORNING_BRIEF` remains long opening → morning warm-up → DELAY(300) → short opening → speech. Delay starts after warm-up completion. Existing journal, WorkManager/exact continuation, MediaPlayer, Stop, focus and date/version checks remain. Continuation uses the protected snapshot offline; process death during an audible segment retains existing at-most-once cancellation semantics.
 
-1. **Generation entry:** [planning/scheduler.py](../../../backend/app/application/planning/scheduler.py), `NightlyPlanningScheduler.run_forever()` waits for `evening_preparation_time` (default 22:30 in backend timezone), then `prepare_evening()` loops users and invokes `EveningPreparationService.prepare()`. It does not use `nightly_planning_time` despite its class name. Alternative API: [api/planning.py](../../../backend/app/api/planning.py), `prepare_day()` (`POST /api/planning/prepare`) under user planning lock, or `prepare_evening()` (`POST /api/planning/evening-prepare`). Production date/time overrides are restricted. Android [execution/NightlyPlanSync.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/NightlyPlanSync.kt), `NightlyPlanSyncWorker.doWork()` invokes `DailyEventRepository.prepareEvening()` at network-constrained device-local 22:30. `recreatePlan()` is another client entry into prepare-day.
-2. **Text generation:** [planning/service.py](../../../backend/app/application/planning/service.py), `DayPlanningService.prepare()` consumes reasoning credits → `_load_input()` (context excluding notes, protected nonplanner events, projected Upcoming Events) → AI `plan_day()` → `_normalize()` (timing validation, protected overlap filtering, generated events `speak_aloud=false`) → sorted final events → `compose_morning_brief()`. [openai_provider.py](../../../backend/app/infrastructure/ai/openai_provider.py) sends `DAY_PLANNING_INSTRUCTIONS` then `MORNING_BRIEF_INSTRUCTIONS` from [prompts.py](../../../backend/app/infrastructure/ai/prompts.py) through `_parse()`/Responses structured output. `MorningBriefDraft.content` is persisted directly; there is no client-generated replacement narration.
-3. **Persistence and TTS:** `DayPlanningService._persist()` upserts `daily_plans`, generated events, and planner-key `morning_brief`; exact time is API override → AI proposal → default 06:05. Sets planned/type/content/speak_aloud=true; new or relevant changed brief sets pending audio and clears old audio refs. Version changes when start/content/status/speech eligibility changes. Maintenance `SpeechService.pending()→generate("event",id)` generates ahead of playback if backend maintenance runs successfully. It is not awaited by plan preparation.
-4. **Delivery and local audio:** [push/changes.py](../../../backend/app/application/push/changes.py), `DailyPlanChanges.transaction()` publishes change hint after canonical commit; [ButlerMessagingService.kt](../../../client/app/src/main/java/com/hellobutler/app/sync/ButlerMessagingService.kt), `onMessageReceived("daily_plan_changed")→DailySyncWorker.enqueue()`. [DailySyncWorker.kt](../../../client/app/src/main/java/com/hellobutler/app/sync/DailySyncWorker.kt), `doWork()→DailyEventRepository.synchronize()→pull()→GET /api/sync/daily-plan/{date}`; Room upsert preserves existing `playbackAttemptedAt`, avoids pending local IDs, then scheduler reconcile. **Sync does not pre-download event audio.** `speechAudio(id,version)` fetches only when service prepares playback, 404 means pending/unavailable, validates Ogg and stages `.part`; service polls every 2 seconds for up to 120 seconds, copies to durable workflow files, then `DailyEventDao.claimPlayback()` must affect exactly one row.
-5. **Initial schedule:** [DailyEventScheduler.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/DailyEventScheduler.kt), `schedule()` requires planned, start time, speech flag/content, and no prior attempt. `triggerAtMillis()` uses event date/time in device timezone. Future alarms use `setExactAndAllowWhileIdle`; missing permission/failure enqueues `DailyEventExecutionWorker`, which offers Listen instead of auto-starting a background service. Past-due valid events return without a fresh schedule. [DailyEventExecution.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/DailyEventExecution.kt), `DailyEventAlarmReceiver.onReceive()` verifies `ACTION_EXECUTE_EVENT`, extra `daily_event_id`, reloads due event, shows notification, and calls `SpeechForegroundService.start()` only when briefing preference allows. Companion `start()` delegates directly to shared `playEvent(automatic=true)`.
-6. **Workflow selection:** Shared service `prepare()` calls `AudioWorkflows.forEvent("morning_brief")→MORNING_BRIEF`, journals `event:{id}:{version}` and hands snapshot to `AudioSequence.run()`. No openings play until speech file download and claim succeed.
-7. **Playback and continuation:** Sequence operations are long opening → rotation-selected morning warm-up → delay → short opening → prepared speech. At DELAY index 2, stores `next=3`, `dueAt=warm-up completion time+300000`, status waiting. `AudioWorkflowScheduler.schedule()` persists work/alarm as §2.3; continuation reloads snapshot and resumes index 3, not the opening/warm-up. Exact-alarm receiver can attempt automatic service start; background worker offers manual Listen. All actual starts use `playResource()→MediaPlayer.onPrepared→start()`.
-8. **Completion/cleanup:** Final speech completion sets journal complete; service releases output/focus. Room attempt remains, event stays planned unless separately mutated. Stop/cancel/interruption does not automatically rearm the same version. Durable file is retained until terminal journal pruning/logout; backend audio expires independently. A generation/download failure before claim can show deferred Listen, while exceptions instead follow service logging/cancellation behavior (§9).
+### Backend response contract
 
-Manual playback from brief details is a separate native flow in §7; it does **not** run this diagram.
+| Outcome | Audio GET response | Client preparation behavior |
+| --- | --- | --- |
+| Ready for requested version | 200 Ogg, `X-Event-Version` | Validate and publish |
+| Pending/processing | 202 plus `audio_status` | Retry with backoff |
+| Stale event or old audio binding | 409 with distinct detail | Reconcile canonical state; canonical mutations rebind unchanged ready speech |
+| Missing or different owner | 404 | Terminal failure |
+| Deleted | 410 | Terminal failure |
+| Not speech-enabled / not planned / empty narration | 422 | Terminal failure |
+| Audio unavailable/expired/missing | 424 | Retry preparation, which can requeue generation |
+| Network, rate limit or server error | Transport error / 408 / 429 / 5xx | Retry with backoff |
+
+A ready file retained across a timing/order-only version change is validated and atomically copied to the current ID/version path during the canonical mutation transaction; it is never served under a mismatched version. Speech-relevant changes clear the source reference before this can occur. Backend file retention remains one day by default; a downloaded client file is independent of server retention.
 
 ## 4. Good Night Summary
 
-### Diagram
-
-```mermaid
-sequenceDiagram
-    participant T as Evening trigger
-    participant B as Backend evening and TTS services
-    participant D as AI, database and files
-    participant R as Android Room and scheduler
-    participant P as Playback service and MediaPlayer
-    T->>B: prepare evening for today
-    B->>D: Load actual day and context
-    B->>D: compose_good_night_summary unless protected content
-    B->>D: Prepare tomorrow and persist summary event
-    Note over B,D: Event TTS generated asynchronously by maintenance
-    B->>D: Store event Ogg and ready metadata
-    B-->>R: Change hint then canonical sync snapshot
-    R->>R: Schedule summary time alarm or Listen worker
-    R->>P: Alarm automatic or notification manual Listen
-    P->>B: Repository GET existing event Ogg
-    B-->>P: Speech file via repository/cache
-    P->>R: Durable copy and Room claim
-    P->>P: GOOD_NIGHT sequence: long, evening warm-up, speech
-    P->>R: Journal complete, player and focus released
-```
-
-### Numbered execution trace
-
-1. **Entry:** Same backend evening scheduler/API and Android `NightlyPlanSyncWorker` entries as §3 step 1. Summary playback time defaults to backend setting 22:45; Android evening preparation is 22:30 device time and is not the speech alarm itself.
-2. **Text:** [planning/evening.py](../../../backend/app/application/planning/evening.py), `EveningPreparationService.prepare()` holds `UserPlanningLock`, `_load_summary_input()` reads actual day's events/status and active context excluding notes. It excludes existing summaries from AI input. A nonplanner Good Night event with content supplies `protected_summary`; otherwise `OpenAIButlerProvider.compose_good_night_summary()→_parse()` invokes `GOOD_NIGHT_SUMMARY_INSTRUCTIONS`, structured `GoodNightSummaryDraft.content`. It then awaits tomorrow's `DayPlanningService.prepare()` before persisting an unprotected summary; tomorrow planning failure can therefore prevent today's newly generated summary being saved.
-3. **TTS:** `_persist_summary()` creates/reuses planner-key `good_night_summary`, sets content, configured time, speech=true, and pending audio for a new or content/time-changed row (changed row increments version and clears refs). Existing-row status is not explicitly reset to planned. Protected content bypasses this persistence step and keeps its existing event fields/eligibility. `SpeechService.pending()/generate()` uses eligible `content` and shared policy; no scheduled Android-local synthesis.
-4. **Storage/delivery:** `DailyPlanChanges.transaction()` push → `DailySyncWorker` or direct `prepareEvening()` pull for today/tomorrow → Room → `DailyEventScheduler.reconcile()`. Service `prepare()` downloads through `DailyEventRepository.speechAudio()`, copies to `workflow_audio`, and claims. Same storage/404/polling as §3.
-5. **Scheduling:** Future event alarm at summary time → `DailyEventAlarmReceiver.onReceive()` → `SpeechForegroundService.start()` → shared automatic service when briefings enabled. WorkManager fallback offers notification Listen. Due/date/claim checks are identical to Morning Brief. Manual notification Listen calls compatibility `SpeechForegroundService.onStartCommand()→playEvent()` with automatic default false.
-6. **Selection:** [AudioWorkflow.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/audio/AudioWorkflow.kt), `forEvent("good_night_summary")→GOOD_NIGHT`. Exact lowercase string matters; aliases recognized by the details UI are not aliases in this selector.
-7. **Player:** `AudioSequence.run()` → `PLAY(long_opening)` → rotated `evening_warmup` → `<speech>`, all through `playResource()`. No configured DELAY or short opening. Same gain/focus/output rules as §2.3.
-8. **Completion:** Final checkpoint complete, service cleanup, retained Room claim/file and independent backend retention. Details dialog's manual listening follows §7 native TTS instead.
+1. `EveningPreparationService.prepare()` reads the actual day and generates `GoodNightSummaryDraft.content`, unless protected user content already exists. It awaits tomorrow’s plan before `_persist_summary()`, so tomorrow-planning failure can still prevent a new summary being saved. This existing ordering is unchanged.
+2. `_persist_summary()` creates/updates the event and version; the shared canonical speech hook queues/invalidates narration consistently with §3. Existing nonplanned summary status is not reset by this change. Default preparation time is 22:30; default summary alarm is 22:45, in their respective backend/device timezones.
+3. Sync, independent scheduling/preparation, durable transfer, retry/recovery and missing-audio notification follow §3 exactly. Neither scheduled initial playback nor continuation contacts the backend.
+4. `AudioWorkflows.forEvent("good_night_summary")` selects GOOD_NIGHT: long opening → evening warm-up → prepared speech. No DELAY or short opening is added. Manual brief-details Listen remains the separate native-TTS path in §7.
 
 ## 5. Butler Response — input, understanding, audio, and listening
 
@@ -290,40 +250,14 @@ sequenceDiagram
 
 ## 6. Reminder and notification/widget playback
 
-### Reminder diagram
+### Reminder and other speech-enabled event trace
 
-```mermaid
-sequenceDiagram
-    participant R as Android Room and scheduler
-    participant P as Alarm or notification and playback service
-    participant B as Backend API and SpeechService
-    participant D as Event database and audio storage
-    participant M as MediaPlayer
-    R->>P: Due reminder alarm or worker Listen notification
-    P->>R: Check planned reminder and automatic preference
-    P->>B: Repository POST speech with expected version
-    B->>D: Lock owner, queue pending if unavailable
-    B->>D: Synthesize content or description or title, store Ogg
-    loop Until file or 120 second timeout
-        P->>B: Repository GET event audio
-        B-->>P: 404 or Ogg file
-    end
-    P->>R: Durable copy and occurrence claim
-    P->>M: Short opening then speech
-    M-->>P: Completion
-    P->>R: Journal complete, claim retained
-```
-
-### Numbered reminder execution trace
-
-1. **Classification/create entry:** Voice/text follows §5; model `ButlerDecision.event_type` is an optional unrestricted string in [contracts.py](../../../backend/app/application/butler/contracts.py). [actions/daily_event.py](../../../backend/app/application/butler/actions/daily_event.py), `DailyEventActions.create()` uses `decision.event_type or "reminder"`, persists planned event, title/description/time/lead minutes, `speak_aloud=false`, version 1, user origin. It does not persist reminder `content` from the interaction decision. Explicit non-reminder model classification is accepted; there is no deterministic natural-language reclassification. Direct local event creation/update follows `DailyEventRepository.update()→queue()` (Room/pending operation/schedule) → sync API `DailyEventSyncService.apply()`. Planner-generated reminder proposals are another source via `DayPlanningService._persist()/_apply()`.
-2. **Text:** There is no additional AI-generated “Reminder at 2 PM…” template. `SpeechService.generate()` selects event content if truthy, else description, else title; it does not prepend time/type. Canonical reminder event sync reaches Room through the same `DailyPlanChanges`/daily snapshot path as briefs. MainScreen reminder grouping uses event type; wrong classification means wrong grouping/scheduling semantics.
-3. **Generation timing:** Shared service `prepare(eventId)` selects REMINDER then calls `DailyEventRepository.prepareReminderSpeech(id,version)` **when playback is requested**, before trying cache/download. [SyncApi.kt](../../../client/app/src/main/java/com/hellobutler/app/data/remote/SyncApi.kt) posts `/api/sync/events/{id}/speech?version=N`; [api/sync.py](../../../backend/app/api/sync.py), `prepare_event_speech()→SpeechService.prepare_reminder()` locks owned nondeleted planned reminder, rejects changed version (409) or invalid owner/type/status (404). `unavailable→pending` queues background generation; pending/processing/ready reused. Maintenance recovers pending/stale work. A later explicit attempt may requeue unavailable speech. Notification alone or disabled automatic reminder speech does not invoke preparation.
-4. **Persistence/retrieval:** Event metadata/file lives in shared §2 stores. `speechAudio()` reuses valid version-keyed Android cache or downloads `GET /events/{id}/audio` (404 indistinguishable pending/unavailable). Service polls every 2 seconds up to 120 seconds, durable copy then Room claim. Reminder POST occurs even when Android already has cache, so playback still depends on a successful preparation request. Backend download endpoint accepts no version; see §9 risk.
-5. **Scheduling:** `triggerAtMillis()` subtracts `max(reminderMinutesBefore,0)*60000` from date/start in device timezone. Reminders qualify despite speakAloud false and absent content; planned, start time, no prior claim still required. Same-day eligibility means a prior-day lead trigger for a midnight event fails the date check. Exact alarm receiver first shows `DeferredSpeechNotification` (title/content→description→title), then automatic playback only if reminder setting enabled. No exact permission: worker only offers Listen. Notification channel/system sound is independent of prepared speech; no custom alarm sound player is invoked here.
-6. **Selection/intents:** `AudioWorkflows.forEvent()` defaults to REMINDER for every type except exact morning/good-night strings. Service creates `event:{id}:{version}`. Scheduled Listen `PendingIntent.getForegroundService()` targets compatibility `SpeechForegroundService`, URI `hellobutler://listen/{encodedId}`, extra `daily_event_id`; `onStartCommand()→playEvent()` is manual. Event still must be due today/unclaimed even for that user tap.
-7. **Playback:** `AudioSequence` → `short_opening` → prepared speech via shared MediaPlayer. Openings are delayed until TTS/download/claim succeeds. Player uses normal media stream, not alarm usage. Shared gain/focus/timeouts apply; reminder setting changing during automatic output cancels.
-8. **Completion:** Final journal complete and Room claim retained; no backend event completion mutation or automatic rearm. `DailyEventActions.update()/skip()/delete()` invalidates reminder metadata; [sync/service.py](../../../backend/app/application/sync/service.py), `_apply_mutation()` invalidates relevant speech on text/type/flag changes and uses unavailable for reminders rather than eager generation. Older event files are cleaned by retention. Client local queue resets claim for start/content/speak flag changes, but not every server version change.
+1. Reminders originate from user orders at any time, not only nightly planning. `DailyEventActions.create()` persists title/description/date/time and canonical event type. The shared `DailyPlanChanges` hook marks a new reminder pending, including reminders with `speak_aloud=false`; notification and automatic-playback preferences are still separate device policies.
+2. Conversation completion reconciliation, a plan-change push, or ordinary sync pulls the canonical event into Room. Scheduling and preparation enqueue immediately and independently after that commit. Unsynchronized local edits never fetch old server speech.
+3. The same worker and repository mechanism in §3 prepares reminder narration using first nonblank content → description → title. It calls the existing, now generalized `SpeechService.prepare_event()` endpoint before playback. Repeated pending/processing/ready preparation reuses state; unavailable speech is retryable. No nightly planner dependency or new reminder script generator is introduced.
+4. All planned ordinary event types with `speak_aloud=true` and nonblank narration use this mechanism too. Their existing `AudioWorkflows.forEvent()` fallback selects REMINDER; no new workflow configuration is introduced. Incorrect AI classification can still affect grouping or eligibility when speech is disabled.
+5. Ready reminder alarm playback remains short opening → prepared speech. Missing speech produces only the normal text notification and standard notification sound. The worker never starts delayed automatic speech. Room stays unclaimed when speech is missing, permitting a later explicit Listen when a notification is refreshed with ready audio.
+6. Content/type/eligibility changes invalidate backend speech consistently across conversation and direct edits. Client version changes invalidate prepared files; an active/delayed workflow keeps its separate snapshot and existing validity checks.
 
 ### Response notifications, widgets, and continuation offers
 
@@ -333,7 +267,7 @@ These are implemented entry variants into existing generated speech, not new TTS
 | --- | --- | --- | --- |
 | Response notification | [sync/ButlerNotification.kt](../../../client/app/src/main/java/com/hellobutler/app/sync/ButlerNotification.kt), `showCompleted()` → `ButlerAudioPlaybackService.intent()` | Only background/nonblank response, Android 13 notification permission; actions added for pending/processing/ready. `request_id`, `private=false/true`, URI `hellobutler://response/{id}/{private}`; foreground service PendingIntent | Manual response sequence, cache polling, normal Stop/reset; Open in App only navigates |
 | Widget Listen Aloud / As a Call | [widget/ButlerWidgetProvider.kt](../../../client/app/src/main/java/com/hellobutler/app/widget/ButlerWidgetProvider.kt), `observe()/render()/playbackControls()` → same response `intent()` or `stopIntent()` | Latest completed Butler response from Room; disabled when no audio/unavailable or loading without active owner. Route boolean maps same asset. Room + `ButlerPlayback` changes repaint controls | Same shared response sequence; no widget-specific TTS/player; active Stop releases owner |
-| Scheduled-event Listen | [DeferredSpeechNotification.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/DeferredSpeechNotification.kt), `show()` → `SpeechForegroundService.onStartCommand()` → `playEvent()` | Checks global/channel/Android 13 permission; event URI and `daily_event_id`. Manual mode bypasses category toggles, but service still enforces due/unclaimed event | Selected event workflow; claim and journal behavior as above |
+| Scheduled-event Listen | [DeferredSpeechNotification.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/DeferredSpeechNotification.kt), `show()` → `SpeechForegroundService.onStartCommand()` → `playEvent()` | Checks global/channel/Android 13 permission; event URI and `daily_event_id`. Shown only for locally ready audio. Missing audio opens the app instead. Manual mode bypasses category toggles, but service still enforces due/unclaimed event | Selected event workflow; claim and journal behavior as above |
 | Delayed ready Listen | `AudioWorkflowScheduler.offer()` → `resumeIntent(manual=true)` | `execution_id`, `automatic=false`, `manual_resume=true`, URI `hellobutler://audio/resume/{id}`; compare-and-transition avoids stale offer overwrite | Resumes stored index/file; does not redo TTS or previous openings |
 | Stop while waiting | `AudioWorkflowScheduler.showWaiting()` → `cancelIntent()` → service `ACTION_CANCEL_WORKFLOW` | Execution-specific URI/ID; PendingIntent service, not playback request | Cancels journal/tagged work/exact alarm/notification; stops active matching owner |
 
@@ -438,21 +372,15 @@ sequenceDiagram
 | Observed implementation | Expected behavior | Potential impact | Source-code evidence |
 | --- | --- | --- | --- |
 | Brief details uses live native offline TTS; scheduled brief uses backend/shared MediaPlayer | PROJECT: Butler speech uses shared backend TTS, no Android native fallback; Butler-managed speech uses local gain | Different voice/provider/volume, no openings/delay; shared breakpoints do not hit; native playback does not suppress pending automatic brief | `EventComponents.kt::BriefContentDialog`, `LocalTextToSpeech.kt::speak`, shared `prepare()/playResource()`; §7 links |
-| Reminder generation POST first occurs inside service preparation at playback time | Current AUDIO_WORKFLOWS explicitly describes on-demand; earlier/prepared-at-trigger behavior would require a future change | First reminder depends on network/TTS and can delay or fail before opening; this is confirmed timing, not evidence synthesis actually fails | `ButlerAudioPlaybackService.prepare` → `prepareReminderSpeech`; backend `prepare_reminder`; §6 |
-| Sync pulls event text but does not pre-download speech | Ahead-of-time local speech preparation would make triggers less network-dependent; not currently implemented | Backend-ready speech still may not exist on device at alarm time | `DailyEventRepository.pull()/speechAudio()`, service `prepare()`; §3 |
-| Scheduler returns for already-due eligible events without enqueuing a new alarm/offer | Due events should remain reachable after late initial sync | A freshly synced due event can receive no initial alarm/notification through this route; existing due notifications intentionally retained | `DailyEventScheduler.schedule`, `ScheduleRestoreWorker.doWork`; §3 |
-| Room attempt is preserved by ID across sync/version changes; local reset only start/content/speech flag changes | A new meaningful occurrence/version should have explicit replay policy | Reminder title/description/server time/version changes can remain blocked by old claim even after backend speech invalidation | `DailyEventRepository.pull()/reconcileResults()/queue()`, `DailyEventDao.claimPlayback`; §2/§3/§6 |
 | Claim occurs before any opening; any same-version event journal blocks preparation, including cancelled/complete | Stop/interruption/failure and explicit repeat should have a clearly defined retry policy | After claimed playback cancellation or speech-player failure, scheduled Listen cannot create another run for same version; native brief details can still speak it independently | `ButlerAudioPlaybackService.prepare`, `AudioSequence.run`, DAO claim; §2.3 |
-| Event audio GET has no version parameter; Android names download with caller's version | File identity should match version actually served | Stale local snapshot can download newer backend audio into older-named cache; post-copy Room claim checks only local state | `SyncApi.eventAudio`, backend `event_audio`, `DailyEventRepository.speechAudio`; §2/§6 |
 | Shared player timeout is 120 seconds per asset | Long prepared narration should have an explicit supported duration | Speech longer than timeout can be cut off and execution cancelled | `playResource()` `withTimeoutOrNull(120_000)`, `AudioSequence.run`; §2.3 |
 | Reminder spoken text has no generated time-prefixed script; classifier accepts optional arbitrary type | Clear reminder narration/classification if product requires it | Speech may be just title/description; AI choosing ordinary event type prevents reminder grouping/alarm despite reminder wording | `SpeechService.generate`, `ButlerDecision.event_type`, `DailyEventActions.create`; §6 |
-| UI accepts Good Night aliases/case variations; selector and backend audio query accept only canonical strings | Canonical event type should be used consistently | Noncanonical rows may display as brief but select REMINDER or fail audio retrieval | `EventDetailDialog.isBrief`, `AudioWorkflows.forEvent`, backend `event_audio`/`pending`; §4/§7 |
+| UI accepts Good Night aliases/case variations; workflow selector accepts canonical strings | Canonical event type should be used consistently | Noncanonical rows may display as brief but select REMINDER instead of the intended briefing sequence | `EventDetailDialog.isBrief`, `AudioWorkflows.forEvent`, backend `event_audio`/`pending`; §4/§7 |
 | Existing Good Night row status not reset on regenerated summary; tomorrow plan is awaited before summary persist | Evening regeneration should specify how completed/skipped summaries and planning failures behave | New summary content can be saved on nonplanned row and fail TTS eligibility; tomorrow failure can prevent summary persistence | `EveningPreparationService.prepare/_persist_summary`, `SpeechService.pending`; §4 |
-| Conversational invalidation only handles rows whose resulting type is reminder; direct sync invalidation is conditional | Speech metadata/version should follow every relevant content/type mutation | Brief/summary edits via conversation or type transitions may leave old ready audio metadata; time-only direct sync increments version without clearing metadata | `DailyEventActions.update`, `DailyEventSyncService._apply_mutation`, `SpeechService.generate`; §6 |
 | Device settings do not alter Android volume; scheduled playback uses MEDIA, not ALARM usage | Independent gain with system volume still limiting output (PROJECT) | Butler gain 100% cannot overcome Android media mute; chime is not a separate alarm-stream guarantee | `playResource`, `butlerVolume`, `SoundVoiceSettings`; §2.3 |
 | Preview plays one sample without looping; cue uses ToneGenerator fixed gain | Continuous preview while adjusting / gain coverage must be interpreted explicitly | Long adjustment can become silent after sample finishes; recording cue unaffected by Butler slider | `SoundVoiceSection`, service preview branch, MainScreen cue; §8 |
-| Foreground/continuation exceptions sometimes swallowed; native dialog ignores false; event 404 is ambiguous | Debugging should expose distinct failures | Silent failures or two-minute polling for permanently unavailable event speech; shared errors otherwise log `ButlerAudio`/backend speech warnings | `AudioContinuationReceiver.onReceive`, FCM `runCatching`, `BriefContentDialog`, `speechAudio()/prepare()`; §2/§7 |
-| Response durable audio and versioned event cache lack normal age cleanup; failed event claim may leave durable copy | Explicit cache ownership/cleanup | Storage grows with response history/event versions; orphan durable file retained until logout | `ButlerRepository.ensureAudio/clear`, `speechAudio`, service copy-before-claim, `AudioWorkflowStore.prune`; §2 |
+| Foreground/continuation exceptions sometimes swallowed; native dialog ignores false; scheduled missing audio intentionally falls back to notification | Debugging should expose distinct failures | Silent launch/continuation failures still require device investigation; scheduled audio never polls at trigger time; shared errors otherwise log `ButlerAudio`/backend speech warnings | `AudioContinuationReceiver.onReceive`, FCM `runCatching`, `BriefContentDialog`, `speechAudio()/prepare()`; §2/§7 |
+| Response durable audio lacks normal age cleanup; event workflow snapshots use terminal-journal retention | Explicit cache ownership/cleanup | Response history can grow; event prepared files are reconciled while workflow snapshots are retained until terminal pruning/logout | `ButlerRepository.ensureAudio/clear`, `speechAudio`, service copy-before-claim, `AudioWorkflowStore.prune`; §2 |
 
 ### 9.2 Suspected runtime problems requiring reproduction
 
@@ -465,9 +393,8 @@ sequenceDiagram
 | Backend timezone is configurable; Android schedules by device timezone | Same intended event instant | Timezone mismatch moves alarms; prior-day reminder lead fails same-date check | `Settings.timezone`, `triggerAtMillis/isDueForSpeech`; verify configured timezone and device timezone |
 | Native TTS focus listener ignores changes and shared service does not know native owner | One coherent playback owner | Concurrent native/manual and automatic speech may overlap or interrupt unpredictably | §7 native owner plus §2.3 shared focus; device reproduce both starts |
 | Media playback foreground services, exact alarms and notifications depend on OS/OEM grants | Timely locked-device playback or useful Listen offer | Automatic delivery can be blocked/delayed, notification disabled, private routing can use unexpected device | [AndroidManifest.xml](../../../client/app/src/main/AndroidManifest.xml), service launch catches, continuation offer permission gates; verify locked/background/DND/Bluetooth/force-stop scenarios |
-| Event generation drops output on version change but row state depends on mutation path | New version returns to useful speech state | Some non-invalidating version changes during synthesis can leave processing state until stale maintenance retries | `SpeechService.generate` version mismatch finally branch plus mutation conditionals; mutate time while synthesis in flight |
 
-None of these hypotheses is presented as an observed device failure. No runtime code fixes belong in this trace task.
+None of these hypotheses is presented as an observed device failure. These remaining hypotheses require runtime reproduction and are outside the implemented priority-1 preparation change.
 
 ## 10. Android Studio debugging reference
 
@@ -484,7 +411,7 @@ Use **method/line breakpoints at the specific callbacks**, since a single file c
 | Alarm registration | [DailyEventScheduler.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/DailyEventScheduler.kt) | `schedule()` / `triggerAtMillis()` | future/past trigger, exact grant, system timezone, claim, worker fallback |
 | Notification manual event trigger | [DailyEventExecution.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/DailyEventExecution.kt) | `SpeechForegroundService.onStartCommand()` | daily_event_id, compatibility manual delegation; companion start is automatic |
 | Workflow selection | [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/ButlerAudioPlaybackService.kt) | `prepare()` at `AudioWorkflows.forEvent(event.eventType)` | exact event type → enum, auto flag, ID/version, existing journal |
-| Event audio download/claim | [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/ButlerAudioPlaybackService.kt) | `prepare()` polling/copy/`dao.claimPlayback` | fetched cache path, durable path, timeout, claim count, same-version status |
+| Event audio download/claim | [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/ButlerAudioPlaybackService.kt) | `claimPreparedSpeech()` local copy/`dao.claimPlayback` | prepared path, durable snapshot, claim count, same-version status |
 | Full sequence entry | [AudioSequence.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/audio/AudioSequence.kt) | `AudioSequence.run()` | definition snapshot, parsed steps, execution.next, mode/file, ID |
 | PLAY resolution | [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/ButlerAudioPlaybackService.kt) | `playResource()` first line and data-source branch | resource token vs speechPath, raw ID, file existence, optional skip |
 | Warm-up choice | [AudioResources.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/audio/AudioResources.kt) / [AudioWorkflowStore.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/audio/AudioWorkflowStore.kt) | `resolve()` → `select()` | group selected recording and persisted remaining queue |
@@ -498,7 +425,7 @@ Use **method/line breakpoints at the specific callbacks**, since a single file c
 | Butler response UI playback | [MainScreen.kt](../../../client/app/src/main/java/com/hellobutler/app/ui/main/MainScreen.kt) / shared service | overlay `onPlay` callback → `prepare(requestId,…)` | request ID/private/automatic, existing response marker, Room audio state |
 | Automatic response completion | [ButlerMessagingService.kt](../../../client/app/src/main/java/com/hellobutler/app/sync/ButlerMessagingService.kt) / [ButlerRequestWorkers.kt](../../../client/app/src/main/java/com/hellobutler/app/sync/ButlerRequestWorkers.kt) | `onMessageReceived()` / `ButlerAudioWorker.doWork()` | delivered priority, Room presence, age basis, existing response journal, preference |
 | Response cache retrieval | [ButlerRepository.kt](../../../client/app/src/main/java/com/hellobutler/app/data/repository/ButlerRepository.kt) | `ensureAudio()` | cached signature, Room URL/MIME/state, HTTP status, part rename, expired server audio |
-| Reminder playback | [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/ButlerAudioPlaybackService.kt) / [DailyEventRepository.kt](../../../client/app/src/main/java/com/hellobutler/app/data/repository/DailyEventRepository.kt) | `prepare()` REMINDER branch → `prepareReminderSpeech()` | classification, version, POST status 404/409, timeout and GET status |
+| Reminder playback | [ButlerAudioPlaybackService.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/ButlerAudioPlaybackService.kt) / [DailyEventRepository.kt](../../../client/app/src/main/java/com/hellobutler/app/data/repository/DailyEventRepository.kt) | `DailyEventAudioWorker.doWork()` → `speechAudio()` → `prepare_event()` | classification, version, POST status, pending retry, GET version header and durable publication |
 | Reminder classification (backend) | [actions/daily_event.py](../../../backend/app/application/butler/actions/daily_event.py) | `DailyEventActions.create()` | proposal event_type, default reminder, title/description/start/lead time |
 | **Manual brief-details Listen aloud** | [EventComponents.kt](../../../client/app/src/main/java/com/hellobutler/app/ui/main/EventComponents.kt) / [LocalTextToSpeech.kt](../../../client/app/src/main/java/com/hellobutler/app/execution/LocalTextToSpeech.kt) | `BriefContentDialog` button coroutine → `speak()` → `tts.speak()` | content fallback, offline voice/device locale, returned false; shared sequence will not hit |
 | Volume preview | [SoundVoiceSection.kt](../../../client/app/src/main/java/com/hellobutler/app/ui/settings/SoundVoiceSection.kt) / shared service | slider `onValueChange` → preview branch in `onStartCommand()` | adjusting, action, ignored preview if active owner, sample ends vs slider finishes |
@@ -508,6 +435,16 @@ Use **method/line breakpoints at the specific callbacks**, since a single file c
 
 ## 11. Verification scope and navigation
 
-This investigation reads pushed source and documentation, searches every production Android `MediaPlayer`, `TextToSpeech`, speech-service and cue call site, and follows backend planning/interaction/TTS/sync/push/storage owners. No application/configuration/schema/test changes are part of the task. The new trace links from the client feature index; existing configuration reference is preserved.
+This trace documents the implemented scheduled preparation path alongside unchanged response/manual paths, searches every production Android `MediaPlayer`, `TextToSpeech`, speech-service and cue call site, and follows backend planning/interaction/TTS/sync/push/storage owners. The offline-first change includes application and regression-test updates without database schema changes. Legacy manual TTS and Butler volume investigation remain out of scope. The new trace links from the client feature index; existing configuration reference is preserved.
 
 Documentation validation checks relative Markdown destinations and referenced source paths, Mermaid sequence syntax, and the documentation-only diff. Runtime claims about locked-device delivery, private routing, focus contention, race outcomes, deployment environment values, or latency remain unverified until reproduced on the actual device/backend. Recommended reproduction order: native details button → scheduled event alarm → delay journal/continuation → response automatic/manual routes → reminder first-time preparation → volume slider. Follow the breakpoint table to distinguish a missing trigger from preparation failure, a rejected claim, a waiting/offered sequence, or silent system output.
+
+
+### Offline-first verification
+
+Backend tests cover generalized reminder/event preparation, canonical invalidation, pending/terminal API states, version binding reuse, obsolete synthesis and credit refund, and missing ready-file recovery. Android `ScheduledAudioPolicyTest` covers eligibility/retry/claim-reset policy; `ScheduledAudioPreparationTest` covers canonical enqueue, concurrent download deduplication, pending/network retry, obsolete transfers, durable reuse/repository recreation, cleanup, local-only claims and missing-audio fallback. Existing `AudioWorkflowTest` covers exact sequence order and delayed continuation.
+
+Device acceptance: prepare all four event categories, stop the backend and disconnect networking, clear temporary cache, restart the process, and trigger each alarm. Verify zero event HTTP calls, intact configured sequences and morning continuation. Repeat with missing audio: text/system sound only, no playback claim and no late automatic speech after connectivity returns. Notification permissions, DND, OEM restrictions, actual audible output and process-death delivery require emulator/physical-device testing; repository tests do not prove those behaviors.
+
+
+Verification on 2026-10-12: 61 backend unittest cases, Ruff and Pyright passed; 10 Android JVM tests, debug APK assembly, and instrumentation-test Kotlin compilation passed. Standalone audio workflow checks passed six groups. `lintDebug` reports one pre-existing `WrongConstant` error at `client/app/src/main/java/com/hellobutler/app/widget/WidgetResponseLayout.kt:46`, outside this change. Instrumentation execution, real-provider synthesis and physical audible/offline alarm behavior were not verified because no Android device/emulator was connected. Deploy updated backend and client together for the required audio version parameter.

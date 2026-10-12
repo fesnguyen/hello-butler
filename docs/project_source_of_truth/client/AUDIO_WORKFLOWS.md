@@ -1,7 +1,7 @@
 # Configurable Butler Audio
 
 **Status:** Source of Truth
-**Version:** 1.0
+**Version:** 1.1
 **Authority:** Derived from PROJECT.md, ENGINEERING.md, and PROJECT_CLIENT.md
 
 ## Configuration
@@ -54,9 +54,17 @@ Settings are local to the device and persist across app restarts. Volume updates
 
 Automatic preferences are checked by alarm delivery, workers, and service, including after a delay. Explicit manual Listen bypasses automatic-speech preferences. Ordinary notifications and canonical text remain available. FCM can start automatic response playback only while foreground or when a delivered high-priority push provides the Android exemption. Other background completions offer Listen. Do not force a forbidden background start.
 
-## Reminder TTS
+## Scheduled event preparation
 
-The existing shared backend SpeechService supports reminder events, with content → description → title fallback. Android calls authenticated `POST /api/sync/events/{id}/speech?version=N` once when spoken reminder playback is requested, then polls/downloads the existing audio endpoint. Ownership, planned status, and version are validated. Pending/processing/ready owners reuse their existing lifecycle; the TTS row claim prevents duplicate generation. Reminder speech is not generated merely to show a normal notification or when automatic reminder speech is disabled. An explicit retry after unavailable speech can request generation again. Provider settings and credits/fallback policy are unchanged.
+All eligible Morning Brief, Good Night Summary, Reminder and ordinary speech-enabled events follow canonical persistence → independent alarm scheduling + WorkManager preparation → durable local file → offline playback. Local unsynchronized edits schedule immediately but cannot download until backend confirmation. Reminders created from orders prepare at once after canonical sync; they never depend on nightly planning.
+
+`DailyEventAudioWorker` uses CONNECTED constraints, unique event ID/version work with KEEP, and exponential retry from ten seconds. It does not play audio or poll in a live loop. Pending TTS, network/temporary errors and unavailable audio retry; stale versions request sync; deleted/unsupported/authentication-rejected requests terminate. Restart/restoration reconciles Room to recover a missed enqueue. Preparation is bounded by planned/unclaimed eligibility and the event’s device-local date.
+
+`DailyEventRepository.speechAudio()` calls the generalized preparation POST and versioned audio GET, validates `X-Event-Version` and Ogg/Opus, rechecks canonical Room state, and atomically publishes `filesDir/event_speech/{id}-{version}.ogg`. Obsolete versions/deletions/logout are cleaned. `claimPreparedSpeech()` copies into existing `workflow_audio` before claiming; prepared-file cleanup does not remove active/delayed snapshots. No new Room table or identity system is used.
+
+At alarm time, ready speech follows the unchanged workflow. Missing audio shows event text with standard Android notification sound, with no backend access, download, polling, wait, speech claim or automatic late playback. Preparation workers never invoke playback. Listen is offered only for local audio; system notification permissions/channel settings/DND still apply.
+
+Backend canonical changes invalidate changed narration/type/eligibility through `DailyPlanChanges`. Reminders use content → description → title fallback, and other speech-enabled events use the same nonblank fallback. Timing/order-only changes reuse validated narration under the current event/version path. Audio GET distinguishes 202 pending, 409 stale, 404 missing, 410 deleted, 422 ineligible, 424 unavailable and temporary server failures. See [AUDIO_FLOW_TRACE.md](AUDIO_FLOW_TRACE.md) for concrete methods and acceptance tests.
 
 ## Verification
 

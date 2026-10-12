@@ -3,10 +3,12 @@ import tempfile
 import unittest
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 from app.application.butler.contracts import ButlerResult, ButlerSpeech
 from app.application.butler.requests import ButlerRequestService
+from app.application.push.changes import DailyPlanChanges
 from app.application.speech import SpeechService
 from app.core.config import Settings
 from app.infrastructure.db.base import Base
@@ -107,32 +109,7 @@ class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(user.credits, 1)
         self.assertFalse(event.speak_aloud)
 
-    async def test_reminder_edit_invalidates_audio_without_eager_tts(self):
-        from datetime import date
-
-        from app.application.sync.contracts import DailyEventMutation
-        from app.application.sync.service import DailyEventSyncService
-
-        _, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
-        await self.speech.generate("event", event_id)
-        async with self.sessions() as session, session.begin():
-            row = await session.get(DailyEventModel, event_id)
-            DailyEventSyncService._apply_mutation(
-                row,
-                DailyEventMutation(
-                    id=event_id,
-                    event_date=date.today(),
-                    title="Updated reminder",
-                    event_type="reminder",
-                    status="planned",
-                    speak_aloud=False,
-                    sort_order=0,
-                ),
-            )
-            self.assertEqual(row.audio_status, "unavailable")
-            self.assertIsNone(row.response_audio_path)
-
-    async def test_reminder_prepare_is_on_demand_and_reuses_pending_owner(self):
+    async def test_reminder_preparation_reuses_pending_owner(self):
         user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
         async with self.sessions() as session, session.begin():
             event = await session.get(DailyEventModel, event_id)
@@ -140,12 +117,12 @@ class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(("event", event_id), await self.speech.pending())
         async with self.sessions() as session:
             self.assertEqual(
-                await self.speech.prepare_reminder(session, user_id, event_id, 1), ("pending", True)
+                await self.speech.prepare_event(session, user_id, event_id, 1), ("pending", True)
             )
         self.kokoro.synthesize.assert_not_awaited()
         async with self.sessions() as session:
             self.assertEqual(
-                await self.speech.prepare_reminder(session, user_id, event_id, 1),
+                await self.speech.prepare_event(session, user_id, event_id, 1),
                 ("pending", False),
             )
         for requester, version, exception in (
@@ -154,9 +131,196 @@ class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
         ):
             async with self.sessions() as session:
                 with self.assertRaises(exception):
-                    await self.speech.prepare_reminder(session, requester, event_id, version)
+                    await self.speech.prepare_event(session, requester, event_id, version)
         await self.speech.generate("event", event_id)
         self.kokoro.synthesize.assert_awaited_once()
+
+    def actual_audio(self, event_id, version=1):
+        path = Path(self.directory.name) / f"{event_id}-{version}.ogg"
+        path.write_bytes(b"OggS" + bytes(24) + b"OpusHead")
+        return path
+
+    async def test_ready_event_rebinds_time_only_version_without_synthesis(self):
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "custom")
+        self.speech._store.return_value = self.actual_audio(event_id)
+        await self.speech.generate("event", event_id)
+        changes = DailyPlanChanges(self.sessions, AsyncMock())
+        async with changes.transaction(user_id) as session:
+            event = await session.get(DailyEventModel, event_id)
+            event.version = 2
+            event.sort_order = 9
+        async with self.sessions() as session:
+            self.assertEqual(
+                await self.speech.prepare_event(session, user_id, event_id, 2), ("ready", False)
+            )
+            event = await session.get(DailyEventModel, event_id)
+            self.assertEqual(Path(event.response_audio_path).name, f"{event_id}-2.ogg")
+            self.assertEqual(
+                Path(event.response_audio_path).read_bytes(),
+                self.actual_audio(event_id).read_bytes(),
+            )
+        self.kokoro.synthesize.assert_awaited_once()
+
+    async def test_canonical_reminder_creation_queues_early_and_edits_invalidate(self):
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
+        changes = DailyPlanChanges(self.sessions, AsyncMock())
+        async with changes.transaction(user_id) as session:
+            event = await session.get(DailyEventModel, event_id)
+            event.content = None
+            event.speak_aloud = False
+            event.title = "Take medicine"
+        self.assertIn(("event", event_id), await self.speech.pending())
+        self.speech._store.return_value = self.actual_audio(event_id)
+        await self.speech.generate("event", event_id)
+        async with changes.transaction(user_id) as session:
+            event = await session.get(DailyEventModel, event_id)
+            event.title = "Drink water"
+            event.version += 1
+        async with self.sessions() as session:
+            event = await session.get(DailyEventModel, event_id)
+            self.assertEqual(event.audio_status, "pending")
+            self.assertIsNone(event.response_audio_path)
+        self.assertIn(("event", event_id), await self.speech.pending())
+
+    async def test_generation_discards_changed_version_and_refunds_stale_charge(self):
+        user_id, event_id = await self.create("OPENAI", 2, "event")
+        changes = DailyPlanChanges(self.sessions, AsyncMock())
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def synthesize(**kwargs):
+            started.set()
+            await release.wait()
+            return ButlerSpeech(audio=b"RIFF0000WAVE", mime_type="audio/wav")
+
+        self.openai.synthesize.side_effect = synthesize
+        path = self.actual_audio(event_id)
+        self.speech._store.return_value = path
+        task = asyncio.create_task(self.speech.generate("event", event_id))
+        await started.wait()
+        async with changes.transaction(user_id) as session:
+            event = await session.get(DailyEventModel, event_id)
+            event.version += 1
+            event.content = "New text"
+        release.set()
+        await task
+        async with self.sessions() as session:
+            event = await session.get(DailyEventModel, event_id)
+            user = await session.get(UserModel, user_id)
+            self.assertEqual(event.audio_status, "pending")
+            self.assertIsNone(event.response_audio_path)
+            self.assertEqual(user.credits, 2)
+        self.assertFalse(path.exists())
+
+    async def test_event_audio_api_distinguishes_pending_stale_deleted_and_disabled(self):
+        from datetime import UTC, datetime
+        from unittest.mock import patch
+
+        from fastapi import HTTPException
+
+        with patch.dict("os.environ", {"JWT_SECRET": self.settings.jwt_secret}):
+            from app.api.sync import event_audio
+
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "custom")
+        user = SimpleNamespace(id=user_id)
+        async with self.sessions() as session:
+            response = await event_audio(event_id, user, session, 1)
+            self.assertEqual(response.status_code, 202)
+            with self.assertRaises(HTTPException) as error:
+                await event_audio(event_id, user, session, 2)
+            self.assertEqual(error.exception.status_code, 409)
+            with self.assertRaises(HTTPException) as error:
+                await event_audio(event_id, SimpleNamespace(id=uuid.uuid4()), session, 1)
+            self.assertEqual(error.exception.status_code, 404)
+        self.speech._store.return_value = self.actual_audio(event_id)
+        await self.speech.generate("event", event_id)
+        async with self.sessions() as session:
+            response = await event_audio(event_id, user, session, 1)
+            self.assertEqual(response.headers["X-Event-Version"], "1")
+        async with self.sessions() as session, session.begin():
+            event = await session.get(DailyEventModel, event_id)
+            event.version = 2
+        async with self.sessions() as session:
+            with self.assertRaises(HTTPException) as error:
+                await event_audio(event_id, user, session, 2)
+            self.assertEqual(error.exception.detail, "event_audio_version_stale")
+        async with self.sessions() as session, session.begin():
+            event = await session.get(DailyEventModel, event_id)
+            event.speak_aloud = False
+        async with self.sessions() as session:
+            with self.assertRaises(HTTPException) as error:
+                await event_audio(event_id, user, session, 2)
+            self.assertEqual(error.exception.status_code, 422)
+        async with self.sessions() as session, session.begin():
+            event = await session.get(DailyEventModel, event_id)
+            event.deleted_at = datetime.now(UTC)
+        async with self.sessions() as session:
+            with self.assertRaises(HTTPException) as error:
+                await event_audio(event_id, user, session, 2)
+            self.assertEqual(error.exception.status_code, 410)
+
+    async def test_preparation_post_starts_pending_tts_without_waiting_for_maintenance(self):
+        from unittest.mock import patch
+
+        from fastapi import BackgroundTasks
+
+        with patch.dict("os.environ", {"JWT_SECRET": self.settings.jwt_secret}):
+            from app.api.sync import prepare_event_speech
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
+        self.speech._store.return_value = self.actual_audio(event_id)
+        background = BackgroundTasks()
+        with patch("app.api.sync.speech_service", return_value=self.speech):
+            async with self.sessions() as session:
+                result = await prepare_event_speech(
+                    event_id, 1, SimpleNamespace(id=user_id), session, self.settings, background
+                )
+        self.assertEqual(result, {"audio_status": "pending"})
+        self.assertEqual(len(background.tasks), 1)
+        await background()
+        self.kokoro.synthesize.assert_awaited_once()
+
+    async def test_new_canonical_reminder_is_pending_without_nightly_planning(self):
+        user_id, existing_id = await self.create("OPEN_SOURCE", 0, "event")
+        event_id = uuid.uuid4()
+        async with self.sessions() as session:
+            existing = await session.get(DailyEventModel, existing_id)
+            plan_id, event_date = existing.daily_plan_id, existing.event_date
+        async with DailyPlanChanges(self.sessions, AsyncMock()).transaction(user_id) as session:
+            session.add(
+                DailyEventModel(
+                    id=event_id,
+                    user_id=user_id,
+                    daily_plan_id=plan_id,
+                    event_date=event_date,
+                    title="Reminder from an order",
+                    event_type="reminder",
+                    speak_aloud=False,
+                )
+            )
+        self.assertIn(("event", event_id), await self.speech.pending())
+        self.kokoro.synthesize.assert_not_awaited()
+
+    async def test_legacy_mismatched_binding_is_regenerated_not_relabelled(self):
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event")
+        self.speech._store.return_value = self.actual_audio(event_id)
+        await self.speech.generate("event", event_id)
+        async with self.sessions() as session, session.begin():
+            event = await session.get(DailyEventModel, event_id)
+            event.version = 2
+        async with self.sessions() as session:
+            self.assertEqual(
+                await self.speech.prepare_event(session, user_id, event_id, 2), ("pending", True)
+            )
+            event = await session.get(DailyEventModel, event_id)
+            self.assertIsNone(event.response_audio_path)
+        self.assertFalse((Path(self.directory.name) / f"{event_id}-2.ogg").exists())
+
+    async def test_missing_ready_file_requeues_preparation(self):
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event")
+        await self.speech.generate("event", event_id)
+        async with self.sessions() as session:
+            self.assertEqual(
+                await self.speech.prepare_event(session, user_id, event_id, 1), ("pending", True)
+            )
 
     async def test_shared_selection_applies_to_requests_and_events(self):
         for kind in ("request", "event"):

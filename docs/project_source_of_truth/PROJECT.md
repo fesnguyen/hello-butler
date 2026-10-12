@@ -158,6 +158,8 @@ Morning Brief and Good Night Summary may auto-start Listen Aloud when due when d
 
 All Butler-managed openings, warm-ups, previews, and generated speech use a device-local Butler volume (0–100%, default 70%). This is player gain, separate from Android system volume; changing it must not affect other apps, alarms, ringtones, or notifications. Android's media volume still limits audible output.
 
+Scheduled Daily Events prepare audio after canonical persistence, independently of alarm scheduling. The client stores speech durably by event ID/version and retries preparation in background. Alarm-time playback uses local prepared audio without backend access. If speech is missing, show the event text with the normal notification sound; do not wait, fetch, synthesize, claim successful speech, or automatically speak later. Reminders created from user orders follow this preparation lifecycle immediately after synchronization and do not depend on nightly planning.
+
 Audio sequences are configuration-driven. Morning Brief plays a long opening and random morning warm-up, then waits five minutes after the warm-up finishes before a short opening and the prepared speech. Good Night plays a long opening, random evening warm-up, and prepared speech without delay. Reminders use a short opening then reminder speech; responses use their existing speech. Details are in `client/AUDIO_WORKFLOWS.md`.
 
 ---

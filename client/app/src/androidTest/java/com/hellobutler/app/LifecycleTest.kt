@@ -122,7 +122,7 @@ class LifecycleTest {
 
     @Test
     fun proactivePlaybackClaimRejectsSkippedAndDeduplicates() = runBlocking {
-        val event = local().copy(speakAloud = true, content = "Prepared speech", status = "skipped")
+        val event = local().copy(speakAloud = true, content = "Prepared speech", status = "skipped", syncedFromServer = true)
         database.dailyEventDao().upsert(event)
         assertEquals(0, database.dailyEventDao().claimPlayback(event.id, "now", today, "19:00", event.content!!, 0))
         database.dailyEventDao().upsert(event.copy(status = "planned"))
@@ -149,6 +149,7 @@ class LifecycleTest {
         override suspend fun logout(request: LogoutRequest): Response<Unit> = Response.success(Unit)
     }
     private class UnusedSync : SyncApi {
+        override suspend fun prepareEventSpeech(authorization: String, eventId: String, version: Int): Response<EventSpeechPreparationDto> = error("unused")
         override suspend fun syncEvents(
             authorization: String,
             request: SyncBatchRequestDto
@@ -167,7 +168,8 @@ class LifecycleTest {
 
         override suspend fun eventAudio(
             authorization: String,
-            eventId: String
+            eventId: String,
+            version: Int
         ): Response<ResponseBody> = error("unused")
     }
     private class UnusedPlanning : PlanningApi {

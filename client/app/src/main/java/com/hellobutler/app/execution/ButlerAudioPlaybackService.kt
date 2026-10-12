@@ -174,18 +174,10 @@ class ButlerAudioPlaybackService : Service() {
             }
             val id = "event:${event.id}:${event.version}"
             if (container.audioWorkflowStore.get(id) != null) return null
-            val file = withContext(Dispatchers.IO) { withTimeoutOrNull(120_000) {
-                if (workflow == AudioWorkflow.REMINDER) container.dailyEventRepository.prepareReminderSpeech(eventId, event.version)
-                var audio = container.dailyEventRepository.speechAudio(eventId, event.version)
-                while (audio == null) { delay(2_000); audio = container.dailyEventRepository.speechAudio(eventId, event.version) }
-                audio
-            } } ?: run { DeferredSpeechNotification.show(this, event); return null }
-            currentCoroutineContext().ensureActive()
             val durable = withContext(Dispatchers.IO) {
-                val directory = File(filesDir, "workflow_audio").apply { mkdirs() }
-                file.copyTo(File(directory, "${event.id}-${event.version}.ogg"), overwrite = true)
-            }
-            if (dao.claimPlayback(event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(), event.content.orEmpty(), event.version) != 1) return null
+                container.dailyEventRepository.claimPreparedSpeech(event)
+            } ?: run { DeferredSpeechNotification.show(this, event); return null }
+            currentCoroutineContext().ensureActive()
             DeferredSpeechNotification.cancel(this, eventId)
             return AudioExecution(id, workflow, durable.absolutePath, eventId, event.version, automatic = auto).also(container.audioWorkflowStore::save)
         }

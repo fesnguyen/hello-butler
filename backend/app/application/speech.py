@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +17,72 @@ from app.core.config import Settings
 from app.infrastructure.db.models import ButlerRequestModel, DailyEventModel, UserModel
 
 logger = logging.getLogger(__name__)
+
+
+def event_speech_text(event: DailyEventModel) -> str:
+    return next(
+        (
+            text.strip()
+            for text in (event.content, event.description, event.title)
+            if text and text.strip()
+        ),
+        "",
+    )
+
+
+def event_speech_eligible(event: DailyEventModel) -> bool:
+    return (
+        not event.deleted_at
+        and (event.status or "planned") == "planned"
+        and (event.speak_aloud or event.event_type == "reminder")
+        and bool(event_speech_text(event))
+    )
+
+
+def invalidate_event_speech(event: DailyEventModel) -> None:
+    event.audio_status = "pending" if event_speech_eligible(event) else "unavailable"
+    event.response_audio_path = None
+    event.response_audio_mime_type = None
+    event.response_audio_delete_after = None
+    event.tts_credit_charged = False
+
+
+def valid_event_audio(path: Path | None) -> bool:
+    if path is None:
+        return False
+    try:
+        with path.open("rb") as audio:
+            header = audio.read(256)
+        return header[:4] == b"OggS" and b"OpusHead" in header
+    except OSError:
+        return False
+
+
+def publish_audio(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f"{path.name}.{uuid.uuid4()}.part")
+    try:
+        partial.write_bytes(data)
+        os.replace(partial, path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+
+def rebind_event_speech(event: DailyEventModel, previous_version: int) -> bool:
+    """Only a canonical unchanged-text mutation may carry bytes into its new version."""
+    source = Path(event.response_audio_path) if event.response_audio_path else None
+    if source is None or source.name != f"{event.id}-{previous_version}.ogg":
+        return False
+    if not valid_event_audio(source):
+        return False
+    target = source.with_name(f"{event.id}-{event.version}.ogg")
+    try:
+        publish_audio(target, source.read_bytes())
+    except OSError:
+        logger.warning("Could not rebind event speech id=%s", event.id, exc_info=True)
+        return False
+    event.response_audio_path = str(target)
+    return True
 
 
 class SpeechService:
@@ -38,27 +105,37 @@ class SpeechService:
         raise ValueError("Unknown speech owner")
 
     @staticmethod
-    async def prepare_reminder(
+    async def prepare_event(
         session: AsyncSession, user_id: uuid.UUID, owner_id: uuid.UUID, version: int
     ) -> tuple[str, bool]:
-        """Queue on-demand speech once; reuse the existing event owner/lifecycle."""
+        """Prepare canonical event speech before its alarm; reuse unchanged narration."""
         event = await session.scalar(
             select(DailyEventModel)
             .where(
                 DailyEventModel.id == owner_id,
                 DailyEventModel.user_id == user_id,
-                DailyEventModel.deleted_at.is_(None),
-                DailyEventModel.status == "planned",
-                DailyEventModel.event_type == "reminder",
             )
             .with_for_update()
         )
         if event is None:
-            raise LookupError("Reminder not found")
+            raise LookupError("event_not_found")
+        if event.deleted_at:
+            raise FileNotFoundError("event_deleted")
         if event.version != version:
-            raise ValueError("Reminder changed")
-        if event.audio_status == "unavailable":
+            raise ValueError("event_version_stale")
+        if not event_speech_eligible(event):
+            raise TypeError("event_not_speech_enabled")
+        path = Path(event.response_audio_path) if event.response_audio_path else None
+        if (
+            event.audio_status == "ready"
+            and path is not None
+            and path.name == f"{owner_id}-{version}.ogg"
+            and valid_event_audio(path)
+        ):
+            return "ready", False
+        if event.audio_status in ("unavailable", "ready"):
             event.audio_status = "pending"
+            event.response_audio_path = None
             await session.commit()
             return "pending", True
         return event.audio_status, False
@@ -78,12 +155,12 @@ class SpeechService:
                             (model.status == "completed",)
                             if kind == "request"
                             else (
-                                model.event_type.in_(
-                                    ("morning_brief", "good_night_summary", "reminder")
+                                DailyEventModel.deleted_at.is_(None),
+                                or_(
+                                    DailyEventModel.speak_aloud.is_(True),
+                                    DailyEventModel.event_type == "reminder",
                                 ),
-                                model.deleted_at.is_(None),
-                                or_(model.speak_aloud.is_(True), model.event_type == "reminder"),
-                                model.status == "planned",
+                                DailyEventModel.status == "planned",
                             )
                         ),
                     )
@@ -105,24 +182,13 @@ class SpeechService:
                 return
             if kind == "request" and row.status != "completed":
                 return
-            if kind == "event" and (
-                row.deleted_at
-                or (not row.speak_aloud and row.event_type != "reminder")
-                or row.status != "planned"
-                or row.event_type not in ("morning_brief", "good_night_summary", "reminder")
-            ):
+            if isinstance(row, DailyEventModel) and not event_speech_eligible(row):
                 return
             text = (
-                row.response_text
-                if kind == "request"
-                else (
-                    (row.content or row.description or row.title)
-                    if row.event_type == "reminder"
-                    else row.content
-                )
+                row.response_text if isinstance(row, ButlerRequestModel) else event_speech_text(row)
             )
             user_id = row.user_id
-            version = row.version if kind == "event" else None
+            version = row.version if isinstance(row, DailyEventModel) else None
             row.audio_status = "processing"
         path: Path | None = None
         charged = False
@@ -130,7 +196,7 @@ class SpeechService:
         try:
             if not self.settings.butler_voice_enabled or not text:
                 return
-            provider, charged = await self._choose(model, owner_id, user_id)
+            provider, charged = await self._choose(model, owner_id, user_id, version)
             if provider is None:
                 return
             try:
@@ -139,7 +205,7 @@ class SpeechService:
             except Exception:
                 logger.warning("Speech failed kind=%s id=%s", kind, owner_id, exc_info=True)
                 if charged:
-                    await self._refund(model, owner_id, user_id)
+                    await self._refund(model, owner_id, user_id, version)
                     charged = False
                 if (
                     provider is self.openai
@@ -158,17 +224,21 @@ class SpeechService:
         except asyncio.CancelledError:
             cancelled = True
             if charged:
-                await self._refund(model, owner_id, user_id)
+                await self._refund(model, owner_id, user_id, version)
+                charged = False
             raise
         except Exception:
             logger.exception("Speech unavailable kind=%s id=%s", kind, owner_id)
             if charged:
-                await self._refund(model, owner_id, user_id)
+                await self._refund(model, owner_id, user_id, version)
+                charged = False
         finally:
+            obsolete = False
             async with self.sessions() as session, session.begin():
                 row = await session.get(model, owner_id, with_for_update=True)
                 if row is not None:
-                    if kind == "event" and row.version != version:
+                    if isinstance(row, DailyEventModel) and row.version != version:
+                        obsolete = True
                         if path:
                             await asyncio.to_thread(path.unlink, missing_ok=True)
                     else:
@@ -183,12 +253,16 @@ class SpeechService:
                             if path
                             else None
                         )
+            if obsolete and charged:
+                await self._refund(model, owner_id, user_id, version)
 
-    async def _choose(self, model, owner_id, user_id):
+    async def _choose(self, model, owner_id, user_id, version=None):
         async with self.sessions() as session, session.begin():
             row = await session.get(model, owner_id, with_for_update=True)
             user = await session.get(UserModel, user_id, with_for_update=True)
             if row is None or user is None:
+                return None, False
+            if version is not None and row.version != version:
                 return None, False
             if row.tts_credit_charged:
                 return self.openai, True
@@ -204,17 +278,19 @@ class SpeechService:
                 row.tts_credit_charged = True
             return self.openai, bool(cost)
 
-    async def _refund(self, model, owner_id, user_id):
+    async def _refund(self, model, owner_id, user_id, version=None):
         cost = self.settings.butler_openai_tts_credit_cost
         async with self.sessions() as session, session.begin():
             row = await session.get(model, owner_id, with_for_update=True)
-            if row is not None and row.tts_credit_charged:
+            obsolete = row is not None and version is not None and row.version != version
+            if row is not None and (row.tts_credit_charged or obsolete):
                 await session.execute(
                     update(UserModel)
                     .where(UserModel.id == user_id)
                     .values(credits=UserModel.credits + cost)
                 )
-                row.tts_credit_charged = False
+                if not obsolete:
+                    row.tts_credit_charged = False
 
     async def _store(
         self, kind: str, owner_id: uuid.UUID, wav: bytes, mime: str, version: int | None
@@ -260,8 +336,7 @@ class SpeechService:
             / ("responses" if kind == "request" else "events")
             / filename
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        await asyncio.to_thread(path.write_bytes, data)
+        await asyncio.to_thread(publish_audio, path, data)
         return path
 
     async def cleanup_audio(self) -> None:
