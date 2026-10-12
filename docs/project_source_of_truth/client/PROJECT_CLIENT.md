@@ -9,6 +9,7 @@ This is the Android client's primary technical entry point, combining its former
 | Feature | Detailed source of truth |
 | --- | --- |
 | Configurable audio, playback, volume, delays, reminder speech | [AUDIO_WORKFLOWS.md](AUDIO_WORKFLOWS.md) |
+| End-to-end audio call chains, storage, debugging, and implementation gaps | [AUDIO_FLOW_TRACE.md](AUDIO_FLOW_TRACE.md) |
 | Home-screen widget | [HOME_SCREEN_WIDGET.md](HOME_SCREEN_WIDGET.md) |
 | Reconciliation and offline synchronization | [CLIENT_SYNC_FLOW.md](CLIENT_SYNC_FLOW.md) |
 
