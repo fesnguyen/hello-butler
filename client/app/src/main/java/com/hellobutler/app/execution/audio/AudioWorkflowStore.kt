@@ -32,12 +32,14 @@ class AudioWorkflowStore(private val context: Context) {
     fun clear() { check(prefs.edit().clear().commit()) }
     fun prune(now: Long = System.currentTimeMillis()) {
         val editor = prefs.edit()
-        all().filter { it.status in setOf("complete", "cancelled") && now - it.updatedAt > 7 * 86400_000L }
+        val executions = all()
+        val activePaths = executions.filter { it.status !in setOf("complete", "cancelled") }.map { it.speechPath }.toSet()
+        executions.filter { it.status in setOf("complete", "cancelled") && now - it.updatedAt > 7 * 86400_000L }
             .forEach {
                 editor.remove("execution:${it.id}")
                 if (it.eventId != null) {
                     val file = java.io.File(it.speechPath)
-                    if (file.parentFile == java.io.File(context.filesDir, "workflow_audio")) file.delete()
+                    if (it.speechPath !in activePaths && file.parentFile == java.io.File(context.filesDir, "workflow_audio")) file.delete()
                 }
             }
         editor.apply()

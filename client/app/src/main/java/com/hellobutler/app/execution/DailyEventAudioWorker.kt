@@ -19,7 +19,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 
 internal fun DailyEventEntity.canPrepareSpeech(today: LocalDate = LocalDate.now()): Boolean =
-    syncedFromServer && version > 0 && status == "planned" && playbackAttemptedAt == null &&
+    syncedFromServer && version > 0 && status == "planned" &&
         (speakAloud || eventType == "reminder") && triggerAtMillis() != null &&
         !listOf(content, description, title).firstOrNull { !it.isNullOrBlank() }.isNullOrBlank() &&
         runCatching { !LocalDate.parse(eventDate).isBefore(today) }.getOrDefault(false)

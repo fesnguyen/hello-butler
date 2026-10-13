@@ -115,7 +115,7 @@ audio: pending → processing → ready | unavailable
 
 FCM is a wake-up signal, not canonical content or audio transport. TTS failure never invalidates successful text/actions.
 
-All Butler-generated speech uses the shared TTS service, including conversation responses, Morning Brief, and Good Night Summary. The stored TTS preference selects Open Source/Kokoro or OpenAI; insufficient OpenAI TTS credits cause a runtime Kokoro fallback without changing the stored preference.
+Backend-generated Butler speech uses the shared TTS service, including conversation responses, Morning Brief, and Good Night Summary. Daily Event playback prefers prepared backend audio, with one bounded recovery and offline native TTS as its last resort. Conversation responses retain their backend-audio path. The stored TTS preference selects Open Source/Kokoro or OpenAI; insufficient OpenAI TTS credits cause a runtime Kokoro fallback without changing the stored preference.
 
 ---
 
@@ -158,7 +158,7 @@ Morning Brief and Good Night Summary may auto-start Listen Aloud when due when d
 
 All Butler-managed openings, warm-ups, previews, and generated speech use a device-local Butler volume (0–100%, default 70%). This is player gain, separate from Android system volume; changing it must not affect other apps, alarms, ringtones, or notifications. Android's media volume still limits audible output.
 
-Scheduled Daily Events prepare audio after canonical persistence, independently of alarm scheduling. The client stores speech durably by event ID/version and retries preparation in background. Alarm-time playback uses local prepared audio without backend access. If speech is missing, show the event text with the normal notification sound; do not wait, fetch, synthesize, claim successful speech, or automatically speak later. Reminders created from user orders follow this preparation lifecycle immediately after synchronization and do not depend on nightly planning.
+Scheduled Daily Events prepare audio after canonical persistence, independently of alarm scheduling. The client stores speech durably by event ID/version and retries preparation in background. The existing configured workflow resolves speech at PLAY(<speech>), after openings and delays. Valid prepared speech requires no backend call. Missing/invalid speech receives one online recovery attempt, bounded to five seconds including streaming I/O, then offline Android TTS rendered through the same player. Unavailable speech leaves event text/normal notification sound and cancels the execution rather than reporting success. Background preparation never starts playback, even when audio arrives after fallback. Reminders created from user orders follow this preparation lifecycle immediately after synchronization and do not depend on nightly planning.
 
 Audio sequences are configuration-driven. Morning Brief plays a long opening and random morning warm-up, then waits five minutes after the warm-up finishes before a short opening and the prepared speech. Good Night plays a long opening, random evening warm-up, and prepared speech without delay. Reminders use a short opening then reminder speech; responses use their existing speech. Details are in `client/AUDIO_WORKFLOWS.md`.
 

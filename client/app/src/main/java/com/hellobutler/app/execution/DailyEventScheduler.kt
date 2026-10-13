@@ -36,7 +36,7 @@ class DailyEventScheduler(private val context: Context) {
         }
         cancel(event)
 
-        val pending = alarmPendingIntent(event.id)
+        val pending = alarmPendingIntent(event.id, event.version, triggerAt)
         val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarms.canScheduleExactAlarms()
         if (exactAllowed) {
             runCatching {
@@ -58,11 +58,13 @@ class DailyEventScheduler(private val context: Context) {
         DeferredSpeechNotification.cancel(context, event.id)
     }
 
-    private fun alarmPendingIntent(eventId: String): PendingIntent {
+    private fun alarmPendingIntent(eventId: String, version: Int = -1, triggerAt: Long = -1): PendingIntent {
         val intent = Intent(context, DailyEventAlarmReceiver::class.java).apply {
             action = ACTION_EXECUTE_EVENT
             data = Uri.parse("hellobutler://daily-event/${Uri.encode(eventId)}")
             putExtra(EXTRA_EVENT_ID, eventId)
+            putExtra(EXTRA_EVENT_VERSION, version)
+            putExtra(EXTRA_EVENT_TRIGGER, triggerAt)
         }
         return PendingIntent.getBroadcast(
             context,
@@ -89,3 +91,9 @@ internal fun DailyEventEntity.isDueForSpeech(nowMillis: Long = System.currentTim
 
 internal const val ACTION_EXECUTE_EVENT = "com.hellobutler.app.EXECUTE_DAILY_EVENT"
 internal const val EXTRA_EVENT_ID = "daily_event_id"
+
+internal const val EXTRA_EVENT_VERSION = "event_version"
+internal const val EXTRA_EVENT_TRIGGER = "event_trigger"
+internal fun DailyEventEntity.spokenText() = listOf(content, description, title).firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+internal fun DailyEventEntity.matchesAlarm(version: Int, trigger: Long): Boolean =
+    version == this.version && trigger == triggerAtMillis()

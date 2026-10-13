@@ -39,11 +39,10 @@ class DailyEventAlarmReceiver : BroadcastReceiver() {
             try {
                 val container = (context.applicationContext as ButlerApplication).container
                 val event = container.database.dailyEventDao().get(eventId) ?: return@launch
-                if (!event.isDueForSpeech()) return@launch
-                val ready = container.dailyEventRepository.preparedSpeech(event) != null
-                DeferredSpeechNotification.show(context, event, ready)
-                if (ready && container.soundVoice.state.value.allows(com.hellobutler.app.execution.audio.AudioWorkflows.forEvent(event.eventType))) {
-                    try { SpeechForegroundService.start(context, eventId) }
+                if (!event.isDueForSpeech() || !event.matchesAlarm(intent.getIntExtra(EXTRA_EVENT_VERSION, -1), intent.getLongExtra(EXTRA_EVENT_TRIGGER, -1))) return@launch
+                DeferredSpeechNotification.show(context, event, audioReady = true)
+                if ( container.soundVoice.state.value.allows(com.hellobutler.app.execution.audio.AudioWorkflows.forEvent(event.eventType))) {
+                    try { ButlerAudioPlaybackService.playEvent(context, eventId, automatic = true, expectedVersion = event.version, expectedTrigger = event.triggerAtMillis()) }
                     catch (_: IllegalStateException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
                     catch (_: SecurityException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
                 }
@@ -99,8 +98,7 @@ class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) :
             val event = container.database.dailyEventDao().get(eventId)
             if (event != null && event.isDueForSpeech()) {
                 // A delayed worker has no background FGS exemption. The Listen action does.
-                val ready = container.dailyEventRepository.preparedSpeech(event) != null
-                if (!DeferredSpeechNotification.show(applicationContext, event, ready)) return Result.retry()
+                if (!DeferredSpeechNotification.show(applicationContext, event, audioReady = true)) return Result.retry()
             }
             Result.success()
         } catch (cancelled: kotlinx.coroutines.CancellationException) {

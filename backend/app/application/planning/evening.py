@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -111,6 +111,7 @@ class EveningPreparationService:
         relevant = [event for event in events if event.event_type != "good_night_summary"]
         return (
             GoodNightSummaryInput(
+                now=datetime.now(self._settings.timezone),
                 summary_date=summary_date,
                 tomorrow_date=tomorrow,
                 timezone=self._settings.butler_default_timezone,

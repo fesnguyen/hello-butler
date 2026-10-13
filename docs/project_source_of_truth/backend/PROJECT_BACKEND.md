@@ -491,7 +491,7 @@ Profile.tts_method
 
 The effective fallback does not modify `Profile.tts_method`. Credit checks/deductions are backend responsibilities and the balance must not become negative.
 
-Morning Brief and Good Night Summary should use this same service rather than Android native TTS. Their audio should be prepared early enough for the client to cache before scheduled playback when practical.
+Morning Brief and Good Night Summary use this service for preferred prepared speech. Android can use offline native TTS as a last resort for Daily Event workflows; conversation responses remain backend-audio based. Their audio should be prepared early enough for the client to cache before scheduled playback when practical.
 
 ---
 
@@ -502,7 +502,7 @@ Morning Brief and Good Night Summary should use this same service rather than An
 - AI-proposed mutations must be validated before persistence
 - canonical text completion must not wait for TTS
 - TTS failure must not invalidate a completed text result
-- all Butler speech uses the shared backend TTS service
+- backend-generated Butler speech uses the shared backend TTS service
 - result/audio fetch must be retryable
 - FCM is a hint, never the only canonical copy
 - background work may be delayed or repeated
@@ -534,3 +534,11 @@ Shared TTS asynchronously
 ---
 
 The request is marked `completed` and its completion push is sent before `SpeechService.generate` begins. Maintenance recovers pending or stale speech tasks after restart. A pending event audio request returns 404 until the authenticated Ogg/Opus asset is ready.
+
+### Phase 2 narration and stable temporal context
+
+Actual planning loaders supply aware local `now` in DayPlanningInput and GoodNightSummaryInput. Morning Brief/Good Night prompts require substantive openings because Android supplies prerecorded greetings. Draft validators remove known English opening greeting prefixes without stripping meaningful Butler transitions.
+
+`context_temporal.normalize_context_period()` guards Butler context actions, direct Notes & Preferences saves and Upcoming rule mutations. Shared interaction/planning prompts require explicit dated content including years, consistent structured fields, inclusive N-day periods, preserved recurrence, bounded temporary preferences and no reanchoring of existing resolved dates. Known relative dates/times and English calendar ranges are normalized; ambiguous/contradictory forms reject persistence. Direct-save retries preserve the original resolved anchor. Preferences/notes may retain validity periods or recurrence but remain nonactionable. There is no general-purpose date parser, blind historical rewrite, or schema migration; broader language resolution remains the model's responsibility under supplied local datetime/timezone.
+
+`ButlerContext.editable_context` separately exposes latest nondeleted future/past/note entries as mutation targets, not automatic planning input. TTS-method profile changes increment eligible planned event versions and invalidate speech. Literal own-clock references in otherwise unchanged ordinary-event narration are retimed before invalidation; moving a brief's delivery time preserves its summary content. Semantic/multilingual time-reference rewriting requires an explicit content edit.

@@ -16,6 +16,9 @@ interface DailyEventDao {
     @Query("SELECT * FROM daily_events WHERE id = :id LIMIT 1")
     suspend fun get(id: String): DailyEventEntity?
 
+    @Query("SELECT * FROM daily_events WHERE id = :id LIMIT 1")
+    fun observe(id: String): Flow<DailyEventEntity?>
+
     @Query("SELECT * FROM daily_events")
     suspend fun all(): List<DailyEventEntity>
 
@@ -31,7 +34,7 @@ interface DailyEventDao {
     @Query("DELETE FROM daily_events WHERE eventDate = :date AND syncedFromServer = 1 AND id NOT IN (SELECT eventId FROM pending_sync_operations)")
     suspend fun deleteServerDateExceptPending(date: String)
 
-    @Query("UPDATE daily_events SET playbackAttemptedAt = :attemptedAt WHERE id = :id AND status = 'planned' AND syncedFromServer = 1 AND eventDate = :eventDate AND startTime = :startTime AND COALESCE(content, '') = :content AND version = :version AND playbackAttemptedAt IS NULL AND (eventType = 'reminder' OR speakAloud = 1)")
+    @Query("UPDATE daily_events SET playbackAttemptedAt = :attemptedAt WHERE id = :id AND status = 'planned' AND eventDate = :eventDate AND startTime = :startTime AND COALESCE(content, '') = :content AND version = :version AND playbackAttemptedAt IS NULL AND (eventType = 'reminder' OR speakAloud = 1)")
     suspend fun claimPlayback(
         id: String, attemptedAt: String, eventDate: String, startTime: String,
         content: String, version: Int,

@@ -16,6 +16,7 @@ from app.application.butler.state import (
     canonical_response_from,
     decision_from,
 )
+from app.application.context_temporal import ContextPeriod, normalize_context_period
 from app.application.upcoming import UpcomingEventMutation, UpcomingEventService
 from app.infrastructure.db.models import UserContextEntryModel
 
@@ -46,7 +47,7 @@ class UserContextActions:
                 recurrence=decision.context_recurrence,
                 recurrence_days=decision.context_recurrence_days or [],
             )
-            self._validate_saved_context(entry)
+            self._normalize(entry, state)
             session.add(entry)
             changed = ChangedEntity(type="user_context", id=entry.id)
             result = ButlerResult(
@@ -70,6 +71,7 @@ class UserContextActions:
             if entry is None or entry.user_id != state["user_id"] or entry.deleted_at is not None:
                 raise ButlerMutationRejectedError("User Context target could not be resolved")
 
+            previous = ContextPeriod.of(entry)
             changed = False
             if decision.context_content is not None:
                 entry.content = decision.context_content
@@ -103,7 +105,12 @@ class UserContextActions:
                 changed = True
             if not changed:
                 raise ButlerMutationRejectedError("User Context update contains no changes")
-            self._validate_saved_context(entry)
+            fields = {
+                name.removeprefix("context_")
+                for name in decision.model_fields_set
+                if name.startswith("context_") and getattr(decision, name) is not None
+            }
+            self._normalize(entry, state, previous, fields)
             entry.version += 1
 
             entity = ChangedEntity(type="user_context", id=entry.id)
@@ -115,23 +122,24 @@ class UserContextActions:
         return {"result": result}
 
     @staticmethod
-    def _validate_saved_context(entry: UserContextEntryModel) -> None:
-        if entry.context_type not in ("note", "preference"):
-            return
-        if not entry.content.strip():
-            raise ButlerMutationRejectedError("Saved context requires a description")
-        if (
-            entry.is_actionable
-            or entry.starts_on is not None
-            or entry.ends_on is not None
-            or entry.recurrence is not None
-            or entry.start_time is not None
-            or entry.end_time is not None
-        ):
-            raise ButlerMutationRejectedError(
-                "Notes and preferences cannot carry planning schedules"
+    def _normalize(
+        entry: UserContextEntryModel,
+        state: ButlerState,
+        previous: ContextPeriod | None = None,
+        fields: set[str] | None = None,
+    ) -> None:
+        proposal = state.get("proposal")
+        try:
+            normalize_context_period(
+                entry,
+                now=state.get("now"),
+                previous=previous,
+                changed_fields=fields,
+                source_text=state.get("message")
+                or (proposal.user_message_text if proposal else None),
             )
-        entry.content = entry.content.strip()
+        except ValueError as exc:
+            raise ButlerMutationRejectedError(str(exc)) from exc
 
     async def mutate_upcoming(self, state: ButlerState) -> ButlerStateUpdate:
         decision = decision_from(state)

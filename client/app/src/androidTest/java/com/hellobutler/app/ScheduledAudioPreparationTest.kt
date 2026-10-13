@@ -142,12 +142,89 @@ class ScheduledAudioPreparationTest {
         }
     }
 
-    @Test fun missingAudioFallbackDoesNotClaimSpeechOrRequestBackend() = runBlocking {
+    @Test fun missingAudioWorkflowClaimDoesNotRequestBackendOrRepeatAutomatically() = runBlocking {
         val calls = api.preparations to api.downloads
         assertNull(repository.claimPreparedSpeech(event))
         DeferredSpeechNotification.show(context, event, audioReady = false)
         assertNull(database.dailyEventDao().get(event.id)!!.playbackAttemptedAt)
         assertEquals(calls, api.preparations to api.downloads)
+        assertTrue(repository.claimEventPlayback(event))
+        val claimed = database.dailyEventDao().get(event.id)!!
+        assertNotNull(claimed.playbackAttemptedAt)
+        assertFalse(repository.claimEventPlayback(claimed))
+        assertEquals(calls, api.preparations to api.downloads)
+    }
+
+    @Test fun localTimingEditReusesConfirmedBytesButChangedSpeechInvalidates() = runBlocking {
+        repository.speechAudio(event.id, 1)
+        val calls = api.preparations to api.downloads
+        repository.update(event.copy(startTime = "23:00"))
+        event = event.copy(startTime = "23:00", version = 2)
+        database.pendingSyncOperationDao().deleteAll()
+        repository.synchronize(listOf(event.eventDate))
+        assertNotNull(repository.preparedSpeech(event))
+        assertNotNull(repository.snapshotPreparedSpeech(event))
+        assertEquals(calls, api.preparations to api.downloads)
+        event = event.copy(description = "Changed speech", version = 3)
+        repository.synchronize(listOf(event.eventDate))
+        assertNull(repository.preparedSpeech(event))
+        assertNull(repository.snapshotPreparedSpeech(event))
+    }
+
+    @Test fun remoteVersionDoesNotRebindUnprovenVoiceBytes() = runBlocking {
+        repository.speechAudio(event.id, 1)
+        event = event.copy(version = 2)
+        repository.synchronize(listOf(event.eventDate))
+        assertNull(repository.preparedSpeech(event))
+        assertNull(repository.snapshotPreparedSpeech(event))
+        assertNotNull(repository.speechAudio(event.id, 2))
+        assertEquals(2, api.downloads)
+    }
+
+    @Test fun voiceChangeRejectsProtectedSnapshotThroughRepositoryRestart() = runBlocking {
+        repository.speechAudio(event.id, 1)
+        val protected = repository.snapshotPreparedSpeech(event)!!
+        repository.reconcileTtsMethod("OPEN_SOURCE")
+        repository.reconcileTtsMethod("OPENAI")
+        assertNull(repository.preparedSpeech(event))
+        assertNull(repository.snapshotPreparedSpeech(event))
+        assertTrue(protected.exists())
+        repository = repository()
+        assertNull(repository.snapshotPreparedSpeech(event))
+    }
+
+    @Test fun streamingRecoveryDeadlineStopsStalledBodyWithoutPublishing() = runBlocking {
+        val server = java.net.ServerSocket(0, 1, java.net.InetAddress.getLoopbackAddress())
+        val release = java.util.concurrent.CountDownLatch(1)
+        val thread = kotlin.concurrent.thread {
+            server.accept().use { socket ->
+                val input = socket.getInputStream().bufferedReader()
+                while (!input.readLine().isNullOrEmpty()) { }
+                val output = socket.getOutputStream()
+                output.write("HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nContent-Type: audio/ogg\r\nConnection: close\r\n\r\n".toByteArray())
+                output.write(ogg); output.flush()
+                release.await(3, java.util.concurrent.TimeUnit.SECONDS)
+            }
+        }
+        val client = okhttp3.OkHttpClient.Builder().readTimeout(10, java.util.concurrent.TimeUnit.SECONDS).build()
+        val request = okhttp3.Request.Builder().url("http://127.0.0.1:${server.localPort}/audio").build()
+        val response = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { client.newCall(request).execute() }
+        api.audioBody = response.body!!
+        try {
+            withTimeout(2_000) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    try {
+                        repository.speechAudio(event.id, 1, System.nanoTime() + java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(200))
+                        fail("Stalled stream exceeded its deadline")
+                    } catch (_: java.io.InterruptedIOException) { }
+                }
+            }
+            assertNull(repository.preparedSpeech(event))
+            assertFalse(File(context.filesDir, "event_speech").listFiles().orEmpty().any { it.name.startsWith(event.id) && it.name.endsWith(".part") })
+        } finally {
+            release.countDown(); response.close(); server.close(); thread.join(1_000)
+            client.dispatcher.executorService.shutdown(); client.connectionPool.evictAll()
+        }
     }
 
     @Test fun deletedAndLogoutAudioIsCleaned() = runBlocking {
@@ -161,6 +238,7 @@ class ScheduledAudioPreparationTest {
 
     private inner class FakeSync : SyncApi {
         var status = "ready"
+        var audioBody: ResponseBody? = null
         var preparations = 0
         var downloads = 0
         var beforeDownload: suspend () -> Unit = {}
@@ -174,7 +252,7 @@ class ScheduledAudioPreparationTest {
             beforeDownload()
             val raw = okhttp3.Response.Builder().request(okhttp3.Request.Builder().url("http://127.0.0.1/").build())
                 .protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK").header("X-Event-Version", version.toString()).build()
-            return Response.success(ogg.toResponseBody("audio/ogg".toMediaType()), raw)
+            return Response.success(audioBody ?: ogg.toResponseBody("audio/ogg".toMediaType()), raw)
         }
         override suspend fun dailyPlan(authorization: String, date: String) = run {
             beforePlan()

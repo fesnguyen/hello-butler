@@ -21,6 +21,7 @@ import com.hellobutler.app.ButlerApplication
 import com.hellobutler.app.MainActivity
 import com.hellobutler.app.core.AppVisibility
 import com.hellobutler.app.execution.ButlerAudioPlaybackService
+import com.hellobutler.app.execution.matchesExecution
 import java.util.concurrent.TimeUnit
 
 /** Schedules delayed audio using exact alarms and WorkManager fallback. */
@@ -243,6 +244,11 @@ class AudioContinuationWorker(
                 "complete", "cancelled", "playing", "preparing"
             )
         ) return Result.success()
+
+        if (execution.eventId != null && !container.database.dailyEventDao().get(execution.eventId).matchesExecution(execution)) {
+            container.audioWorkflowScheduler.cancel(id)
+            return Result.success()
+        }
 
         // Cancel expired responses or executions without a session.
         if (

@@ -1,87 +1,85 @@
 package com.hellobutler.app.execution
 
 import android.content.Context
-import android.media.AudioAttributes
-import android.media.AudioFocusRequest
-import android.media.AudioManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resume
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
+/** Offline file synthesis; the shared MediaPlayer owns all audible output and focus. */
 class LocalTextToSpeech(private val context: Context) {
     @Volatile private var stopAction: (() -> Unit)? = null
+    fun stop() { stopAction?.invoke() }
 
-    fun stop() = stopAction?.invoke() ?: Unit
-
-    suspend fun speak(text: String): Boolean = suspendCancellableCoroutine { continuation ->
-        val audio = context.getSystemService(AudioManager::class.java)
-        val attributes = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_ASSISTANCE_ACCESSIBILITY)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .build()
-        val focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
-            .setAudioAttributes(attributes)
-            .setOnAudioFocusChangeListener { }
-            .build()
-        val completed = AtomicBoolean(false)
-        var engine: TextToSpeech? = null
-        var ownsFocus = false
-
-        fun finish(success: Boolean) {
-            if (!completed.compareAndSet(false, true)) return
-            engine?.stop()
-            engine?.shutdown()
-            if (ownsFocus) audio.abandonAudioFocusRequest(focus)
-            stopAction = null
-            if (continuation.isActive) continuation.resume(success)
-        }
-
-        stopAction = { finish(false) }
-        continuation.invokeOnCancellation { finish(false) }
-        engine = TextToSpeech(context.applicationContext) { status ->
-            val tts = engine
-            if (completed.get()) {
-                tts?.shutdown() // Stop can arrive before asynchronous engine initialization finishes.
-                return@TextToSpeech
+    suspend fun renderOffline(text: String, target: File): Boolean = withContext(Dispatchers.Main.immediate) {
+        if (text.isBlank() || text.length > TextToSpeech.getMaxSpeechInputLength()) return@withContext false
+        withTimeoutOrNull(15_000) {
+            suspendCancellableCoroutine<Boolean> { continuation ->
+                stop()
+                val finished = AtomicBoolean(false)
+                var engine: TextToSpeech? = null
+                val utterance = "butler-fallback-${UUID.randomUUID()}"
+                fun finish(success: Boolean) {
+                    if (!finished.compareAndSet(false, true)) return
+                    runCatching { engine?.stop(); engine?.shutdown() }
+                    stopAction = null
+                    val valid = success && target.isFile && target.length() > 44
+                    if (!valid) target.delete()
+                    if (continuation.isActive) continuation.resume(valid)
+                }
+                stopAction = { finish(false) }
+                continuation.invokeOnCancellation { finish(false) }
+                try {
+                    engine = TextToSpeech(context.applicationContext) { status ->
+                        Handler(Looper.getMainLooper()).post {
+                            val tts = engine
+                            if (finished.get()) { tts?.shutdown(); return@post }
+                            if (tts == null || status != TextToSpeech.SUCCESS) { finish(false); return@post }
+                            val locale = Locale.getDefault()
+                            val voices = tts.voices.orEmpty().filter {
+                                !it.isNetworkConnectionRequired && it.locale.language in setOf(locale.language, "en") &&
+                                    TextToSpeech.Engine.KEY_FEATURE_NOT_INSTALLED !in it.features.orEmpty()
+                            }.sortedByDescending {
+                                when { it.locale == locale -> 3; it.locale.language == locale.language -> 2; else -> 1 }
+                            }
+                            val voice = voices.firstOrNull { tts.isLanguageAvailable(it.locale) >= TextToSpeech.LANG_AVAILABLE }
+                            if (voice == null || tts.setVoice(voice) == TextToSpeech.ERROR) { finish(false); return@post }
+                            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                                override fun onStart(id: String?) = Unit
+                                override fun onDone(id: String?) { if (id == utterance) finish(true) }
+                                @Deprecated("Deprecated in Android")
+                                override fun onError(id: String?) { if (id == utterance) finish(false) }
+                                override fun onError(id: String?, errorCode: Int) { if (id == utterance) finish(false) }
+                            })
+                            if (tts.synthesizeToFile(text, Bundle(), target, utterance) == TextToSpeech.ERROR) finish(false)
+                        }
+                    }
+                } catch (_: RuntimeException) { finish(false) }
             }
-            if (status != TextToSpeech.SUCCESS || tts == null) {
-                finish(false)
-                return@TextToSpeech
-            }
-            val language = tts.setLanguage(Locale.getDefault())
-            if (language == TextToSpeech.LANG_MISSING_DATA || language == TextToSpeech.LANG_NOT_SUPPORTED) {
-                finish(false)
-                return@TextToSpeech
-            }
-            val offlineVoice = tts.voices?.filter {
-                !it.isNetworkConnectionRequired && it.locale.language == Locale.getDefault().language
-            }?.sortedByDescending { it.locale == Locale.getDefault() }?.firstOrNull()
-            if (offlineVoice == null || tts.setVoice(offlineVoice) == TextToSpeech.ERROR) {
-                finish(false) // Install an offline voice for the device language before relying on speech.
-                return@TextToSpeech
-            }
-            tts.setAudioAttributes(attributes)
-            ownsFocus = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
-            if (!ownsFocus) {
-                finish(false)
-                return@TextToSpeech
-            }
-            val utteranceId = "morning-brief-${UUID.randomUUID()}"
-            tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
-                override fun onStart(id: String?) = Unit
-                override fun onDone(id: String?) = finish(true)
-                @Deprecated("Deprecated in Android")
-                override fun onError(id: String?) = finish(false)
-                override fun onError(id: String?, errorCode: Int) = finish(false)
-            })
-            if (tts.speak(text, TextToSpeech.QUEUE_FLUSH, Bundle(), utteranceId) == TextToSpeech.ERROR) {
-                finish(false)
-            }
-        }
+        } ?: false
     }
+}
+
+internal fun nativeSpeechChunks(text: String, limit: Int = TextToSpeech.getMaxSpeechInputLength()): List<String> {
+    require(limit >= 2)
+    val chunks = mutableListOf<String>()
+    var remaining = text.trim()
+    while (remaining.length > limit) {
+        var boundary = remaining.lastIndexOf(' ', limit).takeIf { it > 0 } ?: limit
+        if (remaining[boundary - 1].isHighSurrogate() && remaining[boundary].isLowSurrogate()) boundary--
+        chunks.add(remaining.substring(0, boundary))
+        remaining = remaining.substring(boundary).trimStart()
+    }
+    if (remaining.isNotEmpty()) chunks.add(remaining)
+    return chunks
 }

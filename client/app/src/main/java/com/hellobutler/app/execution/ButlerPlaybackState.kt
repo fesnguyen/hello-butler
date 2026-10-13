@@ -9,6 +9,7 @@ data class ButlerPlaybackState(
     val requestId: String? = null,
     val privateRoute: Boolean = false,
     val phase: PlaybackPhase = PlaybackPhase.READY,
+    val eventId: String? = null,
 )
 
 object ButlerPlayback {

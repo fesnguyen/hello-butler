@@ -20,6 +20,8 @@ import com.hellobutler.app.data.remote.SyncBatchResultDto
 import com.hellobutler.app.data.remote.SyncEventDto
 import com.hellobutler.app.data.remote.UpcomingEventDto
 import com.hellobutler.app.data.remote.UpcomingEventMutationDto
+import com.hellobutler.app.execution.ButlerAudioPlaybackService
+import com.hellobutler.app.execution.spokenText
 import com.hellobutler.app.execution.DailyEventAudioWorker
 import com.hellobutler.app.execution.DailyEventScheduler
 import com.hellobutler.app.execution.canPrepareSpeech
@@ -29,6 +31,7 @@ import com.hellobutler.app.speech.isOggOpusContainer
 import java.io.File
 import java.time.Instant
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
@@ -57,6 +60,9 @@ class DailyEventRepository(
     private val syncMutex = Mutex()
     private val downloadMutex = Mutex()
     private val audioStateMutex = Mutex() // Room/file commits only; never held during network calls.
+    private val speechPreferences get() = context.getSharedPreferences("butler_speech_preparation", Context.MODE_PRIVATE)
+    private fun invalidatedByVoiceChange(event: DailyEventEntity) =
+        "${event.id}:${event.version}" in speechPreferences.getStringSet("invalidated_versions", emptySet()).orEmpty()
     private val speechDirectory get() = File(context.filesDir, "event_speech")
     private val _upcomingEvents = MutableStateFlow<List<UpcomingEventDto>>(emptyList())
     val upcomingEvents = _upcomingEvents.asStateFlow()
@@ -67,24 +73,58 @@ class DailyEventRepository(
 
     /** Local-only lookup; this method must never refresh authentication or fetch audio. */
     fun preparedSpeech(event: DailyEventEntity): File? =
-        speechFile(event.id, event.version).takeIf { event.syncedFromServer && it.isOggOpusContainer() }
+        speechFile(event.id, event.version).takeIf { event.syncedFromServer && !invalidatedByVoiceChange(event) && it.isOggOpusContainer() }
 
-    /** Snapshot the prepared file before claiming, so later edits cannot delete active speech. */
-    suspend fun claimPreparedSpeech(event: DailyEventEntity): File? = audioStateMutex.withLock {
+    fun workflowSpeechFile(event: DailyEventEntity) = File(File(context.filesDir, "workflow_audio"), "${event.id}-${event.version}.ogg")
+
+    suspend fun claimEventPlayback(event: DailyEventEntity, manual: Boolean = false): Boolean = audioStateMutex.withLock {
+        val current = dao.get(event.id) ?: return@withLock false
+        if (!auth.hasSession() || current != event || current.status in setOf("cancelled", "skipped")) return@withLock false
+        if (manual) {
+            if (current.status == "planned" && current.playbackAttemptedAt == null) {
+                dao.claimPlayback(event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(), event.content.orEmpty(), event.version)
+            }
+            return@withLock true
+        }
+        if (!current.isDueForSpeech()) return@withLock false
+        dao.claimPlayback(event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(), event.content.orEmpty(), event.version) == 1
+    }
+
+    /** Called only at PLAY(<speech>); active snapshots outlive prepared-file cleanup. */
+    suspend fun snapshotPreparedSpeech(event: DailyEventEntity): File? = audioStateMutex.withLock {
         val current = dao.get(event.id) ?: return@withLock null
-        if (!auth.hasSession() || current != event || !current.syncedFromServer || !current.isDueForSpeech() || pending.forEvent(event.id) != null) return@withLock null
+        if (current != event || !current.syncedFromServer || invalidatedByVoiceChange(current) ||
+            current.status in setOf("cancelled", "skipped")) return@withLock null
+        val target = workflowSpeechFile(current)
+        if (target.isOggOpusContainer()) return@withLock target
         val source = preparedSpeech(current) ?: return@withLock null
-        val target = File(File(context.filesDir, "workflow_audio").apply { mkdirs() }, "${event.id}-${event.version}.ogg")
+        target.parentFile?.mkdirs()
         val partial = File(target.path + ".${UUID.randomUUID()}.part")
         try {
             source.copyTo(partial)
             if (!partial.isOggOpusContainer() || !partial.renameTo(target)) throw java.io.IOException("Could not publish playback snapshot")
         } finally { partial.delete() }
-        if (dao.claimPlayback(event.id, Instant.now().toString(), event.eventDate, event.startTime.orEmpty(), event.content.orEmpty(), event.version) != 1) return@withLock null
         target
     }
 
-    suspend fun speechAudio(eventId: String, version: Int): File? = downloadMutex.withLock {
+    suspend fun claimPreparedSpeech(event: DailyEventEntity): File? {
+        val file = snapshotPreparedSpeech(event) ?: return null
+        return file.takeIf { claimEventPlayback(event) }
+    }
+
+    suspend fun recoverSpeech(eventId: String, version: Int): File? {
+        if (downloadMutex.isLocked) return downloadMutex.withLock {
+            dao.get(eventId)?.takeIf { it.version == version }?.let(::preparedSpeech)
+        }
+        return speechAudio(eventId, version, System.nanoTime() + TimeUnit.SECONDS.toNanos(5))
+    }
+
+    suspend fun discardPreparedSpeech(event: DailyEventEntity) = audioStateMutex.withLock {
+        speechFile(event.id, event.version).delete()
+        workflowSpeechFile(event).delete()
+    }
+
+    suspend fun speechAudio(eventId: String, version: Int, transferDeadlineNanos: Long? = null): File? = downloadMutex.withLock {
         val event = dao.get(eventId) ?: return@withLock null
         if (event.version != version || !event.canPrepareSpeech() || pending.forEvent(eventId) != null) return@withLock null
         preparedSpeech(event)?.let { return@withLock it }
@@ -107,12 +147,15 @@ class DailyEventRepository(
         val partial = File(target.path + ".${UUID.randomUUID()}.part")
         try {
             val body = response.body() ?: return@withLock null
+            // Coroutine cancellation alone cannot interrupt a blocking streaming read.
+            // Recovery uses one absolute deadline across preparation, headers and body.
+            if (transferDeadlineNanos != null) body.source().timeout().deadlineNanoTime(transferDeadlineNanos)
             body.use { source -> source.byteStream().use { input -> partial.outputStream().use { output -> input.copyTo(output) } } }
             if (!partial.isOggOpusContainer()) throw java.io.IOException("Invalid event speech audio")
             currentCoroutineContext().ensureActive()
             audioStateMutex.withLock publish@{
                 val current = dao.get(eventId)
-                if (!auth.hasSession() || current == null || current != event || !current.canPrepareSpeech() || pending.forEvent(eventId) != null) return@publish null
+                if (!auth.hasSession() || current == null || current.copy(playbackAttemptedAt = event.playbackAttemptedAt) != event || !current.canPrepareSpeech() || pending.forEvent(eventId) != null) return@publish null
                 if (!partial.renameTo(target)) throw java.io.IOException("Could not publish event speech audio")
                 target
             }
@@ -125,10 +168,31 @@ class DailyEventRepository(
         val id = current?.id ?: previous?.id ?: return
         if (previous != null && previous != current) {
             DailyEventAudioWorker.cancel(context, id)
+            if (current == null || previous.copy(playbackAttemptedAt = current.playbackAttemptedAt) != current) {
+                ButlerAudioPlaybackService.cancelEvent(context, id)
+            }
+            // Only an exact echo of our own edit proves local reuse across versions.
+            // A remote version may also mean a provider/settings change.
+            if (current != null && current.syncedFromServer && !previous.syncedFromServer &&
+                current.version == previous.version + 1 && !invalidatedByVoiceChange(previous) &&
+                current.eventDate == previous.eventDate && current.startTime == previous.startTime &&
+                previous.spokenText() == current.spokenText() && previous.eventType == current.eventType &&
+                previous.speakAloud == current.speakAloud && current.status == "planned") {
+                val old = speechFile(previous.id, previous.version)
+                val target = speechFile(current.id, current.version)
+                if (old != target && old.isOggOpusContainer()) {
+                    val partial = File(target.path + ".${UUID.randomUUID()}.part")
+                    try { old.copyTo(partial); if (!partial.renameTo(target)) throw java.io.IOException("Could not rebind speech") }
+                    finally { partial.delete() }
+                }
+            }
         }
-        val keep = current?.takeIf { it.canPrepareSpeech() }?.let { speechFile(it.id, it.version).name }
+        val keep = current?.takeIf {
+            it.canPrepareSpeech() || (!it.syncedFromServer && previous != null &&
+                previous.spokenText() == it.spokenText() && previous.eventType == it.eventType && previous.speakAloud == it.speakAloud)
+        }?.let { speechFile(it.id, it.version).name }
         speechDirectory.listFiles()?.filter { it.name.startsWith("$id-") && it.name != keep && !it.name.endsWith(".part") }?.forEach(File::delete)
-        if (current != null && keep != null && preparedSpeech(current) == null) enqueueAudio(current)
+        if (current != null && current.canPrepareSpeech() && keep != null && preparedSpeech(current) == null) enqueueAudio(current)
     }
 
     suspend fun recoverAudioPreparation() = audioStateMutex.withLock {
@@ -138,6 +202,19 @@ class DailyEventRepository(
         speechDirectory.listFiles()?.filter { it.name.endsWith(".ogg") && it.name !in keep }?.forEach(File::delete)
         speechDirectory.listFiles()?.filter { it.name.endsWith(".part") && System.currentTimeMillis() - it.lastModified() > 86400_000L }?.forEach(File::delete)
         events.forEach { reconcileAudio(null, it) }
+    }
+
+    suspend fun reconcileTtsMethod(method: String) = audioStateMutex.withLock {
+        val previous = speechPreferences.getString("tts_method", null)
+        if (previous != null && previous != method) {
+            val events = dao.all()
+            speechPreferences.edit().putStringSet("invalidated_versions", events.map { "${it.id}:${it.version}" }.toSet()).commit()
+            events.forEach { ButlerAudioPlaybackService.cancelEvent(context, it.id) }
+            DailyEventAudioWorker.clear(context)
+            speechDirectory.deleteRecursively()
+            queueSynchronization(events.map { it.eventDate })
+        }
+        speechPreferences.edit().putString("tts_method", method).commit()
     }
 
     suspend fun update(requested: DailyEventEntity) = syncMutex.withLock {
@@ -151,7 +228,7 @@ class DailyEventRepository(
                 requested.startTime != current.startTime -> "delay"
                 else -> "edit"
             }
-            queue(requested, current, action)
+            queue(requested.retimeSpeech(current), current, action)
         }
     }
 
@@ -362,6 +439,7 @@ class DailyEventRepository(
     suspend fun clear() = syncMutex.withLock {
         audioStateMutex.withLock {
             DailyEventAudioWorker.clear(context)
+            speechPreferences.edit().clear().commit()
             speechDirectory.deleteRecursively()
             File(context.cacheDir, "event_speech").deleteRecursively()
             dao.pendingSpokenEvents().forEach(scheduler::cancel)
@@ -430,4 +508,28 @@ internal fun DailyEventEntity.retainedPlaybackAttempt(previous: DailyEventEntity
         eventDate == previous.eventDate && startTime == previous.startTime && eventType == previous.eventType &&
             reminderMinutesBefore == previous.reminderMinutesBefore && speakAloud == previous.speakAloud && text == oldText
     }
+}
+
+/** Retiming changes only a literal reference to this event's previous clock time. */
+internal fun DailyEventEntity.retimeSpeech(previous: DailyEventEntity?): DailyEventEntity {
+    if (previous == null || startTime == previous.startTime || spokenText() != previous.spokenText() ||
+        eventType in setOf("morning_brief", "good_night_summary")) return this
+    val old = runCatching { java.time.LocalTime.parse(previous.startTime) }.getOrNull() ?: return this
+    val new = runCatching { java.time.LocalTime.parse(startTime) }.getOrNull() ?: return this
+    val marker = if (old.hour < 12) "AM" else "PM"
+    val minute = if (old.minute == 0) "(?::00)?" else ":%02d".format(old.minute)
+    val hour = old.hour % 12
+    val oldHour = if (hour == 0) 12 else hour
+    val pattern = Regex("(?<![\\w:])(?:${Regex.escape(old.toString())}|$oldHour$minute\\s*$marker)(?![\\w:])", RegexOption.IGNORE_CASE)
+    val text = pattern.replace(spokenText()) { match ->
+        if (!match.value.contains("am", true) && !match.value.contains("pm", true)) new.toString()
+        else {
+            var suffix = if (new.hour < 12) "AM" else "PM"
+            if (match.value == match.value.lowercase()) suffix = suffix.lowercase()
+            val minutes = if (new.minute != 0 || ':' in match.value) ":%02d".format(new.minute) else ""
+            val space = if (' ' in match.value) " " else ""
+            "${if (new.hour % 12 == 0) 12 else new.hour % 12}$minutes$space$suffix"
+        }
+    }
+    return when { !content.isNullOrBlank() -> copy(content = text); !description.isNullOrBlank() -> copy(description = text); else -> copy(title = text) }
 }

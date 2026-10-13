@@ -1,5 +1,6 @@
 import uuid
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from app.application.butler.actions.user_context import UserContextActions
 from app.application.butler.context import ButlerContextLoader
@@ -14,6 +15,86 @@ from test_user_settings import UserSettingsTests
 
 
 class SavedContextTests(UserSettingsTests):
+    async def test_relative_note_creation_retry_keeps_original_date(self):
+        service, item_id = UserSettingsService(), uuid.uuid4()
+        now = datetime(2026, 10, 13, 23, 30, tzinfo=ZoneInfo("Asia/Bangkok"))
+        request = SavedContextInput(content="Dentist tomorrow", is_preference=False, base_version=0)
+        async with self.sessions() as session, session.begin():
+            saved = await service.save_context(session, self.user_id, item_id, request, now=now)
+        async with self.sessions() as session, session.begin():
+            retry = await service.save_context(
+                session, self.user_id, item_id, request, now=now.replace(day=14)
+            )
+            row = await session.get(UserContextEntryModel, item_id)
+            self.assertEqual(row.starts_on, date(2026, 10, 14))
+        self.assertEqual(retry, saved)
+        self.assertIn("2026-10-14", retry.content)
+
+    async def test_temporary_preference_boundary_update_preserves_duration(self):
+        now = datetime(2026, 10, 13, 17, 30, tzinfo=ZoneInfo("Asia/Bangkok"))
+        decision = ButlerDecision(
+            intent="command",
+            requested_action="remember_user_context",
+            context_type="preference",
+            context_content="No morning meetings for five days starting tomorrow",
+            context_is_actionable=False,
+        )
+        state = {
+            "user_id": self.user_id,
+            "now": now,
+            "message": decision.context_content,
+            "decision": decision,
+            "proposal": ButlerInteractionProposal(
+                thought="Save constraint",
+                user_message_text=decision.context_content,
+                decision=decision,
+                response_text="Saved.",
+            ),
+        }
+        result = await UserContextActions(self.sessions).remember(state)
+        item_id = result["result"].changed_entities[0].id
+        state["decision"] = ButlerDecision(
+            intent="command",
+            requested_action="update_user_context",
+            target_context_id=item_id,
+            context_starts_on=date(2026, 10, 16),
+        )
+        state["message"] = "Actually start Friday instead"
+        await UserContextActions(self.sessions).update(state)
+        async with self.sessions() as session:
+            row = await session.get(UserContextEntryModel, item_id)
+            self.assertEqual((row.starts_on, row.ends_on), (date(2026, 10, 16), date(2026, 10, 20)))
+            self.assertIn("2026-10-20", row.content)
+
+    async def test_future_and_note_targets_do_not_become_active_planning_input(self):
+        future_id, note_id = uuid.uuid4(), uuid.uuid4()
+        async with self.sessions() as session, session.begin():
+            session.add_all(
+                [
+                    UserContextEntryModel(
+                        id=future_id,
+                        user_id=self.user_id,
+                        context_type="temporary",
+                        content="WFH 2026-10-14 through 2026-10-18",
+                        starts_on=date(2026, 10, 14),
+                        ends_on=date(2026, 10, 18),
+                    ),
+                    UserContextEntryModel(
+                        id=note_id,
+                        user_id=self.user_id,
+                        context_type="note",
+                        content="Ordinary note",
+                    ),
+                ]
+            )
+        context = await ButlerContextLoader(
+            Settings(jwt_secret="test-secret-for-saved-context-32-bytes"), self.sessions
+        ).load(self.user_id, date(2026, 10, 13))
+        self.assertIn(future_id, {row.id for row in context.editable_context})
+        self.assertIn(note_id, {row.id for row in context.editable_context})
+        self.assertNotIn(future_id, {row.id for row in context.user_context})
+        self.assertNotIn(note_id, {row.id for row in context.user_context})
+
     async def test_conversation_and_settings_share_identity_and_later_context(self):
         decision = ButlerDecision(
             intent="command",

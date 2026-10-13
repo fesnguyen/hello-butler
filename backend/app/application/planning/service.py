@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import date, time
+from datetime import date, datetime, time
 
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -107,6 +107,7 @@ class DayPlanningService:
             known = event_result.scalars().all()
 
         return DayPlanningInput(
+            now=datetime.now(self._settings.timezone),
             target_date=target_date,
             weekday=target_date.strftime("%A"),
             timezone=self._settings.butler_default_timezone,

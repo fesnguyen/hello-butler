@@ -140,6 +140,42 @@ class SharedSpeechTests(unittest.IsolatedAsyncioTestCase):
         path.write_bytes(b"OggS" + bytes(24) + b"OpusHead")
         return path
 
+    async def test_literal_clock_retiming_invalidates_old_ready_speech(self):
+        from datetime import time
+
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
+        changes = DailyPlanChanges(self.sessions, AsyncMock())
+        async with changes.transaction(user_id) as session:
+            event = await session.get(DailyEventModel, event_id)
+            event.start_time, event.content = time(14), "Meeting at 2 PM"
+        self.speech._store.return_value = self.actual_audio(event_id)
+        await self.speech.generate("event", event_id)
+        async with changes.transaction(user_id) as session:
+            event = await session.get(DailyEventModel, event_id)
+            event.start_time, event.version = time(15), 2
+        async with self.sessions() as session:
+            event = await session.get(DailyEventModel, event_id)
+            self.assertEqual(event.content, "Meeting at 3 PM")
+            self.assertEqual(event.audio_status, "pending")
+            self.assertIsNone(event.response_audio_path)
+
+    async def test_tts_method_update_invalidates_version(self):
+        from app.application.user_settings import UserSettingsService, UserSettingsUpdate
+
+        user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "reminder")
+        self.speech._store.return_value = self.actual_audio(event_id)
+        await self.speech.generate("event", event_id)
+        async with self.sessions() as session, session.begin():
+            await UserSettingsService().update(
+                session, user_id, UserSettingsUpdate(tts_method="OPENAI")
+            )
+        async with self.sessions() as session:
+            event = await session.get(DailyEventModel, event_id)
+            self.assertEqual((event.version, event.audio_status), (2, "pending"))
+            self.assertIsNone(event.response_audio_path)
+            with self.assertRaises(ValueError):
+                await self.speech.prepare_event(session, user_id, event_id, 1)
+
     async def test_ready_event_rebinds_time_only_version_without_synthesis(self):
         user_id, event_id = await self.create("OPEN_SOURCE", 0, "event", "custom")
         self.speech._store.return_value = self.actual_audio(event_id)

@@ -68,6 +68,7 @@ class AppContainer(context: Context) {
     )
     val userSettingsRepository = UserSettingsRepository(
         retrofit.create(UserSettingsApi::class.java), authRepository, database.savedContextDao(),
+        onTtsMethod = dailyEventRepository::reconcileTtsMethod,
     )
     val butlerRepository = ButlerRepository(
         context.applicationContext, database, retrofit.create(ButlerApi::class.java),

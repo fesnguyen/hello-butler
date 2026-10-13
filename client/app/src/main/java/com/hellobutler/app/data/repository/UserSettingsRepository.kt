@@ -27,12 +27,13 @@ class UserSettingsRepository(
     private val api: UserSettingsApi,
     private val auth: AuthRepository,
     private val dao: SavedContextDao,
+    private val onTtsMethod: suspend (String) -> Unit = {},
 ) : UserSettingsDataSource {
     private val contextLock = Mutex()
 
     override fun observeContext() = dao.observe()
 
-    override suspend fun synchronize() = contextLock.withLock { refreshContext() }
+    override suspend fun synchronize() = contextLock.withLock { refreshContext(); get(); Unit }
 
     private suspend fun refreshContext() {
         val items = body(authorized(api::listContext))
@@ -62,11 +63,11 @@ class UserSettingsRepository(
 
     suspend fun clear() = contextLock.withLock { dao.clear() }
 
-    override suspend fun get(): UserSettingsDto = body(authorized(api::get))
+    override suspend fun get(): UserSettingsDto = body(authorized(api::get)).also { onTtsMethod(it.ttsMethod) }
 
     override suspend fun save(update: UserSettingsUpdateDto): UserSettingsDto = body(
         authorized { authorization -> api.update(authorization, update) }
-    )
+    ).also { onTtsMethod(it.ttsMethod) }
 
     private suspend fun <T> authorized(call: suspend (String) -> Response<T>): Response<T> {
         var token = auth.accessToken()

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import re
 import uuid
-from datetime import date, time
+from datetime import date, datetime, time
 from typing import Annotated, Literal, Protocol
 
 from pydantic import BaseModel, Field, field_validator
@@ -56,6 +57,7 @@ class PlanningUpcomingEvent(BaseModel):
 
 
 class DayPlanningInput(BaseModel):
+    now: datetime | None = None
     target_date: date
     weekday: str
     timezone: str
@@ -95,13 +97,23 @@ class PlannedDayProposal(BaseModel):
     morning_brief_time: time | None = None
 
 
+def strip_opening_greeting(text: str) -> str:
+    return re.sub(
+        r"^(?:good morning|good evening|good night|hello|welcome back)"
+        r"(?:,?\s+(?:sir|madam))?[!,. :;–—-]+\s*",
+        "",
+        text.strip(),
+        flags=re.I,
+    ).strip()
+
+
 class MorningBriefDraft(BaseModel):
     content: Annotated[str, Field(min_length=1, max_length=4000)]
 
     @field_validator("content")
     @classmethod
     def strip_content(cls, value: str) -> str:
-        value = value.strip()
+        value = strip_opening_greeting(value)
         if not value:
             raise ValueError("Morning Brief content must not be blank")
         return value
@@ -116,6 +128,7 @@ class GoodNightEvent(BaseModel):
 
 
 class GoodNightSummaryInput(BaseModel):
+    now: datetime | None = None
     summary_date: date
     tomorrow_date: date
     timezone: str
@@ -129,7 +142,7 @@ class GoodNightSummaryDraft(BaseModel):
     @field_validator("content")
     @classmethod
     def strip_summary(cls, value: str) -> str:
-        value = value.strip()
+        value = strip_opening_greeting(value)
         if not value:
             raise ValueError("Good Night Summary content must not be blank")
         return value

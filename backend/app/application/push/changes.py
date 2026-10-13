@@ -16,6 +16,7 @@ from app.application.speech import (
     event_speech_text,
     invalidate_event_speech,
     rebind_event_speech,
+    retime_event_speech,
 )
 from app.infrastructure.db.models import DailyEventModel, DailyPlanModel
 
@@ -56,6 +57,9 @@ class DailyPlanChanges:
                 old_text = next(
                     (text.strip() for text in previous.values() if text and text.strip()), ""
                 )
+                times = list(state.attrs.start_time.history.deleted)
+                if times and old_text == event_speech_text(row):
+                    retime_event_speech(row, times[0])
                 speech_changed = old_text != event_speech_text(row) or any(
                     state.attrs[name].history.has_changes()
                     for name in ("event_type", "speak_aloud")

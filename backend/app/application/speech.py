@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 
 from sqlalchemy import or_, select, update
@@ -28,6 +29,45 @@ def event_speech_text(event: DailyEventModel) -> str:
         ),
         "",
     )
+
+
+def retime_event_speech(event: DailyEventModel, previous: time | None) -> None:
+    if (
+        previous is None
+        or event.start_time is None
+        or event.event_type in ("morning_brief", "good_night_summary")
+    ):
+        return
+    field = next(
+        (
+            name
+            for name in ("content", "description", "title")
+            if getattr(event, name) and getattr(event, name).strip()
+        ),
+        None,
+    )
+    if field is None:
+        return
+    hour, marker = previous.hour % 12 or 12, "AM" if previous.hour < 12 else "PM"
+    minute = f":{previous.minute:02d}" if previous.minute else "(?::00)?"
+    pattern = re.compile(
+        rf"(?<![\w:])(?:{re.escape(previous.strftime('%H:%M'))}|{hour}{minute}\s*{marker})(?![\w:])",
+        re.I,
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        new = event.start_time
+        assert new is not None
+        if "am" not in match[0].lower() and "pm" not in match[0].lower():
+            return new.strftime("%H:%M")
+        suffix = "AM" if new.hour < 12 else "PM"
+        if match[0].islower():
+            suffix = suffix.lower()
+        minutes = f":{new.minute:02d}" if new.minute or ":" in match[0] else ""
+        space = " " if " " in match[0] else ""
+        return f"{new.hour % 12 or 12}{minutes}{space}{suffix}"
+
+    setattr(event, field, pattern.sub(replace, getattr(event, field)))
 
 
 def event_speech_eligible(event: DailyEventModel) -> bool:

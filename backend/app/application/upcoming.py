@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.context_temporal import ContextPeriod, normalize_context_period
 from app.infrastructure.db.models import UserContextEntryModel
 
 RecurringPattern = Literal["daily", "weekly"]
@@ -220,10 +221,15 @@ class UpcomingEventService:
         if row.version != mutation.base_version:
             raise RuntimeError("Upcoming Event source changed; refresh and retry")
 
+        previous = ContextPeriod.of(row)
         if mutation.scope == "occurrence":
             self._mutate_occurrence(row, mutation)
         else:
             self._mutate_rule(row, mutation)
+            if mutation.action != "remove":
+                normalize_context_period(
+                    row, previous=previous, changed_fields=mutation.model_fields_set
+                )
         row.version += 1
         await session.flush()
         return UpcomingMutationResult(
