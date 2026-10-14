@@ -35,11 +35,23 @@ class ButlerContextLoader:
         async with self._session_factory() as session:
             history = await self._latest_messages(session, user_id)
             user_context = await self._active_context(session, user_id, today)
+            editable = (
+                await session.scalars(
+                    select(UserContextEntryModel)
+                    .where(
+                        UserContextEntryModel.user_id == user_id,
+                        UserContextEntryModel.deleted_at.is_(None),
+                    )
+                    .order_by(UserContextEntryModel.updated_at.desc())
+                    .limit(self._settings.butler_user_context_limit)
+                )
+            ).all()
             daily_plan = await self._daily_plan(session, user_id, today)
             events = await self._relevant_events(session, user_id, today)
 
         now = datetime.now(UTC)
         return ButlerContext(
+            editable_context=[self._entry(row) for row in editable],
             conversation_history=[
                 ContextMessage(
                     role=row.role,
@@ -48,24 +60,7 @@ class ButlerContextLoader:
                 )
                 for row in history
             ],
-            user_context=[
-                ContextEntry(
-                    id=row.id,
-                    context_type=row.context_type,
-                    content=row.content,
-                    starts_on=row.starts_on,
-                    ends_on=row.ends_on,
-                    is_actionable=row.is_actionable,
-                    title=row.title,
-                    start_time=row.start_time,
-                    end_time=row.end_time,
-                    recurrence=cast("Literal['daily', 'weekly'] | None", row.recurrence),
-                    recurrence_days=row.recurrence_days,
-                    occurrence_exceptions=row.occurrence_exceptions,
-                    version=row.version,
-                )
-                for row in user_context
-            ],
+            user_context=[self._entry(row) for row in user_context],
             daily_plan=(
                 ContextPlan(
                     id=daily_plan.id, plan_date=daily_plan.plan_date, status=daily_plan.status
@@ -74,6 +69,24 @@ class ButlerContextLoader:
                 else None
             ),
             relevant_events=[self._event(row) for row in events],
+        )
+
+    @staticmethod
+    def _entry(row: UserContextEntryModel) -> ContextEntry:
+        return ContextEntry(
+            id=row.id,
+            context_type=row.context_type,
+            content=row.content,
+            starts_on=row.starts_on,
+            ends_on=row.ends_on,
+            is_actionable=row.is_actionable,
+            title=row.title,
+            start_time=row.start_time,
+            end_time=row.end_time,
+            recurrence=cast("Literal['daily', 'weekly'] | None", row.recurrence),
+            recurrence_days=row.recurrence_days,
+            occurrence_exceptions=row.occurrence_exceptions,
+            version=row.version,
         )
 
     @staticmethod

@@ -22,7 +22,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.hellobutler.app.data.local.DailyEventEntity
 import com.hellobutler.app.data.remote.UpcomingEventDto
-import com.hellobutler.app.execution.LocalTextToSpeech
+import com.hellobutler.app.execution.ButlerAudioPlaybackService
+import com.hellobutler.app.execution.ButlerPlayback
 import java.time.LocalTime
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
@@ -392,20 +393,19 @@ private fun MaterialTimePickerDialog(
 @Composable
 private fun BriefContentDialog(event: DailyEventEntity, onDismiss: () -> Unit) {
     val context = LocalContext.current
-    val tts = remember { LocalTextToSpeech(context.applicationContext) }
-    val scope = rememberCoroutineScope()
-    var speaking by remember { mutableStateOf(false) }
+    val playback by ButlerPlayback.state.collectAsState()
+    val speaking = playback.eventId == event.id
+    var ownsPlayback by remember { mutableStateOf(false) }
     val content = event.content?.takeIf(String::isNotBlank)
         ?: event.description?.takeIf(String::isNotBlank)
         ?: "No brief content is available yet."
     val title = if (event.eventType.equals("morning_brief", true)) "Morning Brief" else "Good Night Summary"
 
-    DisposableEffect(Unit) { onDispose { tts.stop() } }
+    DisposableEffect(event.id) { onDispose { if (ownsPlayback) ButlerAudioPlaybackService.cancelEvent(context, event.id) } }
 
     Dialog(
         onDismissRequest = {
-            tts.stop()
-            speaking = false
+            if (ownsPlayback) ButlerAudioPlaybackService.cancelEvent(context, event.id)
             onDismiss()
         },
         properties = DialogProperties(usePlatformDefaultWidth = false),
@@ -422,8 +422,7 @@ private fun BriefContentDialog(event: DailyEventEntity, onDismiss: () -> Unit) {
                     Spacer(Modifier.width(10.dp))
                     Text(title, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
                     IconButton(onClick = {
-                        tts.stop()
-                        speaking = false
+                        if (ownsPlayback) ButlerAudioPlaybackService.cancelEvent(context, event.id)
                         onDismiss()
                     }) { Icon(Icons.Outlined.Close, "Close") }
                 }
@@ -442,15 +441,10 @@ private fun BriefContentDialog(event: DailyEventEntity, onDismiss: () -> Unit) {
                 Spacer(Modifier.height(14.dp))
                 Button(
                     onClick = {
-                        if (speaking) {
-                            tts.stop()
-                            speaking = false
-                        } else {
-                            speaking = true
-                            scope.launch {
-                                tts.speak(content)
-                                speaking = false
-                            }
+                        if (speaking) ButlerAudioPlaybackService.cancelEvent(context, event.id)
+                        else {
+                            ownsPlayback = true
+                            runCatching { ButlerAudioPlaybackService.playEvent(context, event.id, automatic = false) }
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),

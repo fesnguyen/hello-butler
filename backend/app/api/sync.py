@@ -5,12 +5,13 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import AuthenticatedUser, get_authenticated_user
+from app.application.speech import event_speech_eligible, valid_event_audio
 from app.application.sync import DailyEventSyncService, EventSyncOperation, SyncBatchResult
 from app.application.upcoming import (
     UpcomingEvent,
@@ -30,23 +31,33 @@ AuthenticatedUserDep = Annotated[AuthenticatedUser, Depends(get_authenticated_us
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 
 
-@router.get("/events/{event_id}/audio")
+@router.get("/events/{event_id}/audio", response_model=None)
 async def event_audio(
-    event_id: uuid.UUID, user: AuthenticatedUserDep, session: SessionDep
-) -> FileResponse:
+    event_id: uuid.UUID, user: AuthenticatedUserDep, session: SessionDep, version: int
+) -> FileResponse | JSONResponse:
     event = await session.scalar(
         select(DailyEventModel).where(
             DailyEventModel.id == event_id,
             DailyEventModel.user_id == user.id,
-            DailyEventModel.deleted_at.is_(None),
-            DailyEventModel.event_type.in_(("morning_brief", "good_night_summary", "reminder")),
-            DailyEventModel.audio_status == "ready",
         )
     )
-    path = Path(event.response_audio_path) if event and event.response_audio_path else None
-    if path is None or not path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Speech is not ready")
-    return FileResponse(path, media_type="audio/ogg", filename=f"butler-event-{event_id}.ogg")
+    if event is None:
+        raise HTTPException(404, "event_not_found")
+    if event.deleted_at:
+        raise HTTPException(410, "event_deleted")
+    if event.version != version:
+        raise HTTPException(409, "event_version_stale")
+    if not event_speech_eligible(event):
+        raise HTTPException(422, "event_not_speech_enabled")
+    if event.audio_status in ("pending", "processing"):
+        return JSONResponse({"audio_status": event.audio_status}, status_code=202)
+    path = Path(event.response_audio_path) if event.response_audio_path else None
+    if event.audio_status != "ready" or not valid_event_audio(path):
+        raise HTTPException(424, "event_audio_unavailable")
+    assert path is not None
+    if path.name != f"{event_id}-{version}.ogg":
+        raise HTTPException(409, "event_audio_version_stale")
+    return FileResponse(path, media_type="audio/ogg", headers={"X-Event-Version": str(version)})
 
 
 @router.post("/events/{event_id}/speech")
@@ -58,15 +69,19 @@ async def prepare_event_speech(
     settings: SettingsDep,
     background: BackgroundTasks,
 ) -> dict[str, str]:
-    """Generate reminder speech on demand, using the existing durable TTS owner."""
+    """Queue any eligible canonical event using the shared durable TTS owner."""
     service = speech_service(settings)
     try:
-        audio_status, queued = await service.prepare_reminder(session, user.id, event_id, version)
+        audio_status, queued = await service.prepare_event(session, user.id, event_id, version)
+    except FileNotFoundError as exc:
+        raise HTTPException(410, str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    if queued:
+    except TypeError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if queued or audio_status == "pending":
         background.add_task(service.generate, "event", event_id)
     return {"audio_status": audio_status}
 

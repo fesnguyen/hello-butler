@@ -8,7 +8,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.infrastructure.db.models import UserContextEntryModel, UserModel
+from app.application.context_temporal import ContextPeriod, normalize_context_period
+from app.application.speech import invalidate_event_speech
+from app.infrastructure.db.models import DailyEventModel, UserContextEntryModel, UserModel
 
 TTSMethod = Literal["OPEN_SOURCE", "OPENAI"]
 
@@ -89,12 +91,14 @@ class UserSettingsService:
         user_id: uuid.UUID,
         item_id: uuid.UUID,
         update: SavedContextInput,
+        now: datetime | None = None,
     ) -> SavedContext:
         # Serialize creation retries on the existing owner row, including concurrent PUTs.
         if await session.get(UserModel, user_id, with_for_update=True) is None:
             raise LookupError("User not found")
         entry = await session.get(UserContextEntryModel, item_id, with_for_update=True)
         kind = "preference" if update.is_preference else "note"
+        previous = ContextPeriod.of(entry) if entry else None
         if entry is None:
             if update.base_version != 0:
                 raise LookupError("Saved item not found")
@@ -104,6 +108,38 @@ class UserSettingsService:
             session.add(entry)
         else:
             self._check_manageable(entry, user_id)
+            # Replaying the original relative creation text must keep its original anchor.
+            if entry.version != update.base_version and entry.content != update.content:
+                candidate = UserContextEntryModel(
+                    context_type=kind,
+                    content=update.content,
+                    starts_on=entry.starts_on,
+                    ends_on=entry.ends_on,
+                    recurrence=entry.recurrence,
+                    recurrence_days=entry.recurrence_days,
+                    start_time=entry.start_time,
+                    end_time=entry.end_time,
+                    is_actionable=False,
+                )
+                normalize_context_period(
+                    candidate,
+                    now=now,
+                    previous=ContextPeriod(
+                        update.content,
+                        entry.starts_on,
+                        entry.ends_on,
+                        entry.recurrence,
+                        entry.start_time,
+                    ),
+                    changed_fields={"content"},
+                )
+                if (
+                    candidate.content,
+                    candidate.starts_on,
+                    candidate.ends_on,
+                    candidate.context_type,
+                ) == (entry.content, entry.starts_on, entry.ends_on, entry.context_type):
+                    return SavedContext.from_entry(entry)
             # A lost successful response can safely be retried without another write.
             if entry.content != update.content or entry.context_type != kind:
                 if entry.version != update.base_version:
@@ -111,6 +147,8 @@ class UserSettingsService:
                 entry.content = update.content
                 entry.context_type = kind
                 entry.version += 1
+        if previous is None or previous.content != entry.content:
+            normalize_context_period(entry, now=now, previous=previous, changed_fields={"content"})
         await session.flush()
         return SavedContext.from_entry(entry)
 
@@ -182,6 +220,21 @@ class UserSettingsService:
             ):
                 raise ValueError("Preferences changed; refresh User Settings and try again")
         user.display_name = update.display_name.strip() or None if update.display_name else None
+        if user.tts_method != update.tts_method:
+            events = await session.scalars(
+                select(DailyEventModel)
+                .where(
+                    DailyEventModel.user_id == user_id,
+                    DailyEventModel.status == "planned",
+                    DailyEventModel.deleted_at.is_(None),
+                    DailyEventModel.speak_aloud.is_(True)
+                    | (DailyEventModel.event_type == "reminder"),
+                )
+                .with_for_update()
+            )
+            for event in events:
+                event.version += 1
+                invalidate_event_speech(event)
         user.tts_method = update.tts_method
         deleted_at = datetime.now(UTC)
         for preference in preferences:

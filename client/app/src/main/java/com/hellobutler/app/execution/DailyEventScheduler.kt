@@ -24,18 +24,19 @@ class DailyEventScheduler(private val context: Context) {
     fun schedule(event: DailyEventEntity) {
         val triggerAt = event.triggerAtMillis()
         if (triggerAt == null || event.status != "planned" || (!event.speakAloud && event.eventType != "reminder") ||
-            (event.content.isNullOrBlank() && event.eventType != "reminder") || event.playbackAttemptedAt != null) {
+            listOf(event.content, event.description, event.title).all { it.isNullOrBlank() } || event.playbackAttemptedAt != null) {
             cancel(event)
             return
         }
         if (triggerAt <= System.currentTimeMillis()) {
             // Do not erase a due Listen notification on routine sync, or replay old alarms.
             if (!event.isDueForSpeech()) cancel(event)
+            else DailyEventExecutionWorker.enqueue(context, event.id, 0)
             return
         }
         cancel(event)
 
-        val pending = alarmPendingIntent(event.id)
+        val pending = alarmPendingIntent(event.id, event.version, triggerAt)
         val exactAllowed = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || alarms.canScheduleExactAlarms()
         if (exactAllowed) {
             runCatching {
@@ -57,11 +58,13 @@ class DailyEventScheduler(private val context: Context) {
         DeferredSpeechNotification.cancel(context, event.id)
     }
 
-    private fun alarmPendingIntent(eventId: String): PendingIntent {
+    private fun alarmPendingIntent(eventId: String, version: Int = -1, triggerAt: Long = -1): PendingIntent {
         val intent = Intent(context, DailyEventAlarmReceiver::class.java).apply {
             action = ACTION_EXECUTE_EVENT
             data = Uri.parse("hellobutler://daily-event/${Uri.encode(eventId)}")
             putExtra(EXTRA_EVENT_ID, eventId)
+            putExtra(EXTRA_EVENT_VERSION, version)
+            putExtra(EXTRA_EVENT_TRIGGER, triggerAt)
         }
         return PendingIntent.getBroadcast(
             context,
@@ -81,10 +84,16 @@ internal fun DailyEventEntity.triggerAtMillis(): Long? {
 
 internal fun DailyEventEntity.isDueForSpeech(nowMillis: Long = System.currentTimeMillis()): Boolean {
     val due = triggerAtMillis() ?: return false
-    return status == "planned" && (speakAloud || eventType == "reminder") && (!content.isNullOrBlank() || eventType == "reminder") &&
+    return status == "planned" && (speakAloud || eventType == "reminder") && listOf(content, description, title).any { !it.isNullOrBlank() } &&
         playbackAttemptedAt == null && due <= nowMillis &&
         eventDate == java.time.Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
 }
 
 internal const val ACTION_EXECUTE_EVENT = "com.hellobutler.app.EXECUTE_DAILY_EVENT"
 internal const val EXTRA_EVENT_ID = "daily_event_id"
+
+internal const val EXTRA_EVENT_VERSION = "event_version"
+internal const val EXTRA_EVENT_TRIGGER = "event_trigger"
+internal fun DailyEventEntity.spokenText() = listOf(content, description, title).firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+internal fun DailyEventEntity.matchesAlarm(version: Int, trigger: Long): Boolean =
+    version == this.version && trigger == triggerAtMillis()

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
@@ -12,10 +13,12 @@ from app.application.user_settings import (
     UserSettingsState,
     UserSettingsUpdate,
 )
+from app.core.config import Settings, get_settings
 from app.core.database import get_session
 
 router = APIRouter(prefix="/api/user-settings", tags=["user-settings"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
 AuthenticatedUserDep = Annotated[AuthenticatedUser, Depends(get_authenticated_user)]
 
 
@@ -44,11 +47,17 @@ async def list_saved_context(user: AuthenticatedUserDep, session: SessionDep) ->
 
 @router.put("/saved-context/{item_id}", response_model=SavedContext)
 async def save_saved_context(
-    item_id: uuid.UUID, update: SavedContextInput, user: AuthenticatedUserDep, session: SessionDep
+    item_id: uuid.UUID,
+    update: SavedContextInput,
+    user: AuthenticatedUserDep,
+    session: SessionDep,
+    settings: SettingsDep,
 ) -> SavedContext:
     try:
         async with session.begin():
-            return await UserSettingsService().save_context(session, user.id, item_id, update)
+            return await UserSettingsService().save_context(
+                session, user.id, item_id, update, now=datetime.now(settings.timezone)
+            )
     except LookupError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except ValueError as exc:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -111,6 +111,7 @@ class EveningPreparationService:
         relevant = [event for event in events if event.event_type != "good_night_summary"]
         return (
             GoodNightSummaryInput(
+                now=datetime.now(self._settings.timezone),
                 summary_date=summary_date,
                 tomorrow_date=tomorrow,
                 timezone=self._settings.butler_default_timezone,
@@ -179,7 +180,6 @@ class EveningPreparationService:
                     origin="planner",
                     planner_key="good_night_summary",
                 )
-                summary.audio_status = "pending"
             else:
                 changed = (
                     summary.content != content
@@ -187,10 +187,6 @@ class EveningPreparationService:
                 )
                 if changed:
                     summary.version += 1
-                    summary.audio_status = "pending"
-                    summary.response_audio_path = None
-                    summary.response_audio_mime_type = None
-                    summary.response_audio_delete_after = None
             summary.daily_plan_id = plan.id
             summary.description = "Butler's reflection on your actual day"
             summary.start_time = self._settings.good_night_summary_time

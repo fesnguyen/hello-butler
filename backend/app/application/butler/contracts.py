@@ -64,6 +64,7 @@ class ContextEvent(BaseModel):
 
 
 class ButlerContext(BaseModel):
+    editable_context: list[ContextEntry] = Field(default_factory=list)
     conversation_history: list[ContextMessage]
     user_context: list[ContextEntry]
     daily_plan: ContextPlan | None

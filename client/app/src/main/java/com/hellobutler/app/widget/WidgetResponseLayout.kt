@@ -43,7 +43,7 @@ internal class WidgetResponseLayout(context: Context, size: SizeF, text: String)
         typeface = android.graphics.Typeface.create("sans-serif", android.graphics.Typeface.NORMAL)
     }
     private val measured = StaticLayout.Builder.obtain(text, 0, text.length, paint, textWidth)
-        .setIncludePad(false).setBreakStrategy(Layout.BREAK_STRATEGY_SIMPLE)
+        .setIncludePad(false).setBreakStrategy(android.graphics.text.LineBreaker.BREAK_STRATEGY_SIMPLE)
         .setHyphenationFrequency(Layout.HYPHENATION_FREQUENCY_NONE).build().height + dp(2f)
     val presentation = responsePresentation(measured, availablePx, dp(216f))
     // Before API 31 RemoteViews cannot set LayoutParams.height. Fixed viewports cap ListView reliably.

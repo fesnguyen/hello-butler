@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
-from datetime import date, time
+from datetime import date, datetime, time
 
 from sqlalchemy import or_, select
 from sqlalchemy.dialects.postgresql import insert
@@ -107,6 +107,7 @@ class DayPlanningService:
             known = event_result.scalars().all()
 
         return DayPlanningInput(
+            now=datetime.now(self._settings.timezone),
             target_date=target_date,
             weekday=target_date.strftime("%A"),
             timezone=self._settings.butler_default_timezone,
@@ -295,11 +296,6 @@ class DayPlanningService:
             brief.duration_minutes = None
             brief.scheduled_precision = "exact"
             brief.content = brief_content
-            if brief_changed or not brief_exists:
-                brief.audio_status = "pending"
-                brief.response_audio_path = None
-                brief.response_audio_mime_type = None
-                brief.response_audio_delete_after = None
             brief.reminder_minutes_before = None
             brief.speak_aloud = True
             brief.sort_order = 0

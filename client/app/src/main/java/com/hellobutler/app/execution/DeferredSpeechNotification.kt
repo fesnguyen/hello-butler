@@ -19,7 +19,7 @@ internal object DeferredSpeechNotification {
     private const val CHANNEL = "butler_scheduled_listen"
     private const val ID = 4103
 
-    fun show(context: Context, event: DailyEventEntity): Boolean {
+    fun show(context: Context, event: DailyEventEntity, audioReady: Boolean = false): Boolean {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL, "Scheduled Butler speech", NotificationManager.IMPORTANCE_DEFAULT)
@@ -48,18 +48,20 @@ internal object DeferredSpeechNotification {
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val notification = NotificationCompat.Builder(context, CHANNEL)
+            .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
+            .setContentTitle(event.title)
+            .setContentText(event.content?.takeIf { it.isNotBlank() } ?: event.description ?: event.title)
+            .setContentIntent(if (audioReady) listen else open)
+            .setDefaults(android.app.Notification.DEFAULT_SOUND)
+            .setOnlyAlertOnce(true)
+            .addAction(android.R.drawable.ic_menu_view, "Open in App", open)
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+        if (audioReady) notification.addAction(android.R.drawable.ic_media_play, "Listen", listen)
         manager.notify(
             event.id, ID,
-            NotificationCompat.Builder(context, CHANNEL)
-                .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
-                .setContentTitle(event.title)
-                .setContentText(event.content?.takeIf { it.isNotBlank() } ?: event.description ?: event.title)
-                .setContentIntent(listen)
-                .addAction(android.R.drawable.ic_media_play, "Listen", listen)
-                .addAction(android.R.drawable.ic_menu_view, "Open in App", open)
-                .setAutoCancel(true)
-                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-                .build(),
+            notification.build(),
         )
         return true
     }

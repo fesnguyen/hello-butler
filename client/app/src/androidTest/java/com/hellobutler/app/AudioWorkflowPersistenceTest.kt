@@ -73,4 +73,19 @@ class AudioWorkflowPersistenceTest {
         assertFalse(restored.briefings)
         assertEquals(nativeVolume, audio.getStreamVolume(AudioManager.STREAM_MUSIC))
     }
+    @Test fun terminalPruningKeepsSnapshotReferencedByActiveRun() {
+        val store = AudioWorkflowStore(context)
+        store.clear()
+        val file = java.io.File(context.filesDir, "workflow_audio/shared.ogg")
+        file.parentFile!!.mkdirs(); file.writeText("protected")
+        val old = AudioExecution("old-run", AudioWorkflow.REMINDER, file.path,
+            eventId = "event", eventVersion = 1, status = "complete")
+        store.save(old)
+        store.save(old.copy(id = "active-run", status = "waiting", manualEvent = true))
+        store.prune(System.currentTimeMillis() + 8 * 86400_000L)
+        assertNull(store.get("old-run")); assertTrue(file.exists())
+        assertEquals("waiting", AudioWorkflowStore(context).get("active-run")!!.status)
+        file.delete(); store.clear()
+    }
+
 }
