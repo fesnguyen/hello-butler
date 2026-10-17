@@ -12,6 +12,11 @@ import com.hellobutler.app.data.remote.*
 import com.hellobutler.app.data.repository.DailyEventRepository
 import com.hellobutler.app.execution.DailyEventScheduler
 import com.hellobutler.app.execution.DeferredSpeechNotification
+import com.hellobutler.app.execution.triggerAtMillis
+import com.hellobutler.app.execution.audio.AudioExecutionPreparer
+import com.hellobutler.app.execution.audio.AudioWorkflowScheduler
+import com.hellobutler.app.execution.audio.AudioWorkflowStore
+import com.hellobutler.app.execution.audio.SoundVoiceSettings
 import java.io.File
 import java.time.LocalDate
 import java.util.UUID
@@ -236,6 +241,73 @@ class ScheduledAudioPreparationTest {
         assertFalse(File(context.filesDir, "event_speech").exists())
     }
 
+    /** Extracted preparation must reject stale alarms and claim events without fetching audio. */
+    @Test fun executionPreparationKeepsClaimsIndependentOfAudioReadiness() = runBlocking {
+        val store = AudioWorkflowStore(context)
+        val workflows = AudioWorkflowScheduler(context, store)
+        val settings = SoundVoiceSettings(context)
+        val reminders = settings.state.value.reminders
+        settings.toggle("reminders", true)
+        val app = InstrumentationRegistry.getInstrumentation().targetContext.applicationContext as ButlerApplication
+        val preparer = AudioExecutionPreparer(
+            database, repository, app.container.butlerRepository, store, workflows, settings,
+            showDeferred = {}, dismissDeferred = {}, reserveActiveId = { error("Event reserved response identity") },
+        )
+        try {
+            assertNull(preparer.prepare(null, event.id, true, false, "unused", event.version + 1, event.triggerAtMillis()!!))
+            assertNull(database.dailyEventDao().get(event.id)!!.playbackAttemptedAt)
+            val automatic = preparer.prepare(null, event.id, true, false, "unused", event.version, event.triggerAtMillis()!!)!!
+            assertEquals("event:${event.id}:${event.version}", automatic.id)
+            assertNotNull(database.dailyEventDao().get(event.id)!!.playbackAttemptedAt)
+            assertNull(preparer.prepare(null, event.id, true, false, "unused"))
+            val manual = preparer.prepare(null, event.id, false, false, "unused")!!
+            assertTrue(manual.manualEvent)
+            assertEquals("cancelled", store.get(automatic.id)!!.status)
+            assertEquals(0, api.preparations)
+            assertEquals(0, api.downloads)
+        } finally {
+            store.all().filter { it.eventId == event.id }.forEach { workflows.cancel(it.id) }
+            settings.toggle("reminders", reminders)
+        }
+    }
+
+    /** Failed upload must retain the original outbox identity and increment retry metadata. */
+    @Test fun failedUploadRetainsPendingOperation() = runBlocking {
+        repository.update(event.copy(description = "Edited locally"))
+        val before = database.pendingSyncOperationDao().forEvent(event.id)!!
+        api.onSync = { throw java.io.IOException("upload unavailable") }
+        try {
+            repository.flushPending()
+            fail("Expected upload failure")
+        } catch (_: java.io.IOException) { }
+        val after = database.pendingSyncOperationDao().forEvent(event.id)!!
+        assertEquals(before.operationId, after.operationId)
+        assertEquals(before.baseVersion, after.baseVersion)
+        assertEquals(before.payload, after.payload)
+        assertEquals(before.attemptCount + 1, after.attemptCount)
+        assertEquals("Edited locally", database.dailyEventDao().get(event.id)!!.description)
+    }
+
+    /** Per-result reconciliation must acknowledge both a canonical update and a deletion in one batch. */
+    @Test fun multiResultBatchAppliesCanonicalUpdateAndDeletion() = runBlocking {
+        repository.update(event.copy(description = "Edited locally"))
+        val second = event.copy(id = UUID.randomUUID().toString())
+        database.dailyEventDao().upsert(second)
+        repository.update(second.copy(description = "Other local edit"))
+        api.onSync = { request ->
+            val canonical = api.dailyPlan("unused", event.eventDate).body()!!.events.single()
+                .copy(description = "Canonical speech", version = event.version + 1)
+            Response.success(SyncBatchResultDto(request.operations.map {
+                EventSyncResultDto(it.operationId, "applied", if (it.eventId == event.id) canonical else null)
+            }))
+        }
+        repository.flushPending()
+        assertTrue(database.pendingSyncOperationDao().next().isEmpty())
+        assertEquals("Canonical speech", database.dailyEventDao().get(event.id)!!.description)
+        assertEquals(event.version + 1, database.dailyEventDao().get(event.id)!!.version)
+        assertNull(database.dailyEventDao().get(second.id))
+    }
+
     private inner class FakeSync : SyncApi {
         var status = "ready"
         var audioBody: ResponseBody? = null
@@ -243,6 +315,7 @@ class ScheduledAudioPreparationTest {
         var downloads = 0
         var beforeDownload: suspend () -> Unit = {}
         var beforePlan: suspend () -> Unit = {}
+        var onSync: suspend (SyncBatchRequestDto) -> Response<SyncBatchResultDto> = { error("Unexpected sync") }
         override suspend fun prepareEventSpeech(authorization: String, eventId: String, version: Int): Response<EventSpeechPreparationDto> {
             preparations++
             return Response.success(EventSpeechPreparationDto(status))
@@ -262,7 +335,7 @@ class ScheduledAudioPreparationTest {
                 event.status, event.startTime, event.endTime, event.durationMinutes, event.scheduledPrecision, event.content,
                 event.reminderMinutesBefore, event.speakAloud, event.sortOrder, event.version, event.origin, "2026-10-12T00:00:00Z"))))
         }
-        override suspend fun syncEvents(authorization: String, request: SyncBatchRequestDto): Response<SyncBatchResultDto> = error("Unexpected sync")
+        override suspend fun syncEvents(authorization: String, request: SyncBatchRequestDto): Response<SyncBatchResultDto> = onSync(request)
         override suspend fun mutateUpcomingEvent(authorization: String, contextId: String, mutation: UpcomingEventMutationDto): Response<UpcomingMutationResultDto> = error("Unexpected mutation")
     }
 }
