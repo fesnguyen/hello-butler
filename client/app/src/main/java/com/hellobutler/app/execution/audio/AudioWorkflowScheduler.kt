@@ -25,447 +25,97 @@ import com.hellobutler.app.execution.matchesExecution
 import java.util.concurrent.TimeUnit
 
 
-// ------------------------------------------------------------
-// Scheduler - Audio Workflow Continuation
-// ------------------------------------------------------------
-
-/**
- * Manages delayed audio workflow execution.
- *
- * Uses WorkManager for durable scheduling and exact alarms
- * for more timely execution when Android permits them.
- *
- * Also manages waiting notifications, cancellation, and
- * recovery of workflows after application restarts.
- */
+/** Coordinates durable continuations; notification presentation has a separate owner. */
 class AudioWorkflowScheduler(
     private val context: Context,
     private val store: AudioWorkflowStore,
 ) {
+    private val notifications = AudioWorkflowNotifications(context)
 
-    // --------------------------------------------------------
-    // Entry Point - Schedule Workflow
-    // --------------------------------------------------------
+    // Scheduling and cancellation ------------------------------------------------
 
-    /**
-     * Schedules the next step of an audio workflow.
-     *
-     * Registers a durable WorkManager task, displays a waiting
-     * notification, and attempts to register an exact alarm.
-     *
-     * Both scheduling mechanisms target the same execution,
-     * allowing the continuation handler to reject stale work.
-     */
+    /** Registers durable work and an optional exact alarm for the persisted checkpoint. */
     fun schedule(execution: AudioExecution) {
-
-        // ----------------------------------------------------
-        // Durable Scheduling - WorkManager
-        // ----------------------------------------------------
-
-        // Enqueue a uniquely identified continuation task.
-        // Include the step and due time so distinct checkpoints
-        // can have separate WorkManager records.
         WorkManager.getInstance(context).enqueueUniqueWork(
             "${workName(execution.id)}:${execution.next}:${execution.dueAt}",
             ExistingWorkPolicy.KEEP,
-
-            // Construct a one-time worker to resume this execution.
             OneTimeWorkRequestBuilder<AudioContinuationWorker>()
-
-                // Group all continuation tasks by execution ID
-                // so they can be cancelled together.
                 .addTag(workName(execution.id))
-
-                // Pass the execution ID to the worker.
-                .setInputData(
-                    Data.Builder()
-                        .putString("execution_id", execution.id)
-                        .build()
-                )
-
-                // Convert the absolute due time into a relative delay.
-                // Clamp negative values so overdue work runs promptly.
+                .setInputData(Data.Builder().putString("execution_id", execution.id).build())
                 .setInitialDelay(
-                    (execution.dueAt - System.currentTimeMillis())
-                        .coerceAtLeast(0),
+                    (execution.dueAt - System.currentTimeMillis()).coerceAtLeast(0),
                     TimeUnit.MILLISECONDS,
                 )
                 .build(),
         )
-
-        // Inform the user that playback is waiting to continue.
-        showWaiting(execution)
-
-        // ----------------------------------------------------
-        // Timely Scheduling - Exact Alarm
-        // ----------------------------------------------------
-
-        // Obtain Android's alarm scheduling service.
+        notifications.showWaiting(execution)
         val alarms = context.getSystemService(AlarmManager::class.java)
-
-        // Android 12+ requires exact-alarm capability.
-        // Earlier Android versions do not use this check.
-        if (
-            Build.VERSION.SDK_INT < 31 ||
-            alarms.canScheduleExactAlarms()
-        ) {
-            // Attempt an exact alarm without failing the whole
-            // scheduling operation if the alarm cannot be registered.
+        if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()) {
             runCatching {
-                alarms.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    execution.dueAt,
-                    alarm(execution.id),
-                )
+                alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, execution.dueAt, alarm(execution.id))
             }
         }
     }
 
-    // --------------------------------------------------------
-    // Entry Point - Cancel Workflow
-    // --------------------------------------------------------
-
-    /**
-     * Cancels a workflow and all of its pending continuations.
-     *
-     * Marks the stored execution as cancelled, removes its
-     * WorkManager tasks and exact alarm, and clears its notification.
-     */
+    /** Marks cancellation before removing every continuation mechanism and its notification. */
     fun cancel(id: String) {
-
-        // Mark the execution cancelled so future callbacks
-        // can recognize that it must not resume.
-        store.get(id)?.let { execution ->
-            store.save(
-                execution.copy(status = "cancelled")
-            )
-        }
-
-        // Cancel all WorkManager tasks associated with this execution.
-        WorkManager.getInstance(context)
-            .cancelAllWorkByTag(workName(id))
-
-        // Remove the exact alarm for this execution.
-        context.getSystemService(AlarmManager::class.java)
-            .cancel(alarm(id))
-
-        // Remove the waiting or Listen notification.
-        context.getSystemService(NotificationManager::class.java)
-            .cancel(id, NOTIFICATION_ID)
+        store.get(id)?.let { store.save(it.copy(status = "cancelled")) }
+        WorkManager.getInstance(context).cancelAllWorkByTag(workName(id))
+        context.getSystemService(AlarmManager::class.java).cancel(alarm(id))
+        notifications.dismiss(id)
     }
 
-    // --------------------------------------------------------
-    // Entry Point - Recover Workflows
-    // --------------------------------------------------------
-
-    /**
-     * Reconciles persisted audio workflows after a restart.
-     *
-     * Reschedules workflows that can still continue and cancels
-     * executions interrupted during preparation or playback
-     * to avoid unintentionally replaying audio.
-     */
+    /** Repairs delayed checkpoints after restart without replaying ambiguous audible segments. */
     fun recover() {
-
-        // Remove obsolete execution records and eligible old files.
         store.prune()
-
-        // Inspect every persisted execution to determine recovery behavior.
         store.all().forEach { execution ->
-
             when (execution.status) {
-
-                // Restore workflows that have not completed playback.
-                "waiting", "offered", "ready" -> {
-                    schedule(
-                        execution.copy(
-                            // Avoid scheduling a recovered task in the past.
-                            dueAt = execution.dueAt.coerceAtLeast(
-                                System.currentTimeMillis()
-                            ),
-                        )
-                    )
-                }
-
-                // Cancel playback/preparation interrupted by process death.
-                // Replaying these could duplicate speech already heard.
-                "playing", "preparing" -> {
-                    cancel(execution.id)
-                }
+                "waiting", "offered", "ready" -> schedule(
+                    execution.copy(dueAt = execution.dueAt.coerceAtLeast(System.currentTimeMillis())),
+                )
+                "playing", "preparing" -> cancel(execution.id)
             }
         }
     }
 
-    // --------------------------------------------------------
-    // Entry Point - Clear All Workflows
-    // --------------------------------------------------------
-
-    /**
-     * Removes all persisted audio workflows and their scheduled work.
-     *
-     * Ensures each execution's alarms, workers, and notifications
-     * are cancelled before clearing the execution journal.
-     */
+    /** Cancels scheduled effects before removing execution and rotation records. */
     fun clear() {
-
-        // Cancel every execution using the normal cleanup path.
-        store.all().forEach { execution ->
-            cancel(execution.id)
-        }
-
-        // Remove all remaining workflow records and rotation data.
+        store.all().forEach { cancel(it.id) }
         store.clear()
     }
 
-    // --------------------------------------------------------
-    // Entry Point - Offer Manual Playback
-    // --------------------------------------------------------
+    // Manual continuation presentation ------------------------------------------
 
-    /**
-     * Offers a Listen notification when automatic playback cannot proceed.
-     *
-     * Checks the current execution state, verifies notification
-     * availability, and offers user-initiated playback.
-     *
-     * Returns false when the notification cannot be offered.
-     */
+    /** Offers Listen only for a matching checkpoint; publication stays inside the store guard. */
     fun offer(execution: AudioExecution): Boolean {
-
-        // Load the latest persisted execution.
-        // A missing execution requires no further notification work.
         val latest = store.get(execution.id) ?: return true
-
-        // ----------------------------------------------------
-        // Validate Execution State
-        // ----------------------------------------------------
-
-        // Ignore stale callbacks or workflows that are already
-        // active, completed, or cancelled.
-        if (
-            latest.next != execution.next ||
-            latest.dueAt != execution.dueAt ||
-            latest.status in setOf("playing", "complete", "cancelled")
-        ) {
-            return true
-        }
-
-        // ----------------------------------------------------
-        // Check Notification Availability
-        // ----------------------------------------------------
-
-        // Obtain the system notification manager.
-        val manager = context.getSystemService(NotificationManager::class.java)
-
-        // Ensure the channel for audio continuation exists.
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL,
-                "Butler audio ready",
-                NotificationManager.IMPORTANCE_DEFAULT,
-            )
-        )
-
-        // Do not offer playback when notifications are disabled
-        // globally or for this channel.
-        if (
-            !manager.areNotificationsEnabled() ||
-            manager.getNotificationChannel(CHANNEL).importance ==
-            NotificationManager.IMPORTANCE_NONE
-        ) {
-            return false
-        }
-
-        // ----------------------------------------------------
-        // Prepare Notification Actions
-        // ----------------------------------------------------
-
-        // Create a user-initiated action to resume playback manually.
-        val listen = PendingIntent.getForegroundService(
-            context,
-            execution.id.hashCode(),
-            ButlerAudioPlaybackService.resumeIntent(
-                context,
-                execution.id,
-                manual = true,
-            ),
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        // Create an action to open the Butler conversation screen.
-        val open = PendingIntent.getActivity(
-            context,
-            execution.id.hashCode(),
-            Intent(context, MainActivity::class.java)
-                .putExtra(
-                    MainActivity.EXTRA_OPEN_CONVERSATION,
-                    true,
-                ),
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE,
-        )
-
-        // ----------------------------------------------------
-        // Publish Listen Notification
-        // ----------------------------------------------------
-
-        // Attempt the notification operation without propagating
-        // ordinary notification failures to the caller.
+        if (latest.next != execution.next || latest.dueAt != execution.dueAt ||
+            latest.status in setOf("playing", "complete", "cancelled")) return true
+        val publish = notifications.prepareOffer(execution) ?: return false
         return runCatching {
-
-            // Check that the execution still matches the expected
-            // checkpoint before publishing the Listen notification.
-            store.transition(
-                execution,
-                execution.copy(status = "offered"),
-            ) {
-
-                // Publish a notification with manual playback access.
-                manager.notify(
-                    execution.id,
-                    NOTIFICATION_ID,
-                    NotificationCompat.Builder(context, CHANNEL)
-                        .setSmallIcon(android.R.drawable.ic_media_play)
-                        .setContentTitle("Hello Butler")
-                        .setContentText(
-                            "Your Butler speech is ready. Tap Listen."
-                        )
-                        .setContentIntent(open)
-                        .addAction(
-                            android.R.drawable.ic_media_play,
-                            "Listen",
-                            listen,
-                        )
-                        .setAutoCancel(true)
-                        .build(),
-                )
-            }
-
-            // Preserve the existing success result even if the
-            // transition declines because the state changed.
-            true
+            // Publish before saving 'offered', under the existing shared transition lock.
+            store.transition(execution, execution.copy(status = "offered"), publish)
+            true // A declined stale transition is already handled, rather than retryable.
         }.getOrDefault(false)
     }
 
-    // --------------------------------------------------------
-    // Entry Point - Dismiss Waiting Notification
-    // --------------------------------------------------------
+    /** Removes presentation without changing execution state or scheduled work. */
+    fun dismiss(id: String) = notifications.dismiss(id)
 
-    /**
-     * Removes the waiting notification for an execution.
-     *
-     * Allows playback coordination to clear the notification
-     * without cancelling the execution itself.
-     */
-    fun dismiss(id: String) {
-
-        // Cancel only the notification associated with this ID.
-        context.getSystemService(NotificationManager::class.java)
-            .cancel(id, NOTIFICATION_ID)
-    }
-
-    // --------------------------------------------------------
-    // Internal Logic - Waiting Notification
-    // --------------------------------------------------------
-
-    /**
-     * Displays a notification while an audio workflow is delayed.
-     *
-     * Keeps the user informed that playback will continue later
-     * and provides an action to cancel the pending workflow.
-     */
-    private fun showWaiting(execution: AudioExecution) {
-
-        // Obtain Android's notification manager.
-        val manager = context.getSystemService(NotificationManager::class.java)
-
-        // Create the low-importance notification channel if needed.
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL,
-                "Butler audio ready",
-                NotificationManager.IMPORTANCE_LOW,
-            )
-        )
-
-        // Avoid failing workflow scheduling if notification
-        // publication encounters an exception.
-        runCatching {
-            manager.notify(
-                execution.id,
-                NOTIFICATION_ID,
-
-                // Build an ongoing notification for delayed playback.
-                NotificationCompat.Builder(context, CHANNEL)
-                    .setSmallIcon(android.R.drawable.ic_media_play)
-                    .setContentTitle("Hello Butler")
-                    .setContentText(
-                        "Butler speech is scheduled to continue shortly."
-                    )
-                    .setOngoing(true)
-
-                    // Allow the user to cancel the scheduled workflow.
-                    .addAction(
-                        android.R.drawable.ic_media_pause,
-                        "Stop",
-                        ButlerAudioPlaybackService.cancelIntent(
-                            context,
-                            execution.id,
-                        ),
-                    )
-                    .build(),
-            )
-        }
-    }
-
-    // --------------------------------------------------------
-    // Internal Logic - Alarm Identity
-    // --------------------------------------------------------
-
-    /**
-     * Creates the PendingIntent identifying an execution's exact alarm.
-     *
-     * Uses a stable execution-specific URI so scheduling and
-     * cancellation refer to the same Android alarm.
-     */
+    /** Retains the execution-specific alarm identity for both registration and cancellation. */
     private fun alarm(id: String) = PendingIntent.getBroadcast(
-        context,
-        id.hashCode(),
-
-        // Target the receiver responsible for resuming playback.
+        context, id.hashCode(),
         Intent(context, AudioContinuationReceiver::class.java)
-            .setData(
-                Uri.parse("hellobutler://audio/${Uri.encode(id)}")
-            )
+            .setData(Uri.parse("hellobutler://audio/${Uri.encode(id)}"))
             .putExtra("execution_id", id),
-
-        PendingIntent.FLAG_UPDATE_CURRENT or
-                PendingIntent.FLAG_IMMUTABLE,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
-    // --------------------------------------------------------
-    // Constants & Utility Functions
-    // --------------------------------------------------------
-
     companion object {
-
-        // Identify the shared audio continuation notification channel.
-        private const val CHANNEL = "butler_audio_ready"
-
-        // Identify notifications belonging to this scheduler.
-        private const val NOTIFICATION_ID = 4210
-
-        /**
-         * Generates a stable WorkManager identifier for an execution.
-         *
-         * Used as a common tag for cancelling every continuation
-         * associated with the same audio workflow.
-         */
-        private fun workName(id: String) =
-            "butler-audio-continuation-$id"
+        /** Groups all checkpoint-specific work for execution-wide cancellation. */
+        private fun workName(id: String) = "butler-audio-continuation-$id"
     }
 }
-
 
 // ------------------------------------------------------------
 // Receiver - Exact Alarm Continuation
