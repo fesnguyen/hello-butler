@@ -146,3 +146,15 @@ class ScheduleRestoreWorker(appContext: Context, params: WorkerParameters) : Cor
         }
     }
 }
+
+/** Rejects executions whose canonical event no longer matches their captured identity and content. */
+internal fun com.hellobutler.app.data.local.DailyEventEntity?.matchesExecution(execution: com.hellobutler.app.execution.audio.AudioExecution): Boolean {
+    val event = this ?: return false
+    return event.version == execution.eventVersion && event.status !in setOf("cancelled", "skipped") &&
+        (execution.manualEvent || (event.status == "planned" && (event.speakAloud || event.eventType == "reminder") &&
+            event.eventDate == java.time.LocalDate.now().toString())) &&
+        (execution.eventText == null || event.spokenText() == execution.eventText) &&
+        (execution.eventTriggerAt == null || event.triggerAtMillis() == execution.eventTriggerAt) &&
+        (execution.eventType == null || event.eventType == execution.eventType) &&
+        (execution.eventSpeakAloud == null || event.speakAloud == execution.eventSpeakAloud)
+}

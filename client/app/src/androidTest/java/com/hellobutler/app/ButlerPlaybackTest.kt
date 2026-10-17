@@ -55,6 +55,14 @@ class ButlerPlaybackTest {
         try {
             ButlerAudioPlaybackService.play(context, id, false)
             awaitSpeaking(false)
+            // Preview controls and automatic requests must not replace manual speech.
+            ButlerAudioPlaybackService.preview(context)
+            ButlerAudioPlaybackService.stopPreview(context)
+            ButlerAudioPlaybackService.play(context, "deferred-$id", false, automatic = true)
+            ButlerAudioPlaybackService.play(context, id, false)
+            delay(300)
+            assertEquals(id, ButlerPlayback.state.value.requestId)
+            assertEquals(PlaybackPhase.SPEAKING, ButlerPlayback.state.value.phase)
             ButlerAudioPlaybackService.play(context, id, true)
             awaitSpeaking(true)
             ButlerAudioPlaybackService.play(context, id, false)
