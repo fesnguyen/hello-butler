@@ -179,8 +179,25 @@ class ButlerAudioPlaybackService : Service() {
         return START_NOT_STICKY
     }
 
-    private suspend fun prepare(requestId: String?, eventId: String?, auto: Boolean, private: Boolean, expectedVersion: Int = -1, expectedTrigger: Long = -1): AudioExecution? {
-        if (eventId != null) {
+    /** Selects event or response preparation without changing their reservation semantics. */
+    private suspend fun prepare(
+        requestId: String?,
+        eventId: String?,
+        auto: Boolean,
+        private: Boolean,
+        expectedVersion: Int = -1,
+        expectedTrigger: Long = -1,
+    ): AudioExecution? =
+        if (eventId != null) prepareEvent(eventId, auto, expectedVersion, expectedTrigger)
+        else prepareResponse(requestId, auto, private)
+
+    /** Validates an event and reserves its playback before saving the workflow. */
+    private suspend fun prepareEvent(
+        eventId: String,
+        auto: Boolean,
+        expectedVersion: Int,
+        expectedTrigger: Long,
+    ): AudioExecution? {
             val dao = container.database.dailyEventDao()
             val event = dao.get(eventId) ?: return null
             if (auto && (!event.isDueForSpeech() || (expectedVersion >= 0 && !event.matchesAlarm(expectedVersion, expectedTrigger)))) return null
@@ -201,7 +218,11 @@ class ButlerAudioPlaybackService : Service() {
                 eventId, event.version, automatic = auto, manualEvent = !auto, eventText = event.spokenText(),
                 eventTriggerAt = event.triggerAtMillis(), eventType = event.eventType, eventSpeakAloud = event.speakAloud)
                 .also(container.audioWorkflowStore::save)
-        }
+
+    }
+
+    /** Reserves response playback and resolves its audio with the existing timeout. */
+    private suspend fun prepareResponse(requestId: String?, auto: Boolean, private: Boolean): AudioExecution? {
         if (requestId == null) return null
         if (!auto) {
             val autoId = "response:$requestId"
