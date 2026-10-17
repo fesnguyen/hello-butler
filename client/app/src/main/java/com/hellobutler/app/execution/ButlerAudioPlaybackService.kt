@@ -198,27 +198,26 @@ class ButlerAudioPlaybackService : Service() {
         expectedVersion: Int,
         expectedTrigger: Long,
     ): AudioExecution? {
-            val dao = container.database.dailyEventDao()
-            val event = dao.get(eventId) ?: return null
-            if (auto && (!event.isDueForSpeech() || (expectedVersion >= 0 && !event.matchesAlarm(expectedVersion, expectedTrigger)))) return null
-            val workflow = AudioWorkflows.forEvent(event.eventType)
-            if (auto && !container.soundVoice.state.value.allows(workflow)) {
-                DeferredSpeechNotification.show(this, event)
-                return null
-            }
-            val autoId = "event:${event.id}:${event.version}"
-            if (auto && container.audioWorkflowStore.get(autoId) != null) return null
-            if (!auto) container.audioWorkflowStore.all().filter { it.eventId == eventId }
-                .forEach { container.audioWorkflowScheduler.cancel(it.id) }
-            if (!container.dailyEventRepository.claimEventPlayback(event, manual = !auto)) return null
-            val id = if (auto) autoId else "manual:$autoId:${UUID.randomUUID()}"
-            currentCoroutineContext().ensureActive()
-            DeferredSpeechNotification.cancel(this, eventId)
-            return AudioExecution(id, workflow, container.dailyEventRepository.workflowSpeechFile(event).absolutePath,
-                eventId, event.version, automatic = auto, manualEvent = !auto, eventText = event.spokenText(),
-                eventTriggerAt = event.triggerAtMillis(), eventType = event.eventType, eventSpeakAloud = event.speakAloud)
-                .also(container.audioWorkflowStore::save)
-
+        val dao = container.database.dailyEventDao()
+        val event = dao.get(eventId) ?: return null
+        if (auto && (!event.isDueForSpeech() || (expectedVersion >= 0 && !event.matchesAlarm(expectedVersion, expectedTrigger)))) return null
+        val workflow = AudioWorkflows.forEvent(event.eventType)
+        if (auto && !container.soundVoice.state.value.allows(workflow)) {
+            DeferredSpeechNotification.show(this, event)
+            return null
+        }
+        val autoId = "event:${event.id}:${event.version}"
+        if (auto && container.audioWorkflowStore.get(autoId) != null) return null
+        if (!auto) container.audioWorkflowStore.all().filter { it.eventId == eventId }
+            .forEach { container.audioWorkflowScheduler.cancel(it.id) }
+        if (!container.dailyEventRepository.claimEventPlayback(event, manual = !auto)) return null
+        val id = if (auto) autoId else "manual:$autoId:${UUID.randomUUID()}"
+        currentCoroutineContext().ensureActive()
+        DeferredSpeechNotification.cancel(this, eventId)
+        return AudioExecution(id, workflow, container.dailyEventRepository.workflowSpeechFile(event).absolutePath,
+            eventId, event.version, automatic = auto, manualEvent = !auto, eventText = event.spokenText(),
+            eventTriggerAt = event.triggerAtMillis(), eventType = event.eventType, eventSpeakAloud = event.speakAloud)
+            .also(container.audioWorkflowStore::save)
     }
 
     /** Reserves response playback and resolves its audio with the existing timeout. */
