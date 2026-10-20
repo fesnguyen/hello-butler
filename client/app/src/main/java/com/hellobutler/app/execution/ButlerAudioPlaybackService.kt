@@ -36,316 +36,297 @@ class ButlerAudioPlaybackService : Service() {
     private val container get() = (application as ButlerApplication).container
     private var job: Job? = null
     private var eventWatcher: Job? = null
-    private val nativeTts by lazy { LocalTextToSpeech(this) }
-    private var player: MediaPlayer? = null
-    private var focusRequest: AudioFocusRequest? = null
-    private var privateRoute = false
-    private var activeId: String? = null
-    private var activeRequestId: String? = null
-    private var automatic = false
-    private var preview = false
+    // Execution ownership stays on the main dispatcher; resource ownership lives in the player.
+    private val active = ActivePlayback()
     private var generation = 0
-    private var activeEventId: String? = null
-
-    override fun onCreate() {
-        super.onCreate()
-        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel(CHANNEL, "Butler playback", NotificationManager.IMPORTANCE_LOW))
-        scope.launch { container.soundVoice.state.collect { settings ->
-            val volume = butlerVolume(settings.volume)
-            player?.setVolume(volume, volume)
-            val execution = activeId?.let(container.audioWorkflowStore::get)
-            if (execution != null && automatic && !settings.allows(execution.workflow)) finish(cancel = true)
-        } }
+    private val resourcePlayer by lazy {
+        AudioResourcePlayer(
+            this, scope, getSystemService(AudioManager::class.java), container.audioWorkflowStore::select,
+            currentVolume = { butlerVolume(container.soundVoice.state.value.volume) },
+            canStart = ::canStartPlayback,
+            onPlaybackStarted = ::onPlaybackStarted,
+            onFocusLost = { finish(cancel = true) },
+        )
+    }
+    private val preparer by lazy {
+        AudioExecutionPreparer(
+            container.database, container.dailyEventRepository, container.butlerRepository,
+            container.audioWorkflowStore, container.audioWorkflowScheduler, container.soundVoice,
+            showDeferred = { DeferredSpeechNotification.show(this, it) },
+            dismissDeferred = { DeferredSpeechNotification.cancel(this, it) },
+            reserveActiveId = { active.id = it },
+        )
+    }
+    private val eventSpeech by lazy {
+        EventSpeechPlayback(
+            container.database.dailyEventDao(), container.dailyEventRepository, LocalTextToSpeech(this),
+            getSystemService(ConnectivityManager::class.java), cacheDir,
+            allows = { !active.automatic || container.soundVoice.state.value.allows(it.workflow) },
+            playFile = { file, started -> playResource("<speech>", file.absolutePath, started) },
+            showDeferred = { DeferredSpeechNotification.show(this, it) },
+        )
     }
 
+    /** Creates the playback channel and observes live gain and automatic-speech eligibility. */
+    override fun onCreate() {
+        super.onCreate()
+        getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL, "Butler playback", NotificationManager.IMPORTANCE_LOW),
+        )
+        scope.launch {
+            container.soundVoice.state.collect { settings ->
+                resourcePlayer.volume(butlerVolume(settings.volume))
+                val execution = active.id?.let(container.audioWorkflowStore::get)
+                if (execution != null && active.automatic && !settings.allows(execution.workflow)) finish(cancel = true)
+            }
+        }
+    }
+
+    /** Routes control commands first, then admits and starts a playback request. */
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (handleControl(intent, startId)) return START_NOT_STICKY
+        val request = decodePlayback(intent)
+        if (request == null) {
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        val existing = request.resumeId?.let(container.audioWorkflowStore::get)
+        if (acceptPlayback(request, existing, startId)) startPlayback(request, existing)
+        return START_NOT_STICKY
+    }
+
+    /** Releases playback before cancelling the scope so stale jobs cannot retain service ownership. */
+    override fun onDestroy() {
+        releasePlayback(cancel = true)
+        scope.cancel()
+        super.onDestroy()
+    }
+
+    /** This started foreground service does not expose a bound-service API. */
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    // Commands and request admission --------------------------------------------
+
+    /** Handles stop and targeted cancellation without interpreting them as new playback. */
+    private fun handleControl(intent: Intent?, startId: Int): Boolean {
         if (intent?.action == ACTION_CANCEL_WORKFLOW) {
             intent.getStringExtra(EXTRA_EXECUTION)?.let { id ->
                 container.audioWorkflowScheduler.cancel(id)
-                if (activeId == id) finish(cancel = true)
+                if (active.id == id) finish(cancel = true)
             }
-            if (activeId == null) stopSelf(startId)
-            return START_NOT_STICKY
+            if (active.id == null) stopSelf(startId)
+            return true
         }
         if (intent?.action == ACTION_CANCEL_EVENT) {
-            if (intent.getStringExtra(EXTRA_EVENT_ID) == activeEventId) finish(cancel = true)
-            if (activeId == null) stopSelf(startId)
-            return START_NOT_STICKY
+            if (intent.getStringExtra(EXTRA_EVENT_ID) == active.eventId) finish(cancel = true)
+            if (active.id == null) stopSelf(startId)
+            return true
         }
-        if (intent?.action == ACTION_STOP) { finish(cancel = true); return START_NOT_STICKY }
-        if (intent?.action == ACTION_STOP_PREVIEW) { if (preview) finish(cancel = false); return START_NOT_STICKY }
-        val requestId = intent?.getStringExtra(EXTRA_REQUEST_ID)
-        val eventId = intent?.getStringExtra(EXTRA_EVENT_ID)
-        val resumeId = intent?.getStringExtra(EXTRA_EXECUTION)
-        val isPreview = intent?.action == ACTION_PREVIEW
-        if (intent == null || (!isPreview && requestId == null && eventId == null && resumeId == null)) { stopSelf(startId); return START_NOT_STICKY }
-        val requestedPrivate = intent.getBooleanExtra(EXTRA_PRIVATE, false)
-        val requestedAutomatic = intent.getBooleanExtra(EXTRA_AUTOMATIC, false)
-        val manualResume = intent.getBooleanExtra("manual_resume", false)
-        val existing = resumeId?.let(container.audioWorkflowStore::get)
-        if (resumeId != null && (existing == null || existing.status in setOf("complete", "cancelled") || existing.dueAt > System.currentTimeMillis())) {
-            if (activeId == null) stopSelf(startId)
-            return START_NOT_STICKY
+        if (intent?.action == ACTION_STOP) {
+            finish(cancel = true)
+            return true
+        }
+        if (intent?.action == ACTION_STOP_PREVIEW) {
+            if (active.preview) finish(cancel = false)
+            return true
+        }
+        return false
+    }
+
+    /** Captures Intent inputs once, retaining the existing defaults and valid request combinations. */
+    private fun decodePlayback(intent: Intent?): PlaybackRequest? {
+        if (intent == null) return null
+        val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)
+        val eventId = intent.getStringExtra(EXTRA_EVENT_ID)
+        val resumeId = intent.getStringExtra(EXTRA_EXECUTION)
+        val preview = intent.action == ACTION_PREVIEW
+        if (!preview && requestId == null && eventId == null && resumeId == null) return null
+        return PlaybackRequest(
+            requestId, eventId, resumeId, preview,
+            intent.getBooleanExtra(EXTRA_PRIVATE, false),
+            intent.getBooleanExtra(EXTRA_AUTOMATIC, false),
+            intent.getBooleanExtra("manual_resume", false),
+            intent.getIntExtra(EXTRA_EVENT_VERSION, -1),
+            intent.getLongExtra(EXTRA_EVENT_TRIGGER, -1),
+        )
+    }
+
+    /** Preserves resume validation, duplicate suppression, and automatic deferral in their original order. */
+    private fun acceptPlayback(request: PlaybackRequest, existing: AudioExecution?, startId: Int): Boolean {
+        val requestId = request.requestId
+        val eventId = request.eventId
+        val isPreview = request.preview
+        val requestedPrivate = request.privateRoute
+        val requestedAutomatic = request.automatic
+        val manualResume = request.manualResume
+        if (request.resumeId != null && (existing == null || existing.status in setOf("complete", "cancelled") || existing.dueAt > System.currentTimeMillis())) {
+            if (active.id == null) stopSelf(startId)
+            return false
         }
         if (existing != null && !manualResume && existing.automatic && existing.requestId != null &&
             System.currentTimeMillis() - existing.createdAt > 600_000) {
             container.audioWorkflowScheduler.cancel(existing.id)
-            if (activeId == null) stopSelf(startId)
-            return START_NOT_STICKY
+            if (active.id == null) stopSelf(startId)
+            return false
         }
         if (existing != null && !manualResume && existing.automatic && !container.soundVoice.state.value.allows(existing.workflow)) {
             container.audioWorkflowScheduler.offer(existing)
-            if (activeId == null) stopSelf(startId)
-            return START_NOT_STICKY
+            if (active.id == null) stopSelf(startId)
+            return false
         }
-        if (isPreview && activeId != null) return START_NOT_STICKY
-        if (eventId != null && eventId == activeEventId) return START_NOT_STICKY
-        if ((resumeId != null && activeId == resumeId) ||
-            (requestId != null && activeRequestId == requestId && privateRoute == requestedPrivate)) return START_NOT_STICKY
-        if (requestedAutomatic && activeId != null) {
+        if (isPreview && active.id != null) return false
+        if (eventId != null && eventId == active.eventId) return false
+        if ((request.resumeId != null && active.id == request.resumeId) ||
+            (requestId != null && active.requestId == requestId && active.privateRoute == requestedPrivate)) return false
+        if (requestedAutomatic && active.id != null) {
             if (existing != null) {
                 val deferred = existing.copy(dueAt = System.currentTimeMillis() + 15_000, status = "waiting")
                 container.audioWorkflowStore.save(deferred)
                 container.audioWorkflowScheduler.schedule(deferred)
             }
             else if (eventId != null) DailyEventExecutionWorker.enqueue(this, eventId, 15_000)
-            return START_NOT_STICKY
+            return false
         }
+        return true
+    }
+
+    // Execution orchestration ---------------------------------------------------
+
+    /** Replaces the previous owner and enters the foreground before starting asynchronous work. */
+    private fun startPlayback(request: PlaybackRequest, existing: AudioExecution?) {
+        val requestId = request.requestId
+        val eventId = request.eventId
+        val resumeId = request.resumeId
+        val isPreview = request.preview
+        val requestedPrivate = request.privateRoute
+        val requestedAutomatic = request.automatic
+        val manualResume = request.manualResume
         releasePlayback(cancel = true)
-        activeId = resumeId ?: if (isPreview) "preview" else UUID.randomUUID().toString()
-        activeRequestId = requestId ?: existing?.requestId
-        activeEventId = eventId ?: existing?.eventId
-        privateRoute = existing?.privateRoute ?: requestedPrivate
-        automatic = if (manualResume) false else existing?.automatic ?: requestedAutomatic
-        preview = isPreview
-        ButlerPlayback.update(ButlerPlaybackState(activeRequestId, privateRoute, PlaybackPhase.LOADING, activeEventId))
-        try { startForegroundNow(notification("Preparing audio…")) }
-        catch (error: RuntimeException) {
+        active.id = resumeId ?: if (isPreview) "preview" else UUID.randomUUID().toString()
+        active.requestId = requestId ?: existing?.requestId
+        active.eventId = eventId ?: existing?.eventId
+        active.privateRoute = existing?.privateRoute ?: requestedPrivate
+        active.automatic = if (manualResume) false else existing?.automatic ?: requestedAutomatic
+        active.preview = isPreview
+        ButlerPlayback.update(ButlerPlaybackState(active.requestId, active.privateRoute, PlaybackPhase.LOADING, active.eventId))
+        try {
+            startForegroundNow(notification("Preparing audio…"))
+        } catch (error: RuntimeException) {
             existing?.let { container.audioWorkflowScheduler.offer(it) }
             if (eventId != null) DailyEventExecutionWorker.enqueue(this, eventId, 0)
             finish(cancel = false)
-            return START_NOT_STICKY
+            return
         }
         if (existing != null) container.audioWorkflowStore.save(existing.copy(status = "playing"))
-        val token = ++generation
-        job = scope.launch {
+        job = launchPlayback(request, existing, ++generation)
+    }
+
+    /** Keeps cancellation and finalization tied to the generation that launched this job. */
+    private fun launchPlayback(request: PlaybackRequest, existing: AudioExecution?, token: Int): Job {
+        return scope.launch {
             try {
-                if (isPreview) {
-                    playResource("volume_preview", "")
-                } else {
-                    val execution = if (existing != null) {
-                        if (manualResume) existing.copy(automatic = false) else existing
-                    } else prepare(requestId, eventId, requestedAutomatic, requestedPrivate, intent.getIntExtra(EXTRA_EVENT_VERSION, -1), intent.getLongExtra(EXTRA_EVENT_TRIGGER, -1))
-                    ensureActive()
-                    if (execution != null) {
-                        activeId = execution.id
-                        activeRequestId = execution.requestId
-                        if (execution.automatic && !container.soundVoice.state.value.allows(execution.workflow)) {
-                            container.audioWorkflowScheduler.cancel(execution.id)
-                            return@launch
+                executePlayback(request, existing)
+            } catch (cancelled: CancellationException) {
+                if (generation == token) {
+                    active.id?.let { id ->
+                        container.audioWorkflowStore.get(id)?.let { saved ->
+                            if (saved.status !in setOf("waiting", "complete", "cancelled")) container.audioWorkflowScheduler.cancel(id)
                         }
-                        if (!validEvent(execution)) { container.audioWorkflowScheduler.cancel(execution.id); return@launch }
-                        container.audioWorkflowScheduler.dismiss(execution.id)
-                        execution.eventId?.let { id ->
-                            eventWatcher = scope.launch {
-                                container.database.dailyEventDao().observe(id).collect { event ->
-                                    if (!event.matchesExecution(execution)) finish(cancel = true)
-                                }
-                            }
-                        }
-                        AudioSequence(container.audioWorkflowStore::save,
-                            play = { resource ->
-                                ensureActive()
-                                if (automatic && !container.soundVoice.state.value.allows(execution.workflow)) throw CancellationException("Automatic speech disabled")
-                                if (!validEvent(execution)) throw CancellationException("Event changed")
-                                if (resource == "<speech>" && execution.eventId != null) speakEvent(execution)
-                                else playResource(resource, execution.speechPath)
-                            }, schedule = container.audioWorkflowScheduler::schedule).run(execution)
                     }
                 }
-            } catch (cancelled: CancellationException) {
-                if (generation == token) activeId?.let { id -> container.audioWorkflowStore.get(id)?.let { saved ->
-                    if (saved.status !in setOf("waiting", "complete", "cancelled")) container.audioWorkflowScheduler.cancel(id)
-                } }
                 throw cancelled
             } catch (error: Exception) {
                 Log.w(TAG, "Butler audio workflow failed", error)
-                if (generation == token) activeId?.let(container.audioWorkflowScheduler::cancel)
+                if (generation == token) active.id?.let(container.audioWorkflowScheduler::cancel)
             } finally {
                 // A cancelled download must not finish a replacement request.
                 if (generation == token) finish(cancel = false)
             }
         }
-        return START_NOT_STICKY
     }
 
-    private suspend fun prepare(requestId: String?, eventId: String?, auto: Boolean, private: Boolean, expectedVersion: Int = -1, expectedTrigger: Long = -1): AudioExecution? {
-        if (eventId != null) {
-            val dao = container.database.dailyEventDao()
-            val event = dao.get(eventId) ?: return null
-            if (auto && (!event.isDueForSpeech() || (expectedVersion >= 0 && !event.matchesAlarm(expectedVersion, expectedTrigger)))) return null
-            val workflow = AudioWorkflows.forEvent(event.eventType)
-            if (auto && !container.soundVoice.state.value.allows(workflow)) {
-                DeferredSpeechNotification.show(this, event)
-                return null
+    /** Prepares or resumes an execution, attaches its watcher, and runs the unchanged sequence engine. */
+    private suspend fun CoroutineScope.executePlayback(request: PlaybackRequest, existing: AudioExecution?) {
+        val requestId = request.requestId
+        val eventId = request.eventId
+        val isPreview = request.preview
+        val requestedPrivate = request.privateRoute
+        val requestedAutomatic = request.automatic
+        val manualResume = request.manualResume
+        if (isPreview) {
+            playResource("volume_preview", "")
+        } else {
+            val execution = if (existing != null) {
+                if (manualResume) existing.copy(automatic = false) else existing
+            } else preparer.prepare(
+                requestId, eventId, requestedAutomatic, requestedPrivate, active.id!!,
+                request.expectedVersion, request.expectedTrigger,
+            )
+            ensureActive()
+            if (execution != null) {
+                active.id = execution.id
+                active.requestId = execution.requestId
+                if (execution.automatic && !container.soundVoice.state.value.allows(execution.workflow)) {
+                    container.audioWorkflowScheduler.cancel(execution.id)
+                    return
+                }
+                if (!validEvent(execution)) {
+                    container.audioWorkflowScheduler.cancel(execution.id)
+                    return
+                }
+                container.audioWorkflowScheduler.dismiss(execution.id)
+                execution.eventId?.let { id ->
+                    eventWatcher = scope.launch {
+                        container.database.dailyEventDao().observe(id).collect { event ->
+                            if (!event.matchesExecution(execution)) finish(cancel = true)
+                        }
+                    }
+                }
+                AudioSequence(
+                    container.audioWorkflowStore::save,
+                    play = { resource ->
+                        ensureActive()
+                        if (active.automatic && !container.soundVoice.state.value.allows(execution.workflow)) throw CancellationException("Automatic speech disabled")
+                        if (!validEvent(execution)) throw CancellationException("Event changed")
+                        if (resource == "<speech>" && execution.eventId != null) eventSpeech.speak(execution)
+                        else playResource(resource, execution.speechPath)
+                    },
+                    schedule = container.audioWorkflowScheduler::schedule,
+                ).run(execution)
             }
-            val autoId = "event:${event.id}:${event.version}"
-            if (auto && container.audioWorkflowStore.get(autoId) != null) return null
-            if (!auto) container.audioWorkflowStore.all().filter { it.eventId == eventId }
-                .forEach { container.audioWorkflowScheduler.cancel(it.id) }
-            if (!container.dailyEventRepository.claimEventPlayback(event, manual = !auto)) return null
-            val id = if (auto) autoId else "manual:$autoId:${UUID.randomUUID()}"
-            currentCoroutineContext().ensureActive()
-            DeferredSpeechNotification.cancel(this, eventId)
-            return AudioExecution(id, workflow, container.dailyEventRepository.workflowSpeechFile(event).absolutePath,
-                eventId, event.version, automatic = auto, manualEvent = !auto, eventText = event.spokenText(),
-                eventTriggerAt = event.triggerAtMillis(), eventType = event.eventType, eventSpeakAloud = event.speakAloud)
-                .also(container.audioWorkflowStore::save)
         }
-        if (requestId == null) return null
-        if (!auto) {
-            val autoId = "response:$requestId"
-            val prior = container.audioWorkflowStore.get(autoId)
-            if (prior != null) container.audioWorkflowScheduler.cancel(autoId)
-            else container.audioWorkflowStore.save(AudioExecution(autoId, AudioWorkflow.BUTLER_RESPONSE, "", requestId = requestId, status = "cancelled"))
-        }
-        val id = if (auto) "response:$requestId" else activeId!!
-        if (auto) {
-            if (!container.soundVoice.state.value.responses || container.audioWorkflowStore.get(id) != null) return null
-            val request = container.database.butlerConversationDao().request(requestId) ?: return null
-            if (runCatching { Instant.parse(request.createdAt).isBefore(Instant.now().minusSeconds(600)) }.getOrDefault(true)) return null
-            // Reserve before downloading so FCM, reconciliation, and the audio worker cannot race to announce twice.
-            activeId = id
-            container.audioWorkflowStore.save(AudioExecution(id, AudioWorkflow.BUTLER_RESPONSE, "", requestId = requestId, status = "preparing"))
-        }
-        val file = withContext(Dispatchers.IO) { withTimeoutOrNull(120_000) {
-            val repository = container.butlerRepository
-            var audio = repository.ensureAudio(requestId)
-            while (audio == null && !repository.audioUnavailable(requestId)) { delay(2_000); audio = repository.ensureAudio(requestId) }
-            audio
-        } } ?: run {
-            if (auto) container.audioWorkflowScheduler.cancel(id)
-            return null
-        }
-        currentCoroutineContext().ensureActive()
-        return AudioExecution(id, AudioWorkflow.BUTLER_RESPONSE, file.absolutePath, requestId = requestId,
-            automatic = auto, privateRoute = private).also(container.audioWorkflowStore::save)
     }
 
+    /** Checks the canonical event against the execution snapshot before continuing playback. */
     private suspend fun validEvent(execution: AudioExecution): Boolean {
         val id = execution.eventId ?: return true
         val event = container.database.dailyEventDao().get(id) ?: return false
         return event.matchesExecution(execution)
     }
 
-    private suspend fun speakEvent(execution: AudioExecution): Boolean {
-        val repository = container.dailyEventRepository
-        suspend fun current() = container.database.dailyEventDao().get(execution.eventId!!)
-            ?.takeIf { it.matchesExecution(execution) }
-        suspend fun local() = current()?.let { repository.snapshotPreparedSpeech(it) }
-        suspend fun play(file: File): SpeechOutput {
-            var started = false
-            val successful = playResource("<speech>", file.absolutePath) { started = true }
-            return if (successful) SpeechOutput.COMPLETE else if (started) SpeechOutput.INTERRUPTED else SpeechOutput.UNAVAILABLE
-        }
-        val success = SpeechSourceResolver(
-            local = { withContext(Dispatchers.IO) { local() } },
-            recover = {
-                withContext(Dispatchers.IO) {
-                    repository.recoverSpeech(execution.eventId!!, execution.eventVersion!!)
-                    local()
-                }
-            },
-            online = {
-                val network = getSystemService(ConnectivityManager::class.java)
-                network.getNetworkCapabilities(network.activeNetwork)?.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) == true
-            },
-            eligible = { validEvent(execution) && (!automatic || container.soundVoice.state.value.allows(execution.workflow)) },
-            play = ::play,
-            invalidate = { current()?.let { withContext(Dispatchers.IO) { repository.discardPreparedSpeech(it) } } },
-            native = {
-                val text = current()?.spokenText().orEmpty()
-                var complete = text.isNotBlank()
-                for (chunk in nativeSpeechChunks(text)) {
-                    if (!validEvent(execution)) throw CancellationException("Event changed")
-                    val file = File(cacheDir, "native-speech-${UUID.randomUUID()}.wav")
-                    try {
-                        if (!nativeTts.renderOffline(chunk, file) || !validEvent(execution) || play(file) != SpeechOutput.COMPLETE) {
-                            complete = false; break
-                        }
-                    } finally { file.delete() }
-                }
-                complete
-            },
-        ).speak()
-        if (!success) current()?.let { DeferredSpeechNotification.show(this, it) }
-        return success
+    /** Routes every bundled or generated resource through the same player. */
+    private suspend fun playResource(resource: String, speechPath: String, onStarted: () -> Unit = {}): Boolean =
+        resourcePlayer.play(resource, speechPath, active.privateRoute, onStarted)
+
+    /** Rechecks event and automatic preferences immediately before the player starts. */
+    private suspend fun canStartPlayback(): Boolean {
+        val execution = active.id?.let(container.audioWorkflowStore::get)
+        if (active.eventId != null && (execution == null || execution.status == "cancelled" || !validEvent(execution))) return false
+        return execution == null || !active.automatic || container.soundVoice.state.value.allows(execution.workflow)
     }
 
-    private suspend fun playResource(resource: String, speechPath: String, onStarted: () -> Unit = {}): Boolean {
-        val raw = if (resource == "<speech>") null else AudioResources.resolve(resource, container.audioWorkflowStore::select)
-        if (resource != "<speech>" && raw == null) { Log.w(TAG, "Skipping missing optional audio: $resource"); return false }
-        if (resource == "<speech>" && !File(speechPath).isFile) return false
-        val audio = getSystemService(AudioManager::class.java)
-        val attributes = AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-            .setUsage(if (privateRoute) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA).build()
-        if (focusRequest == null) {
-            lateinit var focus: AudioFocusRequest
-            focus = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT).setAudioAttributes(attributes)
-                .setOnAudioFocusChangeListener { if (it < 0 && focusRequest === focus) finish(cancel = true) }.build()
-            if (audio.requestAudioFocus(focus) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) throw CancellationException("Audio focus denied")
-            focusRequest = focus
-            audio.mode = if (privateRoute) AudioManager.MODE_IN_COMMUNICATION else AudioManager.MODE_NORMAL
-            @Suppress("DEPRECATION")
-            audio.isSpeakerphoneOn = !privateRoute
-        }
-        return withTimeoutOrNull(120_000) {
-            suspendCancellableCoroutine<Boolean> { continuation ->
-                val media = MediaPlayer()
-                player = media
-                fun complete(success: Boolean) {
-                    if (player === media) player = null
-                    runCatching { media.release() }
-                    if (continuation.isActive) continuation.resume(success)
-                }
-                continuation.invokeOnCancellation { if (player === media) player = null; runCatching { media.release() } }
-                try {
-                    media.setAudioAttributes(attributes)
-                    val volume = butlerVolume(container.soundVoice.state.value.volume)
-                    media.setVolume(volume, volume)
-                    media.setWakeMode(this@ButlerAudioPlaybackService, android.os.PowerManager.PARTIAL_WAKE_LOCK)
-                    media.setOnPreparedListener { prepared ->
-                        scope.launch {
-                            if (player !== prepared || !continuation.isActive) return@launch
-                            val execution = activeId?.let(container.audioWorkflowStore::get)
-                            if (activeEventId != null && (execution == null || execution.status == "cancelled" || !validEvent(execution))) {
-                                complete(false); return@launch
-                            }
-                            if (execution != null && automatic && !container.soundVoice.state.value.allows(execution.workflow)) {
-                                complete(false); return@launch
-                            }
-                            if (player !== prepared || !continuation.isActive) return@launch
-                            try { prepared.start() }
-                            catch (error: RuntimeException) {
-                                Log.w(TAG, "Audio start failed", error); complete(false); return@launch
-                            }
-                            onStarted()
-                            SpeechPlaybackState.setSpeaking(!preview && activeRequestId == null)
-                            ButlerPlayback.update(ButlerPlaybackState(activeRequestId, privateRoute, PlaybackPhase.SPEAKING, activeEventId))
-                            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(if (preview) "Volume preview" else "Butler is speaking"))
-                        }
-                    }
-                    media.setOnCompletionListener { complete(true) }
-                    media.setOnErrorListener { _, _, _ -> complete(false); true }
-                    if (raw != null) (resources.openRawResourceFd(raw) ?: throw java.io.IOException("Missing raw audio descriptor")).use { descriptor ->
-                        media.setDataSource(descriptor.fileDescriptor, descriptor.startOffset, descriptor.length)
-                    } else media.setDataSource(speechPath)
-                    media.prepareAsync()
-                } catch (error: Exception) { Log.w(TAG, "Audio resource failed: $resource", error); complete(false) }
-            }
-        } ?: false
+    /** Publishes speaking state only after the current player has started successfully. */
+    private fun onPlaybackStarted() {
+        SpeechPlaybackState.setSpeaking(!active.preview && active.requestId == null)
+        ButlerPlayback.update(ButlerPlaybackState(active.requestId, active.privateRoute, PlaybackPhase.SPEAKING, active.eventId))
+        getSystemService(NotificationManager::class.java).notify(
+            NOTIFICATION_ID, notification(if (active.preview) "Volume preview" else "Butler is speaking"),
+        )
     }
 
+    // Foreground presentation and ordered cleanup -------------------------------
+
+    /** Builds the foreground playback notification with the existing Stop and Open actions. */
     private fun notification(text: String): Notification {
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java)
             .putExtra(MainActivity.EXTRA_OPEN_CONVERSATION, true), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
@@ -354,36 +335,55 @@ class ButlerAudioPlaybackService : Service() {
             .addAction(android.R.drawable.ic_media_pause, "Stop", stopIntent(this))
             .addAction(android.R.drawable.ic_menu_view, "Open in App", open).build()
     }
+    /** Starts foreground playback with the platform-required media service type. */
     private fun startForegroundNow(value: Notification) {
         if (Build.VERSION.SDK_INT >= 29) startForeground(NOTIFICATION_ID, value, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         else startForeground(NOTIFICATION_ID, value)
     }
+    /** Invalidates ownership before cancelling jobs and releasing synthesis, player, and focus. */
     private fun releasePlayback(cancel: Boolean) {
         generation++
-        val previousId = activeId
-        activeId = null // Clear ownership before cancellation callbacks execute.
+        val previousId = active.id
+        active.id = null // Clear ownership before cancellation callbacks execute.
         if (cancel && previousId != null) container.audioWorkflowScheduler.cancel(previousId)
         eventWatcher?.cancel(); eventWatcher = null
-        nativeTts.stop()
+        eventSpeech.stop()
         job?.cancel(); job = null
-        val media = player; player = null
-        runCatching { media?.release() }
-        val audio = getSystemService(AudioManager::class.java)
-        focusRequest?.let {
-            audio.abandonAudioFocusRequest(it)
-            @Suppress("DEPRECATION")
-            audio.isSpeakerphoneOn = false
-            audio.mode = AudioManager.MODE_NORMAL
-        }
-        focusRequest = null
-        activeRequestId = null
-        activeEventId = null
+        resourcePlayer.release()
+        active.requestId = null
+        active.eventId = null
         SpeechPlaybackState.setSpeaking(false)
         ButlerPlayback.update(ButlerPlaybackState())
     }
-    private fun finish(cancel: Boolean) { releasePlayback(cancel); stopForeground(STOP_FOREGROUND_REMOVE); stopSelf() }
-    override fun onDestroy() { releasePlayback(cancel = true); scope.cancel(); super.onDestroy() }
-    override fun onBind(intent: Intent?): IBinder? = null
+    /** Releases execution resources before removing the foreground notification and stopping the service. */
+    private fun finish(cancel: Boolean) {
+        releasePlayback(cancel)
+        stopForeground(STOP_FOREGROUND_REMOVE)
+        stopSelf()
+    }
+
+    /** Immutable decoded request, separate from the service's changing execution ownership. */
+    private data class PlaybackRequest(
+        val requestId: String?,
+        val eventId: String?,
+        val resumeId: String?,
+        val preview: Boolean,
+        val privateRoute: Boolean,
+        val automatic: Boolean,
+        val manualResume: Boolean,
+        val expectedVersion: Int,
+        val expectedTrigger: Long,
+    )
+
+    /** Main-dispatcher execution identity; jobs and generation retain their service lifetime. */
+    private class ActivePlayback(
+        var id: String? = null,
+        var requestId: String? = null,
+        var eventId: String? = null,
+        var privateRoute: Boolean = false,
+        var automatic: Boolean = false,
+        var preview: Boolean = false,
+    )
 
     companion object {
         private const val CHANNEL = "butler_response_playback"
@@ -398,26 +398,33 @@ class ButlerAudioPlaybackService : Service() {
         private const val ACTION_PREVIEW = "com.hellobutler.app.PREVIEW_VOLUME"
         private const val ACTION_STOP_PREVIEW = "com.hellobutler.app.STOP_VOLUME_PREVIEW"
         private const val TAG = "ButlerAudio"
+        /** Creates the stable response-and-route action used by widgets and notifications. */
         fun intent(context: Context, requestId: String, private: Boolean): PendingIntent = PendingIntent.getForegroundService(
             context, requestId.hashCode() * 2 + if (private) 1 else 0,
             Intent(context, ButlerAudioPlaybackService::class.java).setData(Uri.parse("hellobutler://response/${Uri.encode(requestId)}/$private"))
                 .putExtra(EXTRA_REQUEST_ID, requestId).putExtra(EXTRA_PRIVATE, private), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        /** Identifies a targeted workflow cancellation without starting new playback. */
         fun cancelIntent(context: Context, id: String): PendingIntent = PendingIntent.getService(context, id.hashCode(),
             Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_CANCEL_WORKFLOW)
                 .setData(Uri.parse("hellobutler://audio/cancel/${Uri.encode(id)}")).putExtra(EXTRA_EXECUTION, id),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        /** Creates the shared action that immediately stops the current playback owner. */
         fun stopIntent(context: Context): PendingIntent = PendingIntent.getService(context, 0,
             Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        /** Requests cancellation of whichever execution currently owns playback. */
         fun stop(context: Context) { context.startService(Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP)) }
+        /** Starts response playback through the single foreground-service owner. */
         fun play(context: Context, requestId: String, private: Boolean, automatic: Boolean = false) {
             ContextCompat.startForegroundService(context, Intent(context, ButlerAudioPlaybackService::class.java)
                 .putExtra(EXTRA_REQUEST_ID, requestId).putExtra(EXTRA_PRIVATE, private).putExtra(EXTRA_AUTOMATIC, automatic))
         }
+        /** Starts event playback with optional alarm version and trigger validation. */
         fun playEvent(context: Context, eventId: String, automatic: Boolean = false, expectedVersion: Int? = null, expectedTrigger: Long? = null) {
             ContextCompat.startForegroundService(context, Intent(context, ButlerAudioPlaybackService::class.java)
                 .putExtra(EXTRA_EVENT_ID, eventId).putExtra(EXTRA_AUTOMATIC, automatic)
                 .putExtra(EXTRA_EVENT_VERSION, expectedVersion ?: -1).putExtra(EXTRA_EVENT_TRIGGER, expectedTrigger ?: -1))
         }
+        /** Cancels persisted event workflows and any active service playback for the event. */
         fun cancelEvent(context: Context, eventId: String) {
             val container = (context.applicationContext as? ButlerApplication)?.container
             container?.audioWorkflowStore?.all()?.filter { it.eventId == eventId }
@@ -425,22 +432,15 @@ class ButlerAudioPlaybackService : Service() {
             runCatching { context.startService(Intent(context, ButlerAudioPlaybackService::class.java)
                 .setAction(ACTION_CANCEL_EVENT).putExtra(EXTRA_EVENT_ID, eventId)) }
         }
+        /** Preserves continuation identity and explicitly distinguishes manual Listen from automatic resume. */
         fun resumeIntent(context: Context, id: String, manual: Boolean = false) = Intent(context, ButlerAudioPlaybackService::class.java)
             .setData(Uri.parse("hellobutler://audio/resume/${Uri.encode(id)}")).putExtra(EXTRA_EXECUTION, id)
             .putExtra(EXTRA_AUTOMATIC, !manual).putExtra("manual_resume", manual)
+        /** Requests foreground continuation of an already journaled execution. */
         fun resume(context: Context, id: String) { ContextCompat.startForegroundService(context, resumeIntent(context, id)) }
+        /** Requests the prerecorded volume sample through the same playback owner. */
         fun preview(context: Context) { ContextCompat.startForegroundService(context, Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_PREVIEW)) }
+        /** Stops a preview without interrupting ordinary speech. */
         fun stopPreview(context: Context) { context.startService(Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_STOP_PREVIEW)) }
     }
-}
-
-internal fun com.hellobutler.app.data.local.DailyEventEntity?.matchesExecution(execution: AudioExecution): Boolean {
-    val event = this ?: return false
-    return event.version == execution.eventVersion && event.status !in setOf("cancelled", "skipped") &&
-        (execution.manualEvent || (event.status == "planned" && (event.speakAloud || event.eventType == "reminder") &&
-            event.eventDate == java.time.LocalDate.now().toString())) &&
-        (execution.eventText == null || event.spokenText() == execution.eventText) &&
-        (execution.eventTriggerAt == null || event.triggerAtMillis() == execution.eventTriggerAt) &&
-        (execution.eventType == null || event.eventType == execution.eventType) &&
-        (execution.eventSpeakAloud == null || event.speakAloud == execution.eventSpeakAloud)
 }

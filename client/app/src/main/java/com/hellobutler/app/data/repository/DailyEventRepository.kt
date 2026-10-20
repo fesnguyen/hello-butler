@@ -44,6 +44,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import retrofit2.Response
 
+/** Owns daily-event persistence and synchronization, including audio-state concurrency boundaries. */
 class DailyEventRepository(
     private val context: Context,
     private val database: ButlerDatabase,
@@ -57,26 +58,29 @@ class DailyEventRepository(
 ) {
     private val dao: DailyEventDao = database.dailyEventDao()
     private val pending = database.pendingSyncOperationDao()
+    // Lock order: sync -> audio state, or download -> audio state; never acquire either in reverse.
     private val syncMutex = Mutex()
     private val downloadMutex = Mutex()
     private val audioStateMutex = Mutex() // Room/file commits only; never held during network calls.
-    private val speechPreferences get() = context.getSharedPreferences("butler_speech_preparation", Context.MODE_PRIVATE)
-    private fun invalidatedByVoiceChange(event: DailyEventEntity) =
-        "${event.id}:${event.version}" in speechPreferences.getStringSet("invalidated_versions", emptySet()).orEmpty()
-    private val speechDirectory get() = File(context.filesDir, "event_speech")
+    private val speechStore = DailyEventSpeechStore(
+        context.filesDir, context.cacheDir,
+        context.getSharedPreferences("butler_speech_preparation", Context.MODE_PRIVATE),
+    )
     private val _upcomingEvents = MutableStateFlow<List<UpcomingEventDto>>(emptyList())
     val upcomingEvents = _upcomingEvents.asStateFlow()
 
+    // Public event and audio operations -----------------------------------------
+
+    /** Exposes Room event updates for the requested day. */
     fun observeDate(date: String): Flow<List<DailyEventEntity>> = dao.observeDate(date)
 
-    private fun speechFile(eventId: String, version: Int) = File(speechDirectory, "$eventId-$version.ogg")
-
     /** Local-only lookup; this method must never refresh authentication or fetch audio. */
-    fun preparedSpeech(event: DailyEventEntity): File? =
-        speechFile(event.id, event.version).takeIf { event.syncedFromServer && !invalidatedByVoiceChange(event) && it.isOggOpusContainer() }
+    fun preparedSpeech(event: DailyEventEntity): File? = speechStore.preparedSpeech(event)
 
-    fun workflowSpeechFile(event: DailyEventEntity) = File(File(context.filesDir, "workflow_audio"), "${event.id}-${event.version}.ogg")
+    /** Returns the stable protected speech path without preparing or claiming playback. */
+    fun workflowSpeechFile(event: DailyEventEntity) = speechStore.workflowSpeechFile(event)
 
+    /** Claims an eligible occurrence under the audio-state lock without waiting for prepared speech. */
     suspend fun claimEventPlayback(event: DailyEventEntity, manual: Boolean = false): Boolean = audioStateMutex.withLock {
         val current = dao.get(event.id) ?: return@withLock false
         if (!auth.hasSession() || current != event || current.status in setOf("cancelled", "skipped")) return@withLock false
@@ -93,25 +97,18 @@ class DailyEventRepository(
     /** Called only at PLAY(<speech>); active snapshots outlive prepared-file cleanup. */
     suspend fun snapshotPreparedSpeech(event: DailyEventEntity): File? = audioStateMutex.withLock {
         val current = dao.get(event.id) ?: return@withLock null
-        if (current != event || !current.syncedFromServer || invalidatedByVoiceChange(current) ||
+        if (current != event || !current.syncedFromServer || speechStore.invalidatedByVoiceChange(current) ||
             current.status in setOf("cancelled", "skipped")) return@withLock null
-        val target = workflowSpeechFile(current)
-        if (target.isOggOpusContainer()) return@withLock target
-        val source = preparedSpeech(current) ?: return@withLock null
-        target.parentFile?.mkdirs()
-        val partial = File(target.path + ".${UUID.randomUUID()}.part")
-        try {
-            source.copyTo(partial)
-            if (!partial.isOggOpusContainer() || !partial.renameTo(target)) throw java.io.IOException("Could not publish playback snapshot")
-        } finally { partial.delete() }
-        target
+        speechStore.snapshot(current)
     }
 
+    /** Snapshots local speech before attempting the existing automatic occurrence claim. */
     suspend fun claimPreparedSpeech(event: DailyEventEntity): File? {
         val file = snapshotPreparedSpeech(event) ?: return null
         return file.takeIf { claimEventPlayback(event) }
     }
 
+    /** Joins active preparation or attempts one transfer with the existing absolute recovery deadline. */
     suspend fun recoverSpeech(eventId: String, version: Int): File? {
         if (downloadMutex.isLocked) return downloadMutex.withLock {
             dao.get(eventId)?.takeIf { it.version == version }?.let(::preparedSpeech)
@@ -119,11 +116,12 @@ class DailyEventRepository(
         return speechAudio(eventId, version, System.nanoTime() + TimeUnit.SECONDS.toNanos(5))
     }
 
+    /** Removes unusable prepared and snapshot files under the shared audio-state lock. */
     suspend fun discardPreparedSpeech(event: DailyEventEntity) = audioStateMutex.withLock {
-        speechFile(event.id, event.version).delete()
-        workflowSpeechFile(event).delete()
+        speechStore.discard(event)
     }
 
+    /** Downloads versioned speech and publishes it only after locked canonical-state validation. */
     suspend fun speechAudio(eventId: String, version: Int, transferDeadlineNanos: Long? = null): File? = downloadMutex.withLock {
         val event = dao.get(eventId) ?: return@withLock null
         if (event.version != version || !event.canPrepareSpeech() || pending.forEvent(eventId) != null) return@withLock null
@@ -142,9 +140,7 @@ class DailyEventRepository(
             response.body()?.close()
             throw ApiException("Event audio version mismatch", 409)
         }
-        val target = speechFile(eventId, version)
-        speechDirectory.mkdirs()
-        val partial = File(target.path + ".${UUID.randomUUID()}.part")
+        val partial = speechStore.partial(eventId, version)
         try {
             val body = response.body() ?: return@withLock null
             // Coroutine cancellation alone cannot interrupt a blocking streaming read.
@@ -156,67 +152,36 @@ class DailyEventRepository(
             audioStateMutex.withLock publish@{
                 val current = dao.get(eventId)
                 if (!auth.hasSession() || current == null || current.copy(playbackAttemptedAt = event.playbackAttemptedAt) != event || !current.canPrepareSpeech() || pending.forEvent(eventId) != null) return@publish null
-                if (!partial.renameTo(target)) throw java.io.IOException("Could not publish event speech audio")
-                target
+                speechStore.publish(partial, eventId, version)
             }
         } finally {
             partial.delete()
         }
     }
 
-    private fun reconcileAudio(previous: DailyEventEntity?, current: DailyEventEntity?) {
-        val id = current?.id ?: previous?.id ?: return
-        if (previous != null && previous != current) {
-            DailyEventAudioWorker.cancel(context, id)
-            if (current == null || previous.copy(playbackAttemptedAt = current.playbackAttemptedAt) != current) {
-                ButlerAudioPlaybackService.cancelEvent(context, id)
-            }
-            // Only an exact echo of our own edit proves local reuse across versions.
-            // A remote version may also mean a provider/settings change.
-            if (current != null && current.syncedFromServer && !previous.syncedFromServer &&
-                current.version == previous.version + 1 && !invalidatedByVoiceChange(previous) &&
-                current.eventDate == previous.eventDate && current.startTime == previous.startTime &&
-                previous.spokenText() == current.spokenText() && previous.eventType == current.eventType &&
-                previous.speakAloud == current.speakAloud && current.status == "planned") {
-                val old = speechFile(previous.id, previous.version)
-                val target = speechFile(current.id, current.version)
-                if (old != target && old.isOggOpusContainer()) {
-                    val partial = File(target.path + ".${UUID.randomUUID()}.part")
-                    try { old.copyTo(partial); if (!partial.renameTo(target)) throw java.io.IOException("Could not rebind speech") }
-                    finally { partial.delete() }
-                }
-            }
-        }
-        val keep = current?.takeIf {
-            it.canPrepareSpeech() || (!it.syncedFromServer && previous != null &&
-                previous.spokenText() == it.spokenText() && previous.eventType == it.eventType && previous.speakAloud == it.speakAloud)
-        }?.let { speechFile(it.id, it.version).name }
-        speechDirectory.listFiles()?.filter { it.name.startsWith("$id-") && it.name != keep && !it.name.endsWith(".part") }?.forEach(File::delete)
-        if (current != null && current.canPrepareSpeech() && keep != null && preparedSpeech(current) == null) enqueueAudio(current)
-    }
-
+    /** Repairs prepared-file cleanup and missing preparation work under the audio-state lock. */
     suspend fun recoverAudioPreparation() = audioStateMutex.withLock {
-        File(context.cacheDir, "event_speech").deleteRecursively()
+        speechStore.clearLegacyCache()
         val events = dao.all()
-        val keep = events.filter { it.canPrepareSpeech() }.mapTo(mutableSetOf()) { speechFile(it.id, it.version).name }
-        speechDirectory.listFiles()?.filter { it.name.endsWith(".ogg") && it.name !in keep }?.forEach(File::delete)
-        speechDirectory.listFiles()?.filter { it.name.endsWith(".part") && System.currentTimeMillis() - it.lastModified() > 86400_000L }?.forEach(File::delete)
+        speechStore.recover(events)
         events.forEach { reconcileAudio(null, it) }
     }
 
+    /** Invalidates old voice identities before cancellation, cleanup, and canonical synchronization. */
     suspend fun reconcileTtsMethod(method: String) = audioStateMutex.withLock {
-        val previous = speechPreferences.getString("tts_method", null)
+        val previous = speechStore.ttsMethod()
         if (previous != null && previous != method) {
             val events = dao.all()
-            speechPreferences.edit().putStringSet("invalidated_versions", events.map { "${it.id}:${it.version}" }.toSet()).commit()
+            speechStore.invalidate(events)
             events.forEach { ButlerAudioPlaybackService.cancelEvent(context, it.id) }
             DailyEventAudioWorker.clear(context)
-            speechDirectory.deleteRecursively()
+            speechStore.deletePrepared()
             queueSynchronization(events.map { it.eventDate })
         }
-        speechPreferences.edit().putString("tts_method", method).commit()
+        speechStore.saveTtsMethod(method)
     }
 
+    /** Persists a local mutation and its outbox operation before reconciling alarms and preparation. */
     suspend fun update(requested: DailyEventEntity) = syncMutex.withLock {
         audioStateMutex.withLock {
             val current = dao.get(requested.id)
@@ -232,6 +197,7 @@ class DailyEventRepository(
         }
     }
 
+    /** Queues canonical deletion while removing local state and reconciling execution effects. */
     suspend fun delete(event: DailyEventEntity) = syncMutex.withLock {
         audioStateMutex.withLock {
             val existing = pending.forEvent(event.id)
@@ -258,43 +224,14 @@ class DailyEventRepository(
         }
     }
 
-    private suspend fun queue(
-        requested: DailyEventEntity,
-        current: DailyEventEntity?,
-        action: String,
-    ) {
-        val existing = pending.forEvent(requested.id)
-        val baseVersion = existing?.baseVersion ?: current?.version ?: 0
-        val mergedAction = if (existing?.operationType == "create") "create" else action
-        val local = requested.copy(
-            version = baseVersion,
-            origin = "user",
-            syncedFromServer = false,
-            playbackAttemptedAt = requested.retainedPlaybackAttempt(current),
-        )
-        database.withTransaction {
-            dao.upsert(local)
-            pending.upsert(
-                PendingSyncOperationEntity(
-                    operationId = existing?.operationId ?: UUID.randomUUID().toString(),
-                    eventId = local.id,
-                    operationType = mergedAction,
-                    baseVersion = baseVersion,
-                    payload = json.encodeToString(local.toMutation()),
-                    createdAt = existing?.createdAt ?: Instant.now().toString(),
-                )
-            )
-        }
-        scheduler.schedule(local)
-        reconcileAudio(current, local)
-        enqueueSync(emptyList())
-    }
-
     // This lock covers upload only, never the AI request. Direct edits keep their local path.
+    /** Serializes pending uploads without holding the synchronization lock over an AI request. */
     suspend fun flushPending() = syncMutex.withLock { pushPending() }
 
+    /** Requests background reconciliation through the existing synchronization worker. */
     fun queueSynchronization(dates: List<String>) = enqueueSync(dates)
 
+    /** Uploads pending edits before pulling each distinct requested date. */
     suspend fun synchronize(dates: List<String>): Set<String> = syncMutex.withLock {
         pushPending()
         val pulled = mutableSetOf<String>()
@@ -304,6 +241,7 @@ class DailyEventRepository(
         pulled
     }
 
+    /** Flushes local edits before requesting and reconciling a regenerated daily plan. */
     suspend fun recreatePlan(date: String) = syncMutex.withLock {
         pushPending()
         val response = authorized { token ->
@@ -313,6 +251,7 @@ class DailyEventRepository(
         if (!pull(date)) throw ApiException("Prepared plan was not available for sync")
     }
 
+    /** Updates an authoritative upcoming occurrence and refreshes its projected list. */
     suspend fun mutateUpcomingEvent(
         event: UpcomingEventDto,
         action: String,
@@ -347,6 +286,7 @@ class DailyEventRepository(
             ?: throw ApiException("Upcoming Event update returned an empty response")
     }
 
+    /** Flushes edits before preparing the evening summary and reconciling both affected days. */
     suspend fun prepareEvening(today: String, tomorrow: String) = syncMutex.withLock {
         pushPending()
         val response = authorized { token ->
@@ -360,19 +300,76 @@ class DailyEventRepository(
         pull(tomorrow)
     }
 
+    /** Cancels preparation and alarms before clearing event, outbox, and speech state under existing locks. */
+    suspend fun clear() = syncMutex.withLock {
+        audioStateMutex.withLock {
+            DailyEventAudioWorker.clear(context)
+            speechStore.clear()
+            dao.pendingSpokenEvents().forEach(scheduler::cancel)
+            database.withTransaction {
+                pending.deleteAll()
+                dao.deleteAll()
+                database.dailyPlanDao().deleteAll()
+                _upcomingEvents.value = emptyList()
+            }
+        }
+    }
+
+    // Locked reconciliation and synchronization internals -----------------------
+
+    /** Coordinates cancellation and preparation around storage reconciliation while the caller owns the state lock. */
+    private fun reconcileAudio(previous: DailyEventEntity?, current: DailyEventEntity?) {
+        val id = current?.id ?: previous?.id ?: return
+        if (previous != null && previous != current) {
+            DailyEventAudioWorker.cancel(context, id)
+            if (current == null || previous.copy(playbackAttemptedAt = current.playbackAttemptedAt) != current) {
+                ButlerAudioPlaybackService.cancelEvent(context, id)
+            }
+            speechStore.rebind(previous, current)
+        }
+        val keep = speechStore.reconcile(previous, current)
+        if (current != null && current.canPrepareSpeech() && keep != null && preparedSpeech(current) == null) enqueueAudio(current)
+    }
+
+    /** Atomically records an event and its merged outbox operation before scheduling local effects. */
+    private suspend fun queue(
+        requested: DailyEventEntity,
+        current: DailyEventEntity?,
+        action: String,
+    ) {
+        val existing = pending.forEvent(requested.id)
+        val baseVersion = existing?.baseVersion ?: current?.version ?: 0
+        val mergedAction = if (existing?.operationType == "create") "create" else action
+        val local = requested.copy(
+            version = baseVersion,
+            origin = "user",
+            syncedFromServer = false,
+            playbackAttemptedAt = requested.retainedPlaybackAttempt(current),
+        )
+        database.withTransaction {
+            dao.upsert(local)
+            pending.upsert(
+                PendingSyncOperationEntity(
+                    operationId = existing?.operationId ?: UUID.randomUUID().toString(),
+                    eventId = local.id,
+                    operationType = mergedAction,
+                    baseVersion = baseVersion,
+                    payload = json.encodeToString(local.toMutation()),
+                    createdAt = existing?.createdAt ?: Instant.now().toString(),
+                )
+            )
+        }
+        scheduler.schedule(local)
+        reconcileAudio(current, local)
+        enqueueSync(emptyList())
+    }
+
+    /** Uploads ordered batches and preserves failed operations for retry. */
     private suspend fun pushPending() {
         while (true) {
             val rows = pending.next()
             if (rows.isEmpty()) return
-            val operations = rows.map { row ->
-                EventSyncOperationDto(
-                    operationId = row.operationId,
-                    action = row.operationType,
-                    eventId = row.eventId,
-                    baseVersion = row.baseVersion,
-                    event = row.payload?.let { json.decodeFromString<EventMutationDto>(it) },
-                )
-            }
+            val operations = syncOperations(rows)
             val response = runCatching {
                 authorized { token -> api.syncEvents("Bearer $token", SyncBatchRequestDto(operations)) }
             }.getOrElse { error ->
@@ -383,32 +380,54 @@ class DailyEventRepository(
         }
     }
 
+    /** Maps persisted operations without altering their identity, version, or payload semantics. */
+    private fun syncOperations(rows: List<PendingSyncOperationEntity>): List<EventSyncOperationDto> =
+        rows.map { row ->
+            EventSyncOperationDto(
+                operationId = row.operationId,
+                action = row.operationType,
+                eventId = row.eventId,
+                baseVersion = row.baseVersion,
+                event = row.payload?.let { json.decodeFromString<EventMutationDto>(it) },
+            )
+        }
+
+    /** Applies batch acknowledgements sequentially using the original per-result transaction boundary. */
     private suspend fun reconcileResults(
         batch: SyncBatchResultDto,
         operationEventIds: Map<String, String>,
     ) {
         for (result in batch.results) {
-            audioStateMutex.withLock {
-                val eventId = result.event?.id ?: operationEventIds[result.operationId]
-                val old = eventId?.let { dao.get(it) }
-                database.withTransaction {
-                    val canonical = result.event
-                    if (canonical == null || canonical.deletedAt != null) {
-                        old?.let { dao.delete(it.id) }
-                    } else {
-                        dao.upsert(canonical.toEntity(old))
-                    }
-                    pending.delete(result.operationId)
-                }
-                old?.let(scheduler::cancel)
-                result.event?.takeIf { it.deletedAt == null }?.let {
-                    dao.get(it.id)?.let(scheduler::schedule)
-                }
-                reconcileAudio(old, eventId?.let { dao.get(it) })
-            }
+            reconcileResult(result, operationEventIds)
         }
     }
 
+    /** Applies one canonical acknowledgement before reconciling alarms and prepared audio. */
+    private suspend fun reconcileResult(
+        result: com.hellobutler.app.data.remote.EventSyncResultDto,
+        operationEventIds: Map<String, String>,
+    ) {
+        audioStateMutex.withLock {
+            val eventId = result.event?.id ?: operationEventIds[result.operationId]
+            val old = eventId?.let { dao.get(it) }
+            database.withTransaction {
+                val canonical = result.event
+                if (canonical == null || canonical.deletedAt != null) {
+                    old?.let { dao.delete(it.id) }
+                } else {
+                    dao.upsert(canonical.toEntity(old))
+                }
+                pending.delete(result.operationId)
+            }
+            old?.let(scheduler::cancel)
+            result.event?.takeIf { it.deletedAt == null }?.let {
+                dao.get(it.id)?.let(scheduler::schedule)
+            }
+            reconcileAudio(old, eventId?.let { dao.get(it) })
+        }
+    }
+
+    /** Applies a canonical day snapshot without overwriting pending local edits. */
     private suspend fun pull(date: String): Boolean {
         val snapshot = planBody(authorized { token -> api.dailyPlan("Bearer $token", date) })
         if (date == java.time.LocalDate.now().toString()) {
@@ -436,22 +455,7 @@ class DailyEventRepository(
         return true
     }
 
-    suspend fun clear() = syncMutex.withLock {
-        audioStateMutex.withLock {
-            DailyEventAudioWorker.clear(context)
-            speechPreferences.edit().clear().commit()
-            speechDirectory.deleteRecursively()
-            File(context.cacheDir, "event_speech").deleteRecursively()
-            dao.pendingSpokenEvents().forEach(scheduler::cancel)
-            database.withTransaction {
-                pending.deleteAll()
-                dao.deleteAll()
-                database.dailyPlanDao().deleteAll()
-                _upcomingEvents.value = emptyList()
-            }
-        }
-    }
-
+    /** Retries an API operation once after refreshing a rejected access token. */
     private suspend fun <T> authorized(call: suspend (String) -> Response<T>): Response<T> {
         var token = auth.accessToken()
         var response = call(token)
@@ -462,22 +466,26 @@ class DailyEventRepository(
         return response
     }
 
+    /** Validates a plan response before exposing its canonical snapshot. */
     private fun planBody(response: Response<DailyPlanSnapshotDto>): DailyPlanSnapshotDto {
         if (!response.isSuccessful) throw ApiException("Plan sync failed (${response.code()})")
         return response.body() ?: throw ApiException("Plan sync returned an empty response")
     }
 
+    /** Validates an upload response before applying its acknowledgements. */
     private fun syncBody(response: Response<SyncBatchResultDto>): SyncBatchResultDto {
         if (!response.isSuccessful) throw ApiException("Event sync failed (${response.code()})")
         return response.body() ?: throw ApiException("Event sync returned an empty response")
     }
 }
 
+/** Maps local editable fields into the existing synchronization contract. */
 private fun DailyEventEntity.toMutation() = EventMutationDto(
     id, eventDate, title, description, eventType, status, startTime, endTime,
     durationMinutes, scheduledPrecision, content, reminderMinutesBefore, speakAloud, sortOrder,
 )
 
+/** Builds canonical Room state while retaining only a compatible playback attempt. */
 private fun SyncEventDto.toEntity(previous: DailyEventEntity?) = DailyEventEntity(
     id = id,
     dailyPlanId = dailyPlanId,
@@ -500,6 +508,7 @@ private fun SyncEventDto.toEntity(previous: DailyEventEntity?) = DailyEventEntit
     playbackAttemptedAt = null,
 ).let { it.copy(playbackAttemptedAt = it.retainedPlaybackAttempt(previous)) }
 
+/** Retains an occurrence claim only when its timing, eligibility, and spoken content remain compatible. */
 internal fun DailyEventEntity.retainedPlaybackAttempt(previous: DailyEventEntity?): String? {
     if (previous == null) return null
     val text = content?.takeIf { it.isNotBlank() } ?: description?.takeIf { it.isNotBlank() } ?: title

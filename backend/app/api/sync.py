@@ -81,6 +81,9 @@ async def prepare_event_speech(
         raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     except TypeError as exc:
         raise HTTPException(422, str(exc)) from exc
+    finally:
+        # Release the FOR UPDATE row lock and connection before background TTS runs.
+        await session.rollback()
     if queued or audio_status == "pending":
         background.add_task(service.generate, "event", event_id)
     return {"audio_status": audio_status}

@@ -88,4 +88,45 @@ class AudioWorkflowPersistenceTest {
         file.delete(); store.clear()
     }
 
+    /** Scheduler presentation must never downgrade a newer checkpoint or an active/terminal execution. */
+    @Test fun schedulerOfferPreservesNewerOrTerminalState() {
+        val store = AudioWorkflowStore(context)
+        val scheduler = AudioWorkflowScheduler(context, store)
+        val execution = AudioExecution("stale-offer-test", AudioWorkflow.REMINDER, "speech.ogg", status = "waiting")
+        try {
+            val newer = execution.copy(next = 1)
+            store.save(newer)
+            assertTrue(scheduler.offer(execution))
+            assertEquals(1, store.get(execution.id)!!.next)
+            for (status in listOf("playing", "complete", "cancelled")) {
+                store.save(execution.copy(status = status))
+                assertTrue(scheduler.offer(execution))
+                assertEquals(status, store.get(execution.id)!!.status)
+            }
+        } finally { scheduler.dismiss(execution.id); store.clear() }
+    }
+
+    /** A prepared notification action still requires the journal guard at publication time. */
+    @Test fun preparedNotificationCannotPublishAfterCheckpointChanges() {
+        val store = AudioWorkflowStore(context)
+        val scheduler = AudioWorkflowScheduler(context, store)
+        val notifications = AudioWorkflowNotifications(context)
+        val execution = AudioExecution("guarded-notification-test", AudioWorkflow.REMINDER, "speech.ogg", status = "waiting")
+        scheduler.dismiss(execution.id)
+        store.save(execution)
+        try {
+            val publish = notifications.prepareOffer(execution)
+            if (publish == null) {
+                assertFalse(scheduler.offer(execution))
+                assertEquals("waiting", store.get(execution.id)!!.status)
+            } else {
+                store.save(execution.copy(next = 1))
+                assertFalse(store.transition(execution, execution.copy(status = "offered"), publish))
+                val manager = context.getSystemService(android.app.NotificationManager::class.java)
+                assertFalse(manager.activeNotifications.any { it.tag == execution.id })
+                assertEquals(1, store.get(execution.id)!!.next)
+            }
+        } finally { scheduler.dismiss(execution.id); store.clear() }
+    }
+
 }

@@ -16,6 +16,8 @@ import com.hellobutler.app.execution.DailyEventScheduler
 import java.io.File
 import java.time.LocalDate
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.*
+import com.hellobutler.app.execution.audio.*
 import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import okhttp3.MultipartBody
@@ -128,6 +130,56 @@ class LifecycleTest {
         database.dailyEventDao().upsert(event.copy(status = "planned"))
         assertEquals(1, database.dailyEventDao().claimPlayback(event.id, "now", today, "19:00", event.content!!, 0))
         assertEquals(0, database.dailyEventDao().claimPlayback(event.id, "now", today, "19:00", event.content!!, 0))
+    }
+
+    /** Automatic preparation reserves its identity before I/O and cannot duplicate or complete cancelled work. */
+    @Test fun automaticResponseReservationPrecedesDownloadAndSurvivesCancellation() = runBlocking {
+        val id = "reservation-${java.util.UUID.randomUUID()}"
+        val executionId = "response:$id"
+        val now = java.time.Instant.now().toString()
+        val journal = AudioWorkflowStore(context)
+        val workflows = AudioWorkflowScheduler(context, journal)
+        val voice = SoundVoiceSettings(context)
+        val responsesEnabled = voice.state.value.responses
+        val entered = CompletableDeferred<Unit>()
+        var reserved: String? = null
+        var calls = 0
+        val api = object : EmptyButlerApi() {
+            override suspend fun result(authorization: String, requestId: String): Response<ButlerResultDto> {
+                calls++
+                assertEquals(executionId, reserved)
+                assertEquals("preparing", journal.get(executionId)!!.status)
+                entered.complete(Unit)
+                awaitCancellation()
+            }
+        }
+        database.butlerConversationDao().upsertRequest(com.hellobutler.app.data.local.ButlerRequestEntity(
+            id, "text", "talk", "Hello", null, "completed", now,
+        ))
+        database.butlerConversationDao().upsertMessage(com.hellobutler.app.data.local.ConversationMessageEntity(
+            "$id:butler", id, "butler", "Hello", now, "completed", "text", audioCacheState = "pending",
+        ))
+        val preparer = AudioExecutionPreparer(
+            database, events, ButlerRepository(context, database, api, auth, events, settings),
+            journal, workflows, voice, showDeferred = {}, dismissDeferred = {}, reserveActiveId = { reserved = it },
+        )
+        voice.toggle("responses", true)
+        try {
+            coroutineScope {
+                val first = async { preparer.prepare(id, null, true, false, "manual") }
+                try {
+                    withTimeout(5_000) { entered.await() }
+                    assertNull(preparer.prepare(id, null, true, false, "other"))
+                } finally { first.cancelAndJoin() }
+                assertTrue(first.isCancelled)
+            }
+            assertEquals(1, calls)
+            // Final cancellation belongs to the service, not the extracted preparer.
+            assertEquals("preparing", journal.get(executionId)!!.status)
+        } finally {
+            workflows.cancel(executionId)
+            voice.toggle("responses", responsesEnabled)
+        }
     }
 
     private fun local() = DailyEventEntity("event", "plan", today, "Exercise", null, "exercise", "planned", "19:00", null, null, "exact", null, null, false, 0, 0, "user", false, null)
