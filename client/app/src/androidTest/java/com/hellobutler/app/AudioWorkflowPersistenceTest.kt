@@ -129,4 +129,134 @@ class AudioWorkflowPersistenceTest {
         } finally { scheduler.dismiss(execution.id); store.clear() }
     }
 
+    @Test fun cancellationDefeatsAlreadyReadCheckpointsAndPreservesCompletedExecutions() {
+        val store = AudioWorkflowStore(context)
+        val waiting = AudioExecution("cancel-race-test", AudioWorkflow.REMINDER, "", next = 2, dueAt = 100, status = "waiting")
+        try {
+            store.save(waiting)
+            var removed = false
+            store.cancel(waiting.id) { removed = store.get(waiting.id)?.status == "cancelled" }
+            assertTrue(removed) // Invalidated before removing alarm/work effects.
+            assertFalse(store.transition(waiting, waiting.copy(status = "playing")) { fail("Cancelled audio resumed") })
+            val newer = waiting.copy(dueAt = 200)
+            store.save(newer)
+            store.cancel(waiting.id, waiting) { fail("Stale worker cancelled a replacement") }
+            assertEquals(200L, store.get(waiting.id)!!.dueAt)
+            store.save(waiting.copy(status = "complete"))
+            store.cancel(waiting.id) {}
+            assertEquals("complete", store.get(waiting.id)!!.status)
+        } finally { store.clear() }
+    }
+
+    @Test fun repeatedAndRescheduledContinuationsLeaveOnePendingWorkAndCannotReviveAfterCancel() {
+        val store = AudioWorkflowStore(context)
+        val scheduler = AudioWorkflowScheduler(context, store)
+        val work = androidx.work.WorkManager.getInstance(context)
+        val waiting = AudioExecution("single-continuation-test", AudioWorkflow.REMINDER, "",
+            dueAt = System.currentTimeMillis() + 86400_000L, status = "waiting")
+        val tag = "butler-audio-continuation-${waiting.id}"
+        fun pending() = work.getWorkInfosByTag(tag).get(10, java.util.concurrent.TimeUnit.SECONDS)
+            .filter { !it.state.isFinished }
+        fun await(assertion: () -> Boolean) {
+            val deadline = android.os.SystemClock.elapsedRealtime() + 5000
+            while (!assertion()) {
+                check(android.os.SystemClock.elapsedRealtime() < deadline) { "WorkManager did not reconcile" }
+                Thread.sleep(20)
+            }
+        }
+        try {
+            store.save(waiting)
+            repeat(3) { scheduler.schedule(waiting) }
+            await { pending().size == 1 }
+            val original = pending().single().id
+            val newer = waiting.copy(dueAt = waiting.dueAt + 60_000)
+            store.save(newer)
+            scheduler.schedule(newer)
+            await { pending().let { it.size == 1 && it.single().id != original } }
+            scheduler.schedule(waiting) // Stale scheduling must leave the replacement intact.
+            assertEquals(newer.dueAt, store.get(waiting.id)!!.dueAt)
+            scheduler.cancel(waiting.id)
+            scheduler.schedule(newer)
+            await { pending().isEmpty() }
+            assertEquals("cancelled", store.get(waiting.id)!!.status)
+        } finally { scheduler.cancel(waiting.id); store.clear() }
+    }
+
+    @Test fun recoveryPreservesCheckpointAndNeverReplaysInterruptedAudio() {
+        val store = AudioWorkflowStore(context)
+        val scheduler = AudioWorkflowScheduler(context, store)
+        // A future timestamp avoids actually running the test's durable worker.
+        val waiting = AudioExecution("recover-waiting-test", AudioWorkflow.REMINDER, "",
+            dueAt = System.currentTimeMillis() + 86400_000L, status = "waiting")
+        val interrupted = waiting.copy(id = "recover-playing-test", status = "playing")
+        val offered = waiting.copy(id = "recover-offered-test", status = "offered")
+        val overdue = waiting.copy(id = "recover-overdue-test", dueAt = 1)
+        try {
+            store.save(waiting); store.save(interrupted); store.save(offered); store.save(overdue)
+            scheduler.recover(cancelInterrupted = false)
+            assertEquals("playing", store.get(interrupted.id)!!.status)
+            scheduler.recover()
+            assertEquals(waiting.dueAt, store.get(waiting.id)!!.dueAt)
+            assertEquals("waiting", store.get(waiting.id)!!.status)
+            assertEquals("offered", store.get(offered.id)!!.status)
+            assertEquals(1L, store.get(overdue.id)!!.dueAt)
+            assertEquals("cancelled", store.get(interrupted.id)!!.status)
+        } finally {
+            listOf(waiting, interrupted, offered, overdue).forEach { scheduler.cancel(it.id) }
+            store.clear()
+        }
+    }
+
+    @Test fun fallbackReconciliationUpdatesAndRemovesSchedulesWithoutExactAccess() {
+        val alarms = context.getSystemService(android.app.AlarmManager::class.java)
+        org.junit.Assume.assumeTrue(android.os.Build.VERSION.SDK_INT >= 31 && !alarms.canScheduleExactAlarms())
+        val tomorrow = java.time.LocalDate.now().plusDays(1).toString()
+        val event = com.hellobutler.app.data.local.DailyEventEntity(
+            "fallback-lifecycle-test", null, tomorrow, "Reminder", "Water", "reminder", "planned", "14:00",
+            null, null, "exact", null, null, false, 0, 1, "user", true, null,
+        )
+        val scheduler = com.hellobutler.app.execution.DailyEventScheduler(context)
+        val work = androidx.work.WorkManager.getInstance(context)
+        fun pending() = work.getWorkInfosForUniqueWork("daily-event-execution-${event.id}")
+            .get(10, java.util.concurrent.TimeUnit.SECONDS).filter { !it.state.isFinished }
+        fun await(assertion: () -> Boolean) {
+            val deadline = android.os.SystemClock.elapsedRealtime() + 5000
+            while (!assertion()) {
+                check(android.os.SystemClock.elapsedRealtime() < deadline) { "Fallback work did not reconcile" }
+                Thread.sleep(20)
+            }
+        }
+        try {
+            scheduler.schedule(event)
+            await { pending().size == 1 }
+            val old = pending().single().id
+            val changed = event.copy(startTime = "15:00", version = 2)
+            repeat(3) { scheduler.reconcile(listOf(event), listOf(changed)) }
+            await { pending().let { it.size == 1 && it.single().id != old } }
+            scheduler.schedule(changed.copy(status = "cancelled"))
+            await { pending().isEmpty() }
+            scheduler.schedule(changed)
+            await { pending().size == 1 }
+            scheduler.reconcile(listOf(changed), emptyList()) // Canonical deletion.
+            await { pending().isEmpty() }
+            scheduler.schedule(changed) // Same reconciliation used after reboot/update.
+            await { pending().size == 1 }
+            scheduler.schedule(changed.copy(playbackAttemptedAt = "already-attempted"))
+            await { pending().isEmpty() }
+        } finally { scheduler.cancel(event) }
+    }
+
+    @Test fun automaticReservationCannotOverwriteManualSuppressionOrDownloadCancellation() {
+        val store = AudioWorkflowStore(context)
+        val preparing = AudioExecution("reservation-race-test", AudioWorkflow.BUTLER_RESPONSE, "", status = "preparing")
+        try {
+            assertTrue(store.reserve(preparing))
+            assertFalse(store.reserve(preparing.copy(status = "ready")))
+            store.cancel(preparing.id) {}
+            assertFalse(store.transition(preparing, preparing.copy(status = "ready")) { fail("Late download resurrected speech") })
+            assertFalse(store.reserve(preparing))
+            assertEquals("cancelled", store.get(preparing.id)!!.status)
+        } finally { store.clear() }
+    }
+
 }

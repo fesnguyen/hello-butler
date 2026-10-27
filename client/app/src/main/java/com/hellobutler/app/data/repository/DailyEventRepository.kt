@@ -25,6 +25,7 @@ import com.hellobutler.app.execution.spokenText
 import com.hellobutler.app.execution.DailyEventAudioWorker
 import com.hellobutler.app.execution.DailyEventScheduler
 import com.hellobutler.app.execution.canPrepareSpeech
+import com.hellobutler.app.execution.eveningAlreadyPrepared
 import com.hellobutler.app.execution.isDueForSpeech
 import com.hellobutler.app.sync.DailySyncWorker
 import com.hellobutler.app.speech.isOggOpusContainer
@@ -76,6 +77,16 @@ class DailyEventRepository(
 
     /** Local-only lookup; this method must never refresh authentication or fetch audio. */
     fun preparedSpeech(event: DailyEventEntity): File? = speechStore.preparedSpeech(event)
+
+    /** Publishes only for the current unclaimed occurrence; readiness is a local file check. */
+    suspend fun offerEventPlayback(
+        event: DailyEventEntity,
+        publish: (DailyEventEntity, Boolean) -> Boolean,
+    ): Boolean = audioStateMutex.withLock {
+        val current = dao.get(event.id)
+        if (!auth.hasSession() || current == null || current != event || !current.isDueForSpeech()) return@withLock true
+        publish(current, preparedSpeech(current) != null)
+    }
 
     /** Returns the stable protected speech path without preparing or claiming playback. */
     fun workflowSpeechFile(event: DailyEventEntity) = speechStore.workflowSpeechFile(event)
@@ -289,15 +300,19 @@ class DailyEventRepository(
     /** Flushes edits before preparing the evening summary and reconciling both affected days. */
     suspend fun prepareEvening(today: String, tomorrow: String) = syncMutex.withLock {
         pushPending()
-        val response = authorized { token ->
-            planningApi.prepareEvening(
-                "Bearer $token",
-                com.hellobutler.app.data.remote.EveningPrepareRequestDto(today),
-            )
+        val preferences = context.getSharedPreferences("butler_nightly_planning", Context.MODE_PRIVATE)
+        if (!eveningAlreadyPrepared(preferences.getString("prepared_date", null), today)) {
+            val response = authorized { token ->
+                planningApi.prepareEvening(
+                    "Bearer $token",
+                    com.hellobutler.app.data.remote.EveningPrepareRequestDto(today),
+                )
+            }
+            if (!response.isSuccessful) throw ApiException("Evening preparation failed (${response.code()})")
+            // Record server success before pulling: a failed pull must not regenerate the plan.
+            check(preferences.edit().putString("prepared_date", today).commit())
         }
-        if (!response.isSuccessful) throw ApiException("Evening preparation failed (${response.code()})")
-        pull(today)
-        pull(tomorrow)
+        if (!pull(today) || !pull(tomorrow)) throw ApiException("Evening plans were not available for sync")
     }
 
     /** Cancels preparation and alarms before clearing event, outbox, and speech state under existing locks. */
@@ -305,6 +320,7 @@ class DailyEventRepository(
         audioStateMutex.withLock {
             DailyEventAudioWorker.clear(context)
             speechStore.clear()
+            check(context.getSharedPreferences("butler_nightly_planning", Context.MODE_PRIVATE).edit().clear().commit())
             dao.pendingSpokenEvents().forEach(scheduler::cancel)
             database.withTransaction {
                 pending.deleteAll()

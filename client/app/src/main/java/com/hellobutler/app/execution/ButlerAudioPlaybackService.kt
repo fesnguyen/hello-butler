@@ -148,6 +148,8 @@ class ButlerAudioPlaybackService : Service() {
             intent.getBooleanExtra("manual_resume", false),
             intent.getIntExtra(EXTRA_EVENT_VERSION, -1),
             intent.getLongExtra(EXTRA_EVENT_TRIGGER, -1),
+            intent.getIntExtra("checkpoint", -1),
+            intent.getLongExtra("due_at", -1),
         )
     }
 
@@ -159,7 +161,13 @@ class ButlerAudioPlaybackService : Service() {
         val requestedPrivate = request.privateRoute
         val requestedAutomatic = request.automatic
         val manualResume = request.manualResume
-        if (request.resumeId != null && (existing == null || existing.status in setOf("complete", "cancelled") || existing.dueAt > System.currentTimeMillis())) {
+        if (!isPreview && !manualResume && (requestedAutomatic || existing?.automatic == true) && !container.authRepository.hasSession()) {
+            if (active.id == null) stopSelf(startId)
+            return false
+        }
+        if (request.resumeId != null && (existing == null || !existing.canContinue(existing.next, existing.dueAt) ||
+                existing.dueAt > System.currentTimeMillis() ||
+                (request.checkpoint >= 0 && !existing.canContinue(request.checkpoint, request.dueAt)))) {
             if (active.id == null) stopSelf(startId)
             return false
         }
@@ -181,10 +189,11 @@ class ButlerAudioPlaybackService : Service() {
         if (requestedAutomatic && active.id != null) {
             if (existing != null) {
                 val deferred = existing.copy(dueAt = System.currentTimeMillis() + 15_000, status = "waiting")
-                container.audioWorkflowStore.save(deferred)
-                container.audioWorkflowScheduler.schedule(deferred)
+                if (container.audioWorkflowStore.transition(existing, deferred) {}) {
+                    container.audioWorkflowScheduler.schedule(deferred)
+                }
             }
-            else if (eventId != null) DailyEventExecutionWorker.enqueue(this, eventId, 15_000)
+            else if (eventId != null) DailyEventExecutionWorker.enqueue(this, eventId, 15_000, request.expectedVersion, request.expectedTrigger)
             return false
         }
         return true
@@ -213,11 +222,14 @@ class ButlerAudioPlaybackService : Service() {
             startForegroundNow(notification("Preparing audio…"))
         } catch (error: RuntimeException) {
             existing?.let { container.audioWorkflowScheduler.offer(it) }
-            if (eventId != null) DailyEventExecutionWorker.enqueue(this, eventId, 0)
+            if (eventId != null) DailyEventExecutionWorker.enqueue(this, eventId, 0, request.expectedVersion, request.expectedTrigger)
             finish(cancel = false)
             return
         }
-        if (existing != null) container.audioWorkflowStore.save(existing.copy(status = "playing"))
+        if (existing != null && !container.audioWorkflowStore.transition(existing, existing.copy(status = "playing")) {}) {
+            finish(cancel = false)
+            return
+        }
         job = launchPlayback(request, existing, ++generation)
     }
 
@@ -237,7 +249,7 @@ class ButlerAudioPlaybackService : Service() {
                 throw cancelled
             } catch (error: Exception) {
                 Log.w(TAG, "Butler audio workflow failed", error)
-                if (generation == token) active.id?.let(container.audioWorkflowScheduler::cancel)
+                if (generation == token) active.id?.let { container.audioWorkflowScheduler.cancel(it) }
             } finally {
                 // A cancelled download must not finish a replacement request.
                 if (generation == token) finish(cancel = false)
@@ -282,8 +294,14 @@ class ButlerAudioPlaybackService : Service() {
                         }
                     }
                 }
+                var checkpoint = if (existing != null) existing.copy(status = "playing") else execution
                 AudioSequence(
-                    container.audioWorkflowStore::save,
+                    checkpoint = { updated ->
+                        if (!container.audioWorkflowStore.transition(checkpoint, updated) {}) {
+                            throw CancellationException("Audio checkpoint changed")
+                        }
+                        checkpoint = updated
+                    },
                     play = { resource ->
                         ensureActive()
                         if (active.automatic && !container.soundVoice.state.value.allows(execution.workflow)) throw CancellationException("Automatic speech disabled")
@@ -299,6 +317,7 @@ class ButlerAudioPlaybackService : Service() {
 
     /** Checks the canonical event against the execution snapshot before continuing playback. */
     private suspend fun validEvent(execution: AudioExecution): Boolean {
+        if (execution.automatic && !container.authRepository.hasSession()) return false
         val id = execution.eventId ?: return true
         val event = container.database.dailyEventDao().get(id) ?: return false
         return event.matchesExecution(execution)
@@ -311,7 +330,7 @@ class ButlerAudioPlaybackService : Service() {
     /** Rechecks event and automatic preferences immediately before the player starts. */
     private suspend fun canStartPlayback(): Boolean {
         val execution = active.id?.let(container.audioWorkflowStore::get)
-        if (active.eventId != null && (execution == null || execution.status == "cancelled" || !validEvent(execution))) return false
+        if (!active.preview && (execution == null || execution.status in setOf("complete", "cancelled") || !validEvent(execution))) return false
         return execution == null || !active.automatic || container.soundVoice.state.value.allows(execution.workflow)
     }
 
@@ -373,6 +392,8 @@ class ButlerAudioPlaybackService : Service() {
         val manualResume: Boolean,
         val expectedVersion: Int,
         val expectedTrigger: Long,
+        val checkpoint: Int,
+        val dueAt: Long,
     )
 
     /** Main-dispatcher execution identity; jobs and generation retain their service lifetime. */
@@ -437,7 +458,10 @@ class ButlerAudioPlaybackService : Service() {
             .setData(Uri.parse("hellobutler://audio/resume/${Uri.encode(id)}")).putExtra(EXTRA_EXECUTION, id)
             .putExtra(EXTRA_AUTOMATIC, !manual).putExtra("manual_resume", manual)
         /** Requests foreground continuation of an already journaled execution. */
-        fun resume(context: Context, id: String) { ContextCompat.startForegroundService(context, resumeIntent(context, id)) }
+        fun resume(context: Context, id: String, checkpoint: Int = -1, dueAt: Long = -1) {
+            ContextCompat.startForegroundService(context, resumeIntent(context, id)
+                .putExtra("checkpoint", checkpoint).putExtra("due_at", dueAt))
+        }
         /** Requests the prerecorded volume sample through the same playback owner. */
         fun preview(context: Context) { ContextCompat.startForegroundService(context, Intent(context, ButlerAudioPlaybackService::class.java).setAction(ACTION_PREVIEW)) }
         /** Stops a preview without interrupting ordinary speech. */

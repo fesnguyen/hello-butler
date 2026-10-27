@@ -20,7 +20,10 @@ class ButlerRequestWorker(appContext: Context, params: WorkerParameters) : Corou
         val requestId = inputData.getString(REQUEST_ID) ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
-        return runCatching { container.butlerRepository.upload(requestId); Result.success() }.getOrElse { Result.retry() }
+        return runCatching { container.butlerRepository.upload(requestId); Result.success() }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            Result.retry()
+        }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {
@@ -34,7 +37,10 @@ class ButlerResultWorker(appContext: Context, params: WorkerParameters) : Corout
         val requestId = inputData.getString(REQUEST_ID) ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
-        return runCatching { if (container.butlerRepository.reconcile(requestId)) Result.success() else Result.retry() }.getOrElse { Result.retry() }
+        return runCatching { if (container.butlerRepository.reconcile(requestId)) Result.success() else Result.retry() }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            Result.retry()
+        }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {
@@ -56,20 +62,23 @@ class ButlerAudioWorker(appContext: Context, params: WorkerParameters) : Corouti
                 val recent = message?.createdAt?.let { runCatching {
                     java.time.Instant.parse(it).isAfter(java.time.Instant.now().minusSeconds(600))
                 }.getOrDefault(false) } ?: false
-                if (recent && container.audioWorkflowStore.get(id) == null) {
+                if (recent) {
                     val execution = com.hellobutler.app.execution.audio.AudioExecution(id,
                         com.hellobutler.app.execution.audio.AudioWorkflow.BUTLER_RESPONSE,
                         audio.absolutePath, requestId = requestId)
-                    container.audioWorkflowStore.save(execution)
+                    if (!container.audioWorkflowStore.reserve(execution)) return@runCatching Result.success()
                     if (com.hellobutler.app.core.AppVisibility.isForeground) {
-                        try { com.hellobutler.app.execution.ButlerAudioPlaybackService.resume(applicationContext, id) }
+                        try { com.hellobutler.app.execution.ButlerAudioPlaybackService.resume(applicationContext, id, execution.next, execution.dueAt) }
                         catch (_: IllegalStateException) { container.audioWorkflowScheduler.offer(execution) }
                         catch (_: SecurityException) { container.audioWorkflowScheduler.offer(execution) }
                     } else container.audioWorkflowScheduler.offer(execution)
                 }
             }
             if (audio != null || container.butlerRepository.audioUnavailable(requestId)) Result.success() else Result.retry()
-        }.getOrElse { Result.retry() }
+        }.getOrElse { error ->
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            Result.retry()
+        }
     }
     companion object {
         fun enqueue(context: Context, requestId: String) {

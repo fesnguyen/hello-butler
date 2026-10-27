@@ -559,8 +559,17 @@ Automatic preferences are device-local and persisted: reminders default off, ord
 
 Morning Brief: long opening → shuffled morning warm-up → persist continuation at warm-up completion + 300 seconds → release service/player → short opening → resolved event speech. Good Night: long opening → shuffled evening warm-up → resolved event speech. Reminder: ordinary notification, plus optional short opening → resolved event speech. Response: existing response audio only. A manual listen suppresses a pending automatic repeat of that response.
 
+Continuations use one replaceable WorkManager request per execution, with checkpoint and due-time validation in the receiver, worker and service. Atomic journal transitions prevent stale resumes, completion callbacks and response downloads from overwriting cancellation. Recovery preserves the recorded due time; live schedule reconciliation does not cancel a currently playing service.
+
 Waiting continuations expose a Stop notification. Stop cancels the journal and tagged workers/exact alarm. A delayed worker cannot assume a background service-start exemption: offer Listen when required. App restart repairs persisted waiting work; in-progress ambiguous audio is cancelled to avoid repeated announcements. Definition snapshots keep an already-scheduled sequence stable across configuration edits. See `AUDIO_WORKFLOWS.md`.
 
 ### Event edits and Phase 2 speech resolution
 
+Alarm intents and fallback workers bind the registered event version and trigger time. Notification publication rechecks the canonical unclaimed occurrence and local, voice-valid prepared audio under the repository's existing state lock. Missing audio offers Prepare & Listen through the existing recovery path; readiness checks never download audio.
+
 Alarm intents bind the registered event version and trigger time. Executions snapshot selected text, trigger time, type and speech eligibility; stale alarms and incompatible delayed continuations are canceled. Room observation stops active playback after an edit. An exact canonical confirmation of a local timing edit can rebind compatible audio, but other remote version changes fetch version-validated bytes because unchanged text alone does not prove unchanged voice settings. Backend reuse still avoids unnecessary regeneration. TTS-method changes invalidate planned speech and require canonical synchronization before old local snapshots are reused. Native fallback needs installed offline voice data and has a fifteen-second initialization/synthesis limit per Android-sized chunk. Persistent delays still release service/player/focus. See [AUDIO_FLOW_TRACE.md](AUDIO_FLOW_TRACE.md).
+
+
+### Nightly planning catch-up
+
+`NightlyPlanSyncWorker` remains best-effort network-constrained work around 22:30. Date-scoped input survives delayed execution and retries. Startup, schedule restoration and daily sync recover the latest due evening, without processing older backlogs. The repository records acknowledged server success before pulling the two affected plans, so failed pulls can retry without regenerating successful planning. Logout clears the local success date. Lost server responses still require backend idempotency for an exactly-once guarantee; see the scheduling reliability review in [AUDIO_FLOW_TRACE.md](AUDIO_FLOW_TRACE.md).

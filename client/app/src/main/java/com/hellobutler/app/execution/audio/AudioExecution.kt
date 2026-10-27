@@ -24,3 +24,11 @@ data class AudioExecution(
     val updatedAt: Long = System.currentTimeMillis(),
     val createdAt: Long = System.currentTimeMillis(),
 )
+
+/** A delayed effect belongs to one persisted checkpoint, never just an execution ID. */
+internal fun AudioExecution.matchesCheckpoint(expected: AudioExecution): Boolean =
+    id == expected.id && createdAt == expected.createdAt && next == expected.next &&
+        dueAt == expected.dueAt && status == expected.status
+
+internal fun AudioExecution.canContinue(next: Int, dueAt: Long): Boolean =
+    this.next == next && this.dueAt == dueAt && status in setOf("waiting", "offered", "ready")

@@ -31,7 +31,7 @@ class DailyEventScheduler(private val context: Context) {
         if (triggerAt <= System.currentTimeMillis()) {
             // Do not erase a due Listen notification on routine sync, or replay old alarms.
             if (!event.isDueForSpeech()) cancel(event)
-            else DailyEventExecutionWorker.enqueue(context, event.id, 0)
+            else DailyEventExecutionWorker.enqueue(context, event, 0)
             return
         }
         cancel(event)
@@ -43,12 +43,12 @@ class DailyEventScheduler(private val context: Context) {
                 alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pending)
             }.onFailure {
                 DailyEventExecutionWorker.enqueue(
-                    context, event.id, triggerAt - System.currentTimeMillis()
+                    context, event, triggerAt - System.currentTimeMillis()
                 )
             }
         } else {
             // No background service launch from a delayed worker: offer a local Listen action.
-            DailyEventExecutionWorker.enqueue(context, event.id, triggerAt - System.currentTimeMillis())
+            DailyEventExecutionWorker.enqueue(context, event, triggerAt - System.currentTimeMillis())
         }
     }
 

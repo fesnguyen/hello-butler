@@ -137,9 +137,7 @@ class AudioWorkflowStore(
         // Reject the transition if another operation has changed
         // the execution's current step, scheduled time, or status.
         if (
-            current.next != expected.next ||
-            current.dueAt != expected.dueAt ||
-            current.status != expected.status
+            !current.matchesCheckpoint(expected)
         ) {
             return@synchronized false
         }
@@ -147,11 +145,26 @@ class AudioWorkflowStore(
         // Perform the caller's side effect only for a matching state.
         action()
 
-        // Persist the new execution state after the action succeeds.
-        save(updated)
+        // Scheduling can guard effects without rewriting an unchanged checkpoint.
+        if (updated != expected) save(updated)
 
         // Confirm that the transition completed.
         true
+    }
+
+    /** Reserve an automatic identity once, including terminal suppression markers. */
+    fun reserve(execution: AudioExecution): Boolean = synchronized(executionLock) {
+        if (get(execution.id) != null) return@synchronized false
+        save(execution)
+        true
+    }
+
+    /** Invalidate first, then remove effects under the same lock used by schedule/transition. */
+    fun cancel(id: String, expected: AudioExecution? = null, removeEffects: () -> Unit) = synchronized(executionLock) {
+        val current = get(id)
+        if (expected != null && (current == null || !current.matchesCheckpoint(expected))) return@synchronized
+        if (current != null && current.status !in setOf("complete", "cancelled")) save(current.copy(status = "cancelled"))
+        removeEffects()
     }
 
     // --------------------------------------------------------
