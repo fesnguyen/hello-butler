@@ -158,151 +158,52 @@ class AudioContinuationWorker(
     params: WorkerParameters,
 ) : CoroutineWorker(context, params) {
 
-    // --------------------------------------------------------
-    // Entry Point - Execute Scheduled Work
-    // --------------------------------------------------------
-
-    /**
-     * Processes a scheduled audio continuation request.
-     *
-     * Validates persisted execution state, session availability,
-     * event consistency, timing, and speech preferences before
-     * choosing automatic playback or manual notification.
-     */
     override suspend fun doWork(): Result {
-
-        // ----------------------------------------------------
-        // Resolve Scheduled Execution
-        // ----------------------------------------------------
-
-        // Reject worker requests without an execution identifier.
-        val id = inputData.getString("execution_id")
-            ?: return Result.failure()
-
-        // Access the application's shared dependencies.
+        val id = inputData.getString("execution_id") ?: return Result.failure()
         val container = (applicationContext as ButlerApplication).container
+        val execution = container.audioWorkflowStore.get(id) ?: return Result.success()
 
-        // Treat missing executions as already handled.
-        val execution = container.audioWorkflowStore.get(id)
-            ?: return Result.success()
+        // Ignore stale checkpoints before performing any side effects.
+        if (!execution.canContinue(
+                inputData.getInt("checkpoint", -1),
+                inputData.getLong("due_at", -1),
+            )
+        ) return Result.success()
 
-        // ----------------------------------------------------
-        // Validate Execution Status
-        // ----------------------------------------------------
-
-        // Ignore executions that are finished or currently active.
-        // These must not be started again by a delayed worker.
-        if (!execution.canContinue(inputData.getInt("checkpoint", -1), inputData.getLong("due_at", -1))) {
-            return Result.success()
-        }
-
-        // ----------------------------------------------------
-        // Validate Associated Daily Event
-        // ----------------------------------------------------
-
-        // Ensure an event-backed execution still matches
-        // the current event data before continuing playback.
-        if (
-            execution.eventId != null &&
-            !container.database.dailyEventDao()
-                .get(execution.eventId)
-                .matchesExecution(execution)
+        if (execution.eventId != null &&
+            !container.database.dailyEventDao().get(execution.eventId).matchesExecution(execution)
         ) {
-
-            // Cancel stale executions when the event has changed.
             container.audioWorkflowScheduler.cancel(id, execution)
-
             return Result.success()
         }
 
-        // ----------------------------------------------------
-        // Validate Session & Response Expiration
-        // ----------------------------------------------------
-
-        // Reject workflows without an authenticated session.
-        // Also expire automatic responses older than ten minutes.
-        if (
-            !container.authRepository.hasSession() ||
-            (
-                    execution.automatic &&
-                            execution.requestId != null &&
-                            System.currentTimeMillis() - execution.createdAt > 600_000
-                    )
-        ) {
-
-            // Cancel workflows that are no longer eligible.
+        val expired = execution.automatic && execution.requestId != null &&
+            System.currentTimeMillis() - execution.createdAt > 600_000
+        if (!container.authRepository.hasSession() || expired) {
             container.audioWorkflowScheduler.cancel(id, execution)
-
             return Result.success()
         }
 
-        // ----------------------------------------------------
-        // Validate Scheduled Time
-        // ----------------------------------------------------
+        if (execution.dueAt > System.currentTimeMillis()) return Result.retry()
 
-        // Retry when WorkManager runs before the execution is due.
-        if (execution.dueAt > System.currentTimeMillis()) {
-            return Result.retry()
+        if (execution.automatic && !container.soundVoice.state.value.allows(execution.workflow)) {
+            return offerOrRetry(container.audioWorkflowScheduler, execution)
         }
 
-        // ----------------------------------------------------
-        // Check Automatic Speech Preferences
-        // ----------------------------------------------------
-
-        // Do not automatically speak when the corresponding
-        // workflow preference is disabled.
-        if (
-            execution.automatic &&
-            !container.soundVoice.state.value.allows(execution.workflow)
-        ) {
-
-            // Offer user-initiated playback instead.
-            // Retry if the notification could not be offered.
-            return if (container.audioWorkflowScheduler.offer(execution)) {
-                Result.success()
-            } else {
-                Result.retry()
-            }
-        }
-
-        // ----------------------------------------------------
-        // Attempt Automatic Playback
-        // ----------------------------------------------------
-
-        // Attempt automatic continuation only when the app
-        // is currently in the foreground.
         if (AppVisibility.isForeground) {
             try {
-
-                // Request the playback service to resume this execution.
-                ButlerAudioPlaybackService.resume(
-                    applicationContext,
-                    id, execution.next, execution.dueAt,
-                )
-
-                // The service launch was requested successfully.
+                ButlerAudioPlaybackService.resume(applicationContext, id, execution.next, execution.dueAt)
                 return Result.success()
-
             } catch (_: IllegalStateException) {
-                // Fall back to manual playback notification
-                // when Android prevents service startup.
-
+                // Android may reject service startup; offer manual playback instead.
             } catch (_: SecurityException) {
-                // Fall back to manual playback notification
-                // when the launch is not permitted.
+                // Android may deny service startup; offer manual playback instead.
             }
         }
 
-        // ----------------------------------------------------
-        // Fallback - Manual Playback Notification
-        // ----------------------------------------------------
-
-        // When automatic playback is unavailable, offer Listen.
-        // Retry if the notification cannot be published.
-        return if (container.audioWorkflowScheduler.offer(execution)) {
-            Result.success()
-        } else {
-            Result.retry()
-        }
+        return offerOrRetry(container.audioWorkflowScheduler, execution)
     }
+
+    private fun offerOrRetry(scheduler: AudioWorkflowScheduler, execution: AudioExecution): Result =
+        if (scheduler.offer(execution)) Result.success() else Result.retry()
 }
