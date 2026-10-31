@@ -36,44 +36,44 @@ class AudioWorkflowScheduler(
 
     /** Registers durable work and an optional exact alarm for the persisted checkpoint. */
     fun schedule(execution: AudioExecution) {
-        WorkManager.getInstance(context).enqueueUniqueWork(
-            "${workName(execution.id)}:${execution.next}:${execution.dueAt}",
-            ExistingWorkPolicy.KEEP,
-            OneTimeWorkRequestBuilder<AudioContinuationWorker>()
-                .addTag(workName(execution.id))
-                .setInputData(Data.Builder().putString("execution_id", execution.id).build())
-                .setInitialDelay(
-                    (execution.dueAt - System.currentTimeMillis()).coerceAtLeast(0),
-                    TimeUnit.MILLISECONDS,
-                )
-                .build(),
-        )
-        notifications.showWaiting(execution)
-        val alarms = context.getSystemService(AlarmManager::class.java)
-        if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()) {
-            runCatching {
-                alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, execution.dueAt, alarm(execution.id))
+        if (!execution.canContinue(execution.next, execution.dueAt)) return
+        store.transition(execution, execution) {
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                workName(execution.id), ExistingWorkPolicy.REPLACE,
+                OneTimeWorkRequestBuilder<AudioContinuationWorker>()
+                    .addTag(workName(execution.id)) // Also cancels pre-upgrade checkpoint-specific work.
+                    .setInputData(Data.Builder().putString("execution_id", execution.id)
+                        .putInt("checkpoint", execution.next).putLong("due_at", execution.dueAt).build())
+                    .setInitialDelay((execution.dueAt - System.currentTimeMillis()).coerceAtLeast(0), TimeUnit.MILLISECONDS)
+                    .build(),
+            )
+            if (execution.status == "waiting") notifications.showWaiting(execution)
+            val alarms = context.getSystemService(AlarmManager::class.java)
+            if (Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms()) {
+                runCatching {
+                    alarms.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, execution.dueAt,
+                        alarm(execution.id, execution.next, execution.dueAt))
+                }
             }
         }
     }
 
-    /** Marks cancellation before removing every continuation mechanism and its notification. */
-    fun cancel(id: String) {
-        store.get(id)?.let { store.save(it.copy(status = "cancelled")) }
-        WorkManager.getInstance(context).cancelAllWorkByTag(workName(id))
-        context.getSystemService(AlarmManager::class.java).cancel(alarm(id))
-        notifications.dismiss(id)
+    /** Marks cancellation before removing effects; a stale validator cannot cancel newer state. */
+    fun cancel(id: String, expected: AudioExecution? = null) {
+        store.cancel(id, expected) {
+            WorkManager.getInstance(context).cancelAllWorkByTag(workName(id))
+            context.getSystemService(AlarmManager::class.java).cancel(alarm(id))
+            notifications.dismiss(id)
+        }
     }
 
     /** Repairs delayed checkpoints after restart without replaying ambiguous audible segments. */
-    fun recover() {
+    fun recover(cancelInterrupted: Boolean = true) {
         store.prune()
         store.all().forEach { execution ->
             when (execution.status) {
-                "waiting", "offered", "ready" -> schedule(
-                    execution.copy(dueAt = execution.dueAt.coerceAtLeast(System.currentTimeMillis())),
-                )
-                "playing", "preparing" -> cancel(execution.id)
+                "waiting", "offered", "ready" -> schedule(execution)
+                "playing", "preparing" -> if (cancelInterrupted) cancel(execution.id, execution)
             }
         }
     }
@@ -103,11 +103,11 @@ class AudioWorkflowScheduler(
     fun dismiss(id: String) = notifications.dismiss(id)
 
     /** Retains the execution-specific alarm identity for both registration and cancellation. */
-    private fun alarm(id: String) = PendingIntent.getBroadcast(
+    private fun alarm(id: String, next: Int = -1, dueAt: Long = -1) = PendingIntent.getBroadcast(
         context, id.hashCode(),
         Intent(context, AudioContinuationReceiver::class.java)
             .setData(Uri.parse("hellobutler://audio/${Uri.encode(id)}"))
-            .putExtra("execution_id", id),
+            .putExtra("execution_id", id).putExtra("checkpoint", next).putExtra("due_at", dueAt),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
 
@@ -128,23 +128,16 @@ class AudioWorkflowScheduler(
  * delivers its scheduled alarm.
  */
 class AudioContinuationReceiver : BroadcastReceiver() {
-
-    /**
-     * Handles an incoming alarm broadcast.
-     *
-     * Extracts the execution ID and requests playback continuation
-     * without allowing service-launch failures to crash the receiver.
-     */
     override fun onReceive(context: Context, intent: Intent) {
-
-        // Ignore broadcasts that do not identify an execution.
         val id = intent.getStringExtra("execution_id") ?: return
-
-        // Attempt playback continuation.
-        // Background service restrictions can prevent launching.
-        runCatching {
-            ButlerAudioPlaybackService.resume(context, id)
-        }
+        val container = (context.applicationContext as ButlerApplication).container
+        val execution = container.audioWorkflowStore.get(id) ?: return
+        val next = intent.getIntExtra("checkpoint", -1)
+        val dueAt = intent.getLongExtra("due_at", -1)
+        if (!execution.canContinue(next, dueAt) || dueAt > System.currentTimeMillis()) return
+        // The service checks this checkpoint again before claiming it.
+        runCatching { ButlerAudioPlaybackService.resume(context, id, next, dueAt) }
+        // Durable work remains available if Android rejects the foreground launch.
     }
 }
 
@@ -199,14 +192,7 @@ class AudioContinuationWorker(
 
         // Ignore executions that are finished or currently active.
         // These must not be started again by a delayed worker.
-        if (
-            execution.status in setOf(
-                "complete",
-                "cancelled",
-                "playing",
-                "preparing",
-            )
-        ) {
+        if (!execution.canContinue(inputData.getInt("checkpoint", -1), inputData.getLong("due_at", -1))) {
             return Result.success()
         }
 
@@ -224,7 +210,7 @@ class AudioContinuationWorker(
         ) {
 
             // Cancel stale executions when the event has changed.
-            container.audioWorkflowScheduler.cancel(id)
+            container.audioWorkflowScheduler.cancel(id, execution)
 
             return Result.success()
         }
@@ -245,7 +231,7 @@ class AudioContinuationWorker(
         ) {
 
             // Cancel workflows that are no longer eligible.
-            container.audioWorkflowScheduler.cancel(id)
+            container.audioWorkflowScheduler.cancel(id, execution)
 
             return Result.success()
         }
@@ -291,7 +277,7 @@ class AudioContinuationWorker(
                 // Request the playback service to resume this execution.
                 ButlerAudioPlaybackService.resume(
                     applicationContext,
-                    id,
+                    id, execution.next, execution.dueAt,
                 )
 
                 // The service launch was requested successfully.

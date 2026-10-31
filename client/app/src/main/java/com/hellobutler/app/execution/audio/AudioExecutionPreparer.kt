@@ -65,17 +65,22 @@ internal class AudioExecutionPreparer(
             val autoId = "response:$requestId"
             val prior = store.get(autoId)
             if (prior != null) scheduler.cancel(autoId)
-            else store.save(AudioExecution(autoId, AudioWorkflow.BUTLER_RESPONSE, "", requestId = requestId, status = "cancelled"))
+            else {
+                val suppressed = AudioExecution(autoId, AudioWorkflow.BUTLER_RESPONSE, "", requestId = requestId, status = "cancelled")
+                if (!store.reserve(suppressed)) scheduler.cancel(autoId)
+            }
         }
         val id = if (auto) "response:$requestId" else manualId
-        if (auto) {
+        val reservation = if (auto) {
             if (!settings.state.value.responses || store.get(id) != null) return null
             val request = database.butlerConversationDao().request(requestId) ?: return null
             if (runCatching { Instant.parse(request.createdAt).isBefore(Instant.now().minusSeconds(600)) }.getOrDefault(true)) return null
             // Reserve before downloading so FCM, reconciliation, and the audio worker cannot race to announce twice.
+            val preparing = AudioExecution(id, AudioWorkflow.BUTLER_RESPONSE, "", requestId = requestId, status = "preparing")
+            if (!store.reserve(preparing)) return null
             reserveActiveId(id)
-            store.save(AudioExecution(id, AudioWorkflow.BUTLER_RESPONSE, "", requestId = requestId, status = "preparing"))
-        }
+            preparing
+        } else null
         val file = withContext(Dispatchers.IO) { withTimeoutOrNull(120_000) {
             var audio = responses.ensureAudio(requestId)
             while (audio == null && !responses.audioUnavailable(requestId)) { delay(2_000); audio = responses.ensureAudio(requestId) }
@@ -85,8 +90,11 @@ internal class AudioExecutionPreparer(
             return null
         }
         currentCoroutineContext().ensureActive()
-        return AudioExecution(id, AudioWorkflow.BUTLER_RESPONSE, file.absolutePath, requestId = requestId,
-            automatic = auto, privateRoute = private).also(store::save)
+        val execution = AudioExecution(id, AudioWorkflow.BUTLER_RESPONSE, file.absolutePath, requestId = requestId,
+            automatic = auto, privateRoute = private,
+            createdAt = reservation?.createdAt ?: System.currentTimeMillis())
+        return if (reservation == null) execution.also(store::save)
+        else execution.takeIf { store.transition(reservation, execution) {} }
     }
 
 }

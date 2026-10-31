@@ -47,14 +47,26 @@ class ScheduledAudioPreparationTest {
     private lateinit var event: DailyEventEntity
     private lateinit var api: FakeSync
     private val enqueued = mutableListOf<DailyEventEntity>()
+    private var eveningRequests = 0
+    private var failEvening = false
+    private val planning = object : PlanningApi {
+        override suspend fun prepare(authorization: String, request: PrepareDayRequestDto): Response<ResponseBody> =
+            error("Unexpected regeneration")
+        override suspend fun prepareEvening(authorization: String, request: EveningPrepareRequestDto): Response<EveningPreparationResultDto> {
+            eveningRequests++
+            if (failEvening) throw java.io.IOException("Planning offline")
+            val date = LocalDate.parse(request.summaryDate!!)
+            return Response.success(EveningPreparationResultDto(date.toString(), date.plusDays(1).toString(), "Summary", "plan"))
+        }
+    }
     private val ogg = "OggS".encodeToByteArray() + ByteArray(24) + "OpusHead".encodeToByteArray()
 
     private fun repository() = DailyEventRepository(context, database, api,
-        Retrofit.Builder().baseUrl("http://127.0.0.1/").build().create(PlanningApi::class.java),
-        auth, DailyEventScheduler(context), Json, enqueueSync = {}, enqueueAudio = { enqueued.add(it) })
+        planning, auth, DailyEventScheduler(context), Json, enqueueSync = {}, enqueueAudio = { enqueued.add(it) })
 
     @Before fun setup() = runBlocking {
         context = InstrumentationRegistry.getInstrumentation().context
+        context.getSharedPreferences("butler_nightly_planning", Context.MODE_PRIVATE).edit().clear().commit()
         database = Room.inMemoryDatabaseBuilder(context, ButlerDatabase::class.java).build()
         session = SecureSessionStore(context).also { it.save(AuthTokensDto("test-access", "test-refresh", "bearer", 3600)) }
         auth = AuthRepository(Retrofit.Builder().baseUrl("http://127.0.0.1/").build().create(AuthApi::class.java), session, {}, {})
@@ -306,6 +318,69 @@ class ScheduledAudioPreparationTest {
         assertEquals("Canonical speech", database.dailyEventDao().get(event.id)!!.description)
         assertEquals(event.version + 1, database.dailyEventDao().get(event.id)!!.version)
         assertNull(database.dailyEventDao().get(second.id))
+    }
+
+    @Test fun notificationReadinessIsLocalVersionedAndDoesNotOutliveClaims() = runBlocking {
+        val readiness = mutableListOf<Boolean>()
+        assertTrue(repository.offerEventPlayback(event) { _, ready -> readiness.add(ready); true })
+        assertEquals(listOf(false), readiness)
+        assertEquals(0, api.preparations)
+        repository.speechAudio(event.id, event.version)
+        assertTrue(repository.offerEventPlayback(event) { _, ready -> readiness.add(ready); true })
+        assertEquals(listOf(false, true), readiness)
+        val calls = api.preparations to api.downloads
+        database.dailyEventDao().upsert(event.copy(version = 2))
+        repository.offerEventPlayback(event) { _, _ -> fail("Stale event notified"); true }
+        repository.offerEventPlayback(event.copy(version = 2)) { _, ready -> assertFalse(ready); true }
+        assertEquals(calls, api.preparations to api.downloads)
+        database.dailyEventDao().upsert(event)
+        assertTrue(repository.claimEventPlayback(event))
+        val claimed = database.dailyEventDao().get(event.id)!!
+        repository.offerEventPlayback(claimed) { _, _ -> fail("Claimed occurrence notified again"); true }
+    }
+
+    @Test fun voiceInvalidationAndDisabledNotificationsKeepManualRecoveryPossible() = runBlocking {
+        repository.speechAudio(event.id, event.version)
+        repository.reconcileTtsMethod("OPEN_SOURCE")
+        repository.reconcileTtsMethod("OPENAI")
+        assertFalse(repository.offerEventPlayback(event) { _, ready -> assertFalse(ready); false })
+        assertNull(database.dailyEventDao().get(event.id)!!.playbackAttemptedAt)
+        assertTrue(repository.claimEventPlayback(event, manual = true))
+    }
+
+    @Test fun concurrentAutomaticClaimsAllowExactlyOneWinnerWithoutAudio() = runBlocking {
+        val winners = coroutineScope {
+            (1..10).map { async { repository.claimEventPlayback(event) } }.map { it.await() }
+        }
+        assertEquals(1, winners.count { it })
+        assertEquals(0, api.downloads)
+        assertNotNull(database.dailyEventDao().get(event.id)!!.playbackAttemptedAt)
+    }
+
+    @Test fun successfulEveningIsNotRegeneratedAfterFailedPullOrRepositoryRecreation() = runBlocking {
+        val date = event.eventDate
+        val tomorrow = LocalDate.parse(date).plusDays(1).toString()
+        api.beforePlan = { throw java.io.IOException("Pull offline after planning succeeded") }
+        try { repository.prepareEvening(date, tomorrow); fail("Expected failed pull") } catch (_: java.io.IOException) { }
+        assertEquals(1, eveningRequests)
+        repository = repository()
+        api.beforePlan = {}
+        repository.prepareEvening(date, tomorrow)
+        repository.prepareEvening(date, tomorrow)
+        assertEquals(1, eveningRequests)
+    }
+
+    @Test fun failedEveningRetriesAndLogoutClearsSuccessfulDate() = runBlocking {
+        val date = event.eventDate
+        val tomorrow = LocalDate.parse(date).plusDays(1).toString()
+        failEvening = true
+        try { repository.prepareEvening(date, tomorrow); fail("Expected planning failure") } catch (_: java.io.IOException) { }
+        assertNull(context.getSharedPreferences("butler_nightly_planning", Context.MODE_PRIVATE).getString("prepared_date", null))
+        failEvening = false
+        repository.prepareEvening(date, tomorrow)
+        assertEquals(2, eveningRequests)
+        repository.clear()
+        assertNull(context.getSharedPreferences("butler_nightly_planning", Context.MODE_PRIVATE).getString("prepared_date", null))
     }
 
     private inner class FakeSync : SyncApi {

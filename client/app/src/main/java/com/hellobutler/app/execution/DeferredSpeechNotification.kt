@@ -52,13 +52,13 @@ internal object DeferredSpeechNotification {
             .setSmallIcon(android.R.drawable.ic_lock_silent_mode_off)
             .setContentTitle(event.title)
             .setContentText(event.content?.takeIf { it.isNotBlank() } ?: event.description ?: event.title)
-            .setContentIntent(if (audioReady) listen else open)
+            .setContentIntent(listen)
             .setDefaults(android.app.Notification.DEFAULT_SOUND)
             .setOnlyAlertOnce(true)
             .addAction(android.R.drawable.ic_menu_view, "Open in App", open)
             .setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-        if (audioReady) notification.addAction(android.R.drawable.ic_media_play, "Listen", listen)
+        notification.addAction(android.R.drawable.ic_media_play, if (audioReady) "Listen" else "Prepare & Listen", listen)
         manager.notify(
             event.id, ID,
             notification.build(),

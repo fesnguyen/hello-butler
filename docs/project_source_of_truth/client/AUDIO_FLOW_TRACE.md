@@ -232,3 +232,67 @@ sequenceDiagram
 ### Android notification sounds
 
 `DeferredSpeechNotification` and `ButlerNotification` create DEFAULT-importance channels; playback/waiting channels are LOW. No explicit `setSound(customAsset)` or independent reminder-alarm sound sequence exists in these builders. Audible notification sounds depend on Android channel/user/DND configuration and channel creation history, and bypass Butler gain. Creating a channel again does not prove its importance or sound changed. This is distinct from the short opening played after reminder speech preparation.
+
+
+## Scheduling reliability review (2026-10-27)
+
+Baseline: `c06c1347d6d0f44027df1550a55006f5fc5b05d7` (`main`).
+Confirmed before implementation:
+
+- Repository `queue`, `reconcileResult`, and `pull` persist before scheduling and enqueue preparation separately. Download failures cannot block alarm registration; transfer publication already rechecks canonical state under `audioStateMutex`.
+- Alarm receiver and execution worker hard-code readiness, although notifications use it to select the tap target and Listen action. Fallback work carries only ID, unlike the version/trigger-bound alarm.
+- Continuation names include checkpoint/due time but payloads contain only ID; superseded work can operate on a newer checkpoint. Recovery changes due time without persisting it, and service/sequence saves can overwrite terminal states.
+- Automatic claims already use repository serialization and a conditional Room update; no second claim mechanism is needed. Manual speech bypasses automatic preferences intentionally.
+- Restore broadcasts cover reboot, update, clock, timezone, and exact-access grants. Triggers use device-local time; same-day missed events offer Listen, expired dates are rejected. Continuation recovery also needs to run during restore.
+- Nightly work chooses dates when it runs and startup schedules only the next future night. Missed cycles can be skipped, and successful evening requests can be repeated and regenerate planner content.
+- Worker fallback correctly offers manual Listen instead of launching a background foreground service. Preserve audio focus, routes, gain, response/private playback, preparation retry and existing bounded/native recovery.
+
+### Implemented lifecycle and guards
+
+1. Event creation/edit enters `DailyEventRepository.update` → `queue`; canonical synchronization enters `reconcileResult` or `pull`. Room/outbox changes commit first. `DailyEventScheduler.schedule` registers the version/trigger-bound exact alarm or a version/trigger-bound `DailyEventExecutionWorker`. `reconcileAudio` independently enqueues `DailyEventAudioWorker`. No alarm registration waits for HTTP or audio readiness.
+2. `DailyEventAlarmReceiver` rejects stale version/trigger, non-due, terminal or claimed occurrences. Both it and the fallback worker call `DailyEventRepository.offerEventPlayback`. This rechecks session, exact canonical snapshot, and unclaimed eligibility under the existing audio-state mutex before publishing. Readiness uses only `DailyEventSpeechStore.preparedSpeech`: current server version, voice invalidation and valid Ogg/Opus bytes. No download, Room transaction, or new lock/cache is introduced. A missing file offers **Prepare & Listen**; a ready file offers **Listen**. Both retain the manual playback/recovery path and event text. Notification permission failure remains retryable.
+3. The exact-alarm path may request automatic service playback if the workflow's speech preference permits it; worker fallback only offers a user action. Foreground-service launch failures re-enqueue the captured occurrence. Service preparation reuses `isDueForSpeech`, `matchesAlarm`, and the existing conditional Room `claimEventPlayback`. A successful claim does not require prepared bytes. Notification delivery alone never claims speech. Automatic and manual playback still share one player; manual responses retain existing cached-audio behavior.
+4. Skip/cancel/delete cancels event scheduling, preparation and matching audio executions after persistence. Meaningful timing/text/eligibility edits invalidate snapshots and reset compatible occurrence claims according to existing repository rules. Publication after a transfer still revalidates under `audioStateMutex`; lock order remains sync → audio state or download → audio state. No network transfer holds the audio-state lock.
+5. Continuation work now has one execution-scoped unique name with `REPLACE`; its data and exact-alarm extras capture `next` and `dueAt`. Receivers, workers and service admission reject mismatched checkpoints. Older installed requests with ID-only payloads are harmless and rejected; restore schedules current-format work. The existing tag also permits execution-wide cancellation of old-format requests.
+6. Scheduling and cancellation share the journal transition lock. Cancellation persists the terminal marker before removing alarm/work/notification effects. Guarded cancellation from a stale validator cannot cancel a newer checkpoint. Automatic response preparation and its audio worker also reserve identity atomically (`reserve`), so a delayed download cannot overwrite manual suppression; publication after download is conditional on its preparing checkpoint. Service admission and every sequence checkpoint use `AudioWorkflowStore.transition`, so a stale resume or completed player callback cannot overwrite cancellation. Resumable states are waiting/offered/ready; playing/preparing/complete/cancelled cannot be resumed. Completing an execution keeps its terminal journal identity, preventing automatic repeats.
+7. `recover` preserves the persisted due timestamp, including overdue checkpoints; only the scheduling delay is clamped to zero. Process-start recovery cancels ambiguous playing/preparing states. `ScheduleRestoreWorker` also restores waiting/offered/ready continuations but leaves a live service alone (`cancelInterrupted = false`). Restore still handles reboot, package update, clock/timezone changes and exact-access grants, re-registers unclaimed event schedules using device-local event time, and repairs preparation. Old dates do not auto-play; a missed eligible occurrence today offers manual Listen. Reconciliation never clears an attempted occurrence just because the clock changed.
+8. Nightly synchronization remains network-constrained, date-scoped WorkManager work around 22:30. Inputs retain their intended summary date across retries/midnight. Startup, schedule restoration and daily sync enqueue the latest due evening (today after 22:30, yesterday before it), as well as the next future night. Work older than yesterday is retired; catch-up does not process an unbounded backlog. The repository serializes requests with its existing sync mutex and records the last successful evening API date in a small local preference, before pulling the two plans. Retries after a failed pull therefore synchronize without regenerating successful planning. Logout clears the marker. Cancellation propagates through nightly and daily workers.
+
+### Platform and delivery limits
+
+- WorkManager is best effort under Doze, offline constraints and OEM battery policies. No routine nightly exact alarm or new permission/service declaration was added.
+- Revoking exact-alarm access stops the app and cancels its exact alarms; the permission-state broadcast announces grants, not a guaranteed revoke callback. Fallback reconciliation runs when Android next permits the app to run or the user resumes it. Force-stop is not a delivery guarantee. See [Android alarm guidance](https://developer.android.com/develop/background-work/services/alarms).
+- Manual Listen requires usable notification permissions/channels (or entry through the app). Prepared bytes can still disappear after a readiness check; playback retains its bounded online/native recovery and failure notification behavior.
+- The local evening-success marker avoids repeating acknowledged successful requests on this installation. A lost HTTP response or process death between server success and marker commit can still repeat the server request. Exactly-once planning across devices/server scheduling would require server idempotency; no backend contract changes are included here.
+- Reminder lead times that cross a local-date boundary retain the existing same-event-date eligibility policy. This task does not redefine that product behavior.
+
+### Regression coverage and validation
+
+New JVM coverage checks claimed/expired/terminal occurrence eligibility, stale trigger rejection after timezone changes, nightly cutoff/midnight/date watermark policy, and superseded/terminal continuation rejection. Instrumentation regressions cover guarded notification readiness and voice invalidation, concurrent occurrence claims, planning success followed by pull failure/retry/restart, marker cleanup, cancellation versus stale checkpoints, one pending continuation after repeated/rescheduled work, waiting/offered/interrupted recovery, and fallback schedule edit/cancel/delete/reconciliation without exact access. Existing tests retain transfer/edit races, preparation failures, offline snapshots, player callback identity, manual/private routes, preference rules and sequence ordering.
+
+Run from `client/`:
+
+```bash
+./gradlew :app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:assembleDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest
+```
+
+Device-only acceptance remains necessary: reboot, actual timezone/clock changes, exact-access grant/revoke, denied foreground-service starts, real alarm/worker races, missed nightly execution during shutdown/Doze, speech-disabled delivery, active audio deferral, and audible manual/private/offline output. Compiling instrumentation tests cannot establish these behaviors.
+
+
+Verification on 2026-10-27 (final source): Gradle 9.3.0 (the wrapper's pinned distribution), full JDK 17 and Android SDK 35 successfully executed `:app:assembleDebug :app:testDebugUnitTest :app:lintDebug :app:assembleDebugAndroidTest`. All 25 JVM tests passed with zero failures/errors/skips; lint reported zero errors and 47 warnings. Both application and instrumentation APKs compiled. The initial wrapper invocation could not download through the inherited Java proxy configuration, and the system Java lacked `javac`; validation used temporary tool installations and the environment's active proxy, with no committed build-configuration changes. `adb devices` reported no attached device/emulator, so connected instrumentation and the device acceptance matrix above were not executed. `git diff --check` passed.
+
+Changed implementation files (relative to the Android Kotlin package):
+
+| Files | Change |
+| --- | --- |
+| `data/repository/DailyEventRepository.kt` | Locked local readiness publication, acknowledged evening-success date, logout cleanup. |
+| `execution/DailyEventScheduler.kt`, `execution/DailyEventExecution.kt` | Version/trigger-bound fallback work, readiness guard, continuation and nightly restore. |
+| `execution/DeferredSpeechNotification.kt` | Keep manual recovery available with an accurate readiness-dependent action label. |
+| `execution/ButlerAudioPlaybackService.kt` | Checkpoint-bound admission, guarded resume/deferral/sequence writes, automatic session validation. |
+| `execution/NightlyPlanSync.kt` | Date-scoped retries, latest-evening catch-up and independent future scheduling. |
+| `execution/audio/AudioExecution.kt`, `AudioWorkflowStore.kt` | Checkpoint predicates, atomic reservation and guarded cancellation using the existing journal lock. |
+| `execution/audio/AudioWorkflowScheduler.kt`, `AudioExecutionPreparer.kt` | Replaceable checkpoint-bound continuations, original-due recovery, conditional response publication. |
+| `sync/DailySyncWorker.kt`, `sync/ButlerRequestWorkers.kt` | Catch-up scheduling, atomic response reservation and cancellation propagation. |
+
+Existing tests updated: JVM `ScheduledAudioPolicyTest` and `AudioWorkflowTest`; instrumentation `ScheduledAudioPreparationTest` and `AudioWorkflowPersistenceTest`. Existing documentation updated: this trace and `PROJECT_CLIENT.md`. No new implementation files, framework, dependency, Room schema, backend contract, Android permission or audio-routing change.

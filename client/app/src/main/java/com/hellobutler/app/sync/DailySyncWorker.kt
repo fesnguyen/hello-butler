@@ -18,14 +18,17 @@ class DailySyncWorker(appContext: Context, params: WorkerParameters) : Coroutine
     override suspend fun doWork(): Result {
         val container = (applicationContext as ButlerApplication).container
         if (!container.authRepository.hasSession()) return Result.success()
+        com.hellobutler.app.execution.NightlyPlanSyncWorker.scheduleNext(applicationContext)
         val today = LocalDate.now()
         val contextSync = runCatching { container.userSettingsRepository.synchronize() }
+        contextSync.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
         val eventSync = runCatching {
             container.dailyEventRepository.synchronize(
                 listOf(today.toString(), today.plusDays(1).toString()) +
                     inputData.getStringArray("plan_dates").orEmpty().toList()
             )
         }
+        eventSync.exceptionOrNull()?.let { if (it is kotlinx.coroutines.CancellationException) throw it }
         return if (contextSync.isSuccess && eventSync.isSuccess) Result.success() else Result.retry()
     }
 

@@ -14,6 +14,8 @@ import java.time.LocalDate
 import java.time.ZonedDateTime
 import java.util.concurrent.TimeUnit
 
+private val NIGHTLY_PLAN_TIME = java.time.LocalTime.of(22, 30)
+
 class NightlyPlanSyncWorker(
     appContext: Context,
     params: WorkerParameters,
@@ -25,32 +27,54 @@ class NightlyPlanSyncWorker(
             return Result.success()
         }
 
-        return runCatching {
-            val today = LocalDate.now()
-            container.dailyEventRepository.prepareEvening(
-                today.toString(), today.plusDays(1).toString()
-            )
+        val today = LocalDate.now()
+        val date = runCatching { LocalDate.parse(inputData.getString("summary_date")) }.getOrNull()
+        if (date == null || date.isBefore(today.minusDays(1)) || date.isAfter(today)) {
+            scheduleNext(applicationContext)
+            return Result.success()
+        }
+        return try {
+            container.dailyEventRepository.prepareEvening(date.toString(), date.plusDays(1).toString())
             scheduleNext(applicationContext)
             Result.success()
-        }.getOrElse { Result.retry() }
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Keep future nights independent of a prolonged retry for this date.
+            scheduleNext(applicationContext)
+            Result.retry()
+        }
     }
 
     companion object {
-        private const val SYNC_HOUR = 22
-        private const val SYNC_MINUTE = 30
-
         fun scheduleNext(context: Context) {
             val now = ZonedDateTime.now()
-            var next = now.withHour(SYNC_HOUR).withMinute(SYNC_MINUTE).withSecond(0).withNano(0)
-            if (!next.isAfter(now)) next = next.plusDays(1)
+            val cutoff = now.withHour(NIGHTLY_PLAN_TIME.hour).withMinute(NIGHTLY_PLAN_TIME.minute).withSecond(0).withNano(0)
+            val next = if (cutoff.isAfter(now)) cutoff else cutoff.plusDays(1)
+            enqueue(context, next.toLocalDate(), Duration.between(now, next).toMillis())
+            val missed = nightlyPlanningDate(now)
+            val prepared = context.getSharedPreferences("butler_nightly_planning", Context.MODE_PRIVATE)
+                .getString("prepared_date", null)
+            if (!eveningAlreadyPrepared(prepared, missed.toString())) enqueue(context, missed, 0)
+        }
+
+        private fun enqueue(context: Context, date: LocalDate, delayMillis: Long) {
             val request = OneTimeWorkRequestBuilder<NightlyPlanSyncWorker>()
+                .setInputData(androidx.work.Data.Builder().putString("summary_date", date.toString()).build())
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
-                .setInitialDelay(Duration.between(now, next).toMillis(), TimeUnit.MILLISECONDS)
+                .setInitialDelay(delayMillis, TimeUnit.MILLISECONDS)
                 .build()
-            // Date-scoped work lets a successful worker enqueue tomorrow without replacing itself.
+            // KEEP joins an active date's request; the repository records server success durably.
             WorkManager.getInstance(context).enqueueUniqueWork(
-                "nightly-plan-sync-${next.toLocalDate()}", ExistingWorkPolicy.KEEP, request
+                "nightly-plan-sync-$date", ExistingWorkPolicy.KEEP, request
             )
         }
     }
 }
+
+/** Recover only the latest due evening, rather than regenerating an unbounded backlog. */
+internal fun nightlyPlanningDate(now: ZonedDateTime): LocalDate =
+    if (now.toLocalTime() >= NIGHTLY_PLAN_TIME) now.toLocalDate() else now.toLocalDate().minusDays(1)
+
+internal fun eveningAlreadyPrepared(prepared: String?, requested: String): Boolean =
+    prepared != null && prepared >= requested // ISO local dates sort chronologically.

@@ -40,11 +40,13 @@ class DailyEventAlarmReceiver : BroadcastReceiver() {
                 val container = (context.applicationContext as ButlerApplication).container
                 val event = container.database.dailyEventDao().get(eventId) ?: return@launch
                 if (!event.isDueForSpeech() || !event.matchesAlarm(intent.getIntExtra(EXTRA_EVENT_VERSION, -1), intent.getLongExtra(EXTRA_EVENT_TRIGGER, -1))) return@launch
-                DeferredSpeechNotification.show(context, event, audioReady = true)
+                if (!container.dailyEventRepository.offerEventPlayback(event) { current, ready ->
+                        DeferredSpeechNotification.show(context, current, audioReady = ready)
+                    }) DailyEventExecutionWorker.enqueue(context, event, 0)
                 if ( container.soundVoice.state.value.allows(com.hellobutler.app.execution.audio.AudioWorkflows.forEvent(event.eventType))) {
                     try { ButlerAudioPlaybackService.playEvent(context, eventId, automatic = true, expectedVersion = event.version, expectedTrigger = event.triggerAtMillis()) }
-                    catch (_: IllegalStateException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
-                    catch (_: SecurityException) { DailyEventExecutionWorker.enqueue(context, eventId, 0) }
+                    catch (_: IllegalStateException) { DailyEventExecutionWorker.enqueue(context, event, 0) }
+                    catch (_: SecurityException) { DailyEventExecutionWorker.enqueue(context, event, 0) }
                 }
             } finally { pending.finish() }
         }
@@ -96,9 +98,13 @@ class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) :
         return try {
             val container = (applicationContext as ButlerApplication).container
             val event = container.database.dailyEventDao().get(eventId)
-            if (event != null && event.isDueForSpeech()) {
+            if (event != null && event.isDueForSpeech() && event.matchesAlarm(
+                    inputData.getInt(EXTRA_EVENT_VERSION, -1), inputData.getLong(EXTRA_EVENT_TRIGGER, -1),
+                )) {
                 // A delayed worker has no background FGS exemption. The Listen action does.
-                if (!DeferredSpeechNotification.show(applicationContext, event, audioReady = true)) return Result.retry()
+                if (!container.dailyEventRepository.offerEventPlayback(event) { current, ready ->
+                        DeferredSpeechNotification.show(applicationContext, current, audioReady = ready)
+                    }) return Result.retry()
             }
             Result.success()
         } catch (cancelled: kotlinx.coroutines.CancellationException) {
@@ -110,9 +116,13 @@ class DailyEventExecutionWorker(appContext: Context, params: WorkerParameters) :
     }
 
     companion object {
-        fun enqueue(context: Context, eventId: String, delayMillis: Long) {
+        fun enqueue(context: Context, event: com.hellobutler.app.data.local.DailyEventEntity, delayMillis: Long) =
+            enqueue(context, event.id, delayMillis, event.version, event.triggerAtMillis() ?: -1)
+
+        fun enqueue(context: Context, eventId: String, delayMillis: Long, version: Int, trigger: Long) {
             val request = OneTimeWorkRequestBuilder<DailyEventExecutionWorker>()
-                .setInputData(Data.Builder().putString(EXTRA_EVENT_ID, eventId).build())
+                .setInputData(Data.Builder().putString(EXTRA_EVENT_ID, eventId)
+                    .putInt(EXTRA_EVENT_VERSION, version).putLong(EXTRA_EVENT_TRIGGER, trigger).build())
                 .setInitialDelay(delayMillis.coerceAtLeast(0), TimeUnit.MILLISECONDS)
                 .build()
             WorkManager.getInstance(context).enqueueUniqueWork(
@@ -133,6 +143,8 @@ class ScheduleRestoreWorker(appContext: Context, params: WorkerParameters) : Cor
         val container = (applicationContext as ButlerApplication).container
         container.database.dailyEventDao().pendingSpokenEvents().forEach(container.eventScheduler::schedule)
         container.dailyEventRepository.recoverAudioPreparation()
+        container.audioWorkflowScheduler.recover(cancelInterrupted = false)
+        NightlyPlanSyncWorker.scheduleNext(applicationContext)
         return Result.success()
     }
 

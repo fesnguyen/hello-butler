@@ -68,4 +68,40 @@ class ScheduledAudioPolicyTest {
         assertTrue(unicodeChunks.none { it.last().isHighSurrogate() || it.first().isLowSurrogate() })
     }
 
+    @Test fun dueOccurrencesRejectClaimsExpiredDatesAndIneligibleStatuses() {
+        val now = event().triggerAtMillis()!!
+        assertTrue(event().isDueForSpeech(now))
+        assertFalse(event().isDueForSpeech(now - 1))
+        assertFalse(event().copy(playbackAttemptedAt = "claimed").isDueForSpeech(now))
+        listOf("completed", "cancelled", "skipped").forEach {
+            assertFalse(event().copy(status = it).isDueForSpeech(now))
+        }
+        assertFalse(event().isDueForSpeech(now + 86400_000))
+        assertFalse(event().copy(eventType = "custom", speakAloud = false).isDueForSpeech(now))
+        assertFalse(event().copy(version = 2).matchesAlarm(1, now))
+    }
+
+    @Test fun timezoneReconciliationKeepsTheUsersLocalClockTime() {
+        val previous = java.util.TimeZone.getDefault()
+        try {
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("Asia/Ho_Chi_Minh"))
+            val vietnam = event().triggerAtMillis()!!
+            java.util.TimeZone.setDefault(java.util.TimeZone.getTimeZone("UTC"))
+            assertEquals(7 * 3600_000L, event().triggerAtMillis()!! - vietnam)
+            assertFalse(event().matchesAlarm(event().version, vietnam))
+        } finally { java.util.TimeZone.setDefault(previous) }
+    }
+
+    @Test fun nightlyCatchUpUsesTheLatestDueDateAcrossMidnightAndTimezones() {
+        val evening = java.time.ZonedDateTime.parse("2026-10-27T22:30:00+07:00[Asia/Ho_Chi_Minh]")
+        assertEquals(LocalDate.of(2026, 10, 26), nightlyPlanningDate(evening.minusSeconds(1)))
+        assertEquals(LocalDate.of(2026, 10, 27), nightlyPlanningDate(evening))
+        assertEquals(LocalDate.of(2026, 10, 27), nightlyPlanningDate(evening.plusHours(9)))
+        assertEquals(LocalDate.of(2026, 10, 26), nightlyPlanningDate(evening.withZoneSameInstant(java.time.ZoneId.of("UTC"))))
+        assertFalse(eveningAlreadyPrepared(null, "2026-10-27"))
+        assertFalse(eveningAlreadyPrepared("2026-10-26", "2026-10-27"))
+        assertTrue(eveningAlreadyPrepared("2026-10-27", "2026-10-27"))
+        assertTrue(eveningAlreadyPrepared("2026-10-28", "2026-10-27"))
+    }
+
 }
