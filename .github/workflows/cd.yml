@@ -370,6 +370,12 @@ jobs:
 
           Copy-Item $source $target -Force
 
+          # Override the external production config's public URL without
+          # changing its signing keys or other private settings.
+          $properties = @(Get-Content $target | Where-Object { $_ -notmatch '^\s*BACKEND_BASE_URL\s*=' })
+          $properties += 'BACKEND_BASE_URL=https://api.fesnguyen.com/'
+          Set-Content -Path $target -Value $properties -Encoding UTF8
+
       # ------------------------------------------------------------
       # Build
       # ------------------------------------------------------------
