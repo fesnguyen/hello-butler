@@ -148,6 +148,12 @@ jobs:
         shell: powershell
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify default Android API domain
+        run: |
+          $properties = Get-Content client/gradle.properties
+          if ($properties -notcontains 'BACKEND_BASE_URL=https://api.fesnguyen.com/') {
+            throw "Android default API URL must be https://api.fesnguyen.com/"
+          }
       - name: Test Android client
         working-directory: client
         run: .\gradlew.bat test
