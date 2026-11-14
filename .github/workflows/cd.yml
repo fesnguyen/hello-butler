@@ -370,6 +370,155 @@ jobs:
 
           Copy-Item $source $target -Force
 
+      # The runner's external Gradle file overrides the checked-in URL.
+      # Fail before building an APK if production still targets the retired hostname.
+      - name: Verify production Android API URL
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+        run: |
+          $properties = Get-Content "client/gradle.properties"
+          $apiUrl = $properties | Where-Object { $_ -match '^\\s*BACKEND_BASE_URL\\s*=' } | Select-Object -Last 1
+
+          if (-not $apiUrl -or $apiUrl -notmatch '^\\s*BACKEND_BASE_URL\\s*=\\s*https://api\\.fesnguyen\\.com/?\\s*      # ------------------------------------------------------------
+
+      - name: Build release APK
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+        working-directory: client
+        run: |
+          .\gradlew.bat assembleRelease
+
+      # ------------------------------------------------------------
+      # Sign
+      # ------------------------------------------------------------
+
+      - name: Sign release APK
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+        run: |
+          $unsignedApk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release-unsigned.apk"
+          $signedApk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          $keystore = "C:\hello-butler-configs\hello-butler-release.jks"
+
+          if (-not (Test-Path $unsignedApk)) {
+            throw "Unsigned release APK was not produced: $unsignedApk"
+          }
+
+          if (-not (Test-Path $keystore)) {
+            throw "Release keystore not found: $keystore"
+          }
+
+          $properties = @{}
+
+          Get-Content "C:\hello-butler-configs\gradle.properties" |
+            ForEach-Object {
+              if ($_ -match '^\s*([^#][^=]*)=(.*)$') {
+                $properties[$matches[1].Trim()] = $matches[2].Trim()
+              }
+            }
+
+          $storePassword = $properties["RELEASE_KEYSTORE_PASSWORD"]
+          $keyPassword = $properties["RELEASE_KEY_PASSWORD"]
+
+          if (-not $storePassword) {
+            throw "RELEASE_KEYSTORE_PASSWORD is missing."
+          }
+
+          if (-not $keyPassword) {
+            throw "RELEASE_KEY_PASSWORD is missing."
+          }
+
+          $buildTools = Get-ChildItem `
+            "$env:ANDROID_HOME\build-tools" `
+            -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $buildTools) {
+            throw "Android SDK Build Tools not found."
+          }
+
+          $apksigner = Join-Path `
+            $buildTools.FullName `
+            "apksigner.bat"
+
+          if (-not (Test-Path $apksigner)) {
+            throw "apksigner not found: $apksigner"
+          }
+
+          & $apksigner sign `
+            --ks $keystore `
+            --ks-key-alias "hello-butler" `
+            --ks-pass "pass:$storePassword" `
+            --key-pass "pass:$keyPassword" `
+            --out $signedApk `
+            $unsignedApk
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "APK signing failed."
+          }
+
+      # ------------------------------------------------------------
+      # Verify signature
+      # ------------------------------------------------------------
+
+      - name: Verify signed APK
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+        run: |
+          $apk = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          if (-not (Test-Path $apk)) {
+            throw "Signed release APK was not produced: $apk"
+          }
+
+          $buildTools = Get-ChildItem `
+            "$env:ANDROID_HOME\build-tools" `
+            -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+
+          if (-not $buildTools) {
+            throw "Android SDK Build Tools not found."
+          }
+
+          $apksigner = Join-Path `
+            $buildTools.FullName `
+            "apksigner.bat"
+
+          if (-not (Test-Path $apksigner)) {
+            throw "apksigner not found: $apksigner"
+          }
+
+          & $apksigner verify --verbose $apk
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "APK signature verification failed."
+          }
+
+          Write-Host "APK signature verified successfully."
+
+      # ------------------------------------------------------------
+      # Publish
+      # ------------------------------------------------------------
+
+      - name: Publish APK to Showcase
+        if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+        run: |
+          $source = "${{ github.workspace }}\client\app\build\outputs\apk\release\app-release.apk"
+
+          $targetDirectory = "C:\hello-butler-production\showcase\releases"
+          $target = "$targetDirectory\hello-butler-v0.1.0.apk"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $targetDirectory | Out-Null
+
+          Copy-Item $source $target -Force
+
+          Write-Host "APK published:"
+          Write-Host $target) {
+            throw "Production Gradle properties must set BACKEND_BASE_URL=https://api.fesnguyen.com/"
+          }
+
       # ------------------------------------------------------------
       # Build
       # ------------------------------------------------------------
