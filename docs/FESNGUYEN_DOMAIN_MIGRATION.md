@@ -7,27 +7,28 @@ This is a **staged** migration. Keep the old public hostname available until the
 | Service | Public hostname | Tunnel origin |
 | --- | --- | --- |
 | Backend | `api.fesnguyen.com` | `http://localhost:8000` |
-| Showcase | `butler.fesnguyen.com` | `http://localhost:8002` |
-| Admin | Not publicly exposed | `http://localhost:3001` (local only) |
+| Showcase | `showcase.fesnguyen.com` | `http://localhost:8002` |
+| Admin | `admin.fesnguyen.com` (protected) | `http://localhost:3001` (local only) |
 
-The Windows runner, Docker Compose ports, images, and GitHub Actions deployment workflow do not require a hostname change. Do not rename Docker volumes or recreate the database.
+The Windows runner, Docker Compose ports, and images do not require a hostname change. The CD workflow now overrides the Android production API URL after copying the external configuration. Do not rename Docker volumes or recreate the database.
 
 ## 1. Cloudflare dashboard (manual)
 
-In Cloudflare Zero Trust, open the **existing named tunnel** for the Windows host and add two published application routes/hostnames:
+In Cloudflare Zero Trust, open the **existing named tunnel** for the Windows host and add three published application routes/hostnames:
 
 - `api.fesnguyen.com` → `http://localhost:8000`
-- `butler.fesnguyen.com` → `http://localhost:8002`
+- `showcase.fesnguyen.com` → `http://localhost:8002`
+- `admin.fesnguyen.com` → `http://localhost:3001` (only after configuring Cloudflare Access and secure cookies)
 
-Ensure DNS records are created/associated with the existing tunnel. Do not remove the old hostname yet. Verify `https://api.fesnguyen.com/docs` and `https://butler.fesnguyen.com/api/applications` before switching clients. If the tunnel is locally configured instead of dashboard-managed, update its ingress and DNS routes on the host rather than configuring a conflicting dashboard route.
+Ensure DNS records are created/associated with the existing tunnel. Do not remove the old hostname yet. Verify `https://api.fesnguyen.com/docs` and `https://showcase.fesnguyen.com/api/applications` before switching clients. If the tunnel is locally configured instead of dashboard-managed, update its ingress and DNS routes on the host rather than configuring a conflicting dashboard route.
 
-Do **not** publish the admin service without a separate access-control review.
+**Do not expose admin yet.** Require Cloudflare Access first. The current production admin uses `ADMIN_LOCAL_HTTP=true`, which disables Secure cookies; review proxy trust and secure-session behavior before publishing the admin hostname.
 
 ## 2. Windows production Android configuration (manual)
 
-The CD workflow copies `C:\hello-butler-configs\gradle.properties` over `client/gradle.properties` before assembling the release APK. Therefore the tracked repository default is **not enough**.
+The CD workflow copies `C:\hello-butler-configs\gradle.properties` over `client/gradle.properties` before assembling the release APK. The CD workflow overrides the copied production API URL explicitly.
 
-Change only this key in the external production file:
+The CD workflow now applies this setting to the copied Gradle properties, without editing the external production file:
 
 ```properties
 BACKEND_BASE_URL=https://api.fesnguyen.com/
@@ -45,9 +46,9 @@ Inspect `C:\hello-butler-configs\.env.production` on the Windows host for public
 
 - `https://api.fesnguyen.com/docs` loads
 - Backend authenticated request succeeds from a newly built Android APK
-- `https://butler.fesnguyen.com/api/applications` returns HTTP 200
+- `https://showcase.fesnguyen.com/api/applications` returns HTTP 200
 - Showcase page loads and its APK download works
 - Existing old-domain clients continue working during rollout
 - GitHub Actions CI passes; production CD is tested only after explicit cutover
 
-**Rollback:** restore the external Android `BACKEND_BASE_URL` and rebuild if needed; keep the old Cloudflare route active. Avoid changing production databases or deleting the old DNS route during staging.
+**Rollback:** revert the CD override and rebuild if needed; keep the old Cloudflare route active. Avoid changing production databases or deleting the old DNS route during staging.
